@@ -77,40 +77,59 @@ def create_qc_audit():
         conn.close() 
         
 
+@qc_audit_bp.route("/test", methods=["GET"])
+def test_qc_audit():
+    return jsonify({
+        "status": 200,
+        "message": "QC Audit Test - Code Updated Successfully",
+        "timestamp": str(datetime.now())
+    })
+
 @qc_audit_bp.route("/report", methods=["POST"])
 def qc_audit_report():
 
+    data = request.get_json()
+    start_date = data.get("start_date")  # Format: "2024-04-07"
+    end_date = data.get("end_date")      # Format: "2024-04-10"
+    
+    # If no date filters provided, default to current month
+    if not start_date or not end_date:
+        from datetime import datetime
+        current_month = datetime.now().strftime("%Y-%m")
+        start_date = f"{current_month}-01"
+        # Get last day of current month
+        current_year = datetime.now().year
+        current_month_num = datetime.now().month
+        if current_month_num in [1,3,5,7,8,10,12]:
+            last_day = 31
+        elif current_month_num in [4,6,9,11]:
+            last_day = 30
+        elif current_month_num == 2:
+            # Check for leap year
+            if (current_year % 4 == 0 and current_year % 100 != 0) or (current_year % 400 == 0):
+                last_day = 29
+            else:
+                last_day = 28
+        else:
+            last_day = 30
+        end_date = f"{current_month}-{last_day:02d}"
+    
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     try:
 
-        # Debug: Check if we have data and join conditions
-        debug_query = """
-            SELECT 
-                qa.qc_record_id,
-                qr.agent_id,
-                qr.qa_user_id,
-                tu.user_name as tu_name,
-                qc_user.user_name as qc_name
-            FROM qc_audit qa
-            LEFT JOIN qc_records qr ON qa.qc_record_id = qr.id
-            LEFT JOIN tfs_user tu ON qr.agent_id = tu.user_id
-            LEFT JOIN tfs_user qc_user ON qr.qa_user_id = qc_user.user_id
-            LIMIT 5
-        """
-        cursor.execute(debug_query)
-        debug_rows = cursor.fetchall()
-        print(f"DEBUG: First 5 rows with user IDs: {debug_rows}")
-        
+        # Base query with date filter
         query = """
         SELECT
         qa.created_date AS audit_datetime,
+        qr.date_of_file_submission AS worked_date,
+        qr.updated_at AS evaluation_date,
         tu.user_name AS agent_name,
         qc_user.user_name AS qc_agent_name,
         p.project_name AS project,
         t.task_name AS task,
-        ROUND(qr.`qc_generated_count` * 0.10) AS total_qcs,
+        SUM(qr.qc_generated_count) AS total_qcs,
         AVG(qa.qc_score) AS avg_qc_score,
         qr.error_list AS total_errors,
         qa.qc_checked_file,
@@ -133,10 +152,21 @@ def qc_audit_report():
 
         LEFT JOIN task t
         ON qr.task_id = t.task_id
+        """
 
+        # Add date filter if start_date and end_date are provided
+        date_filter = ""
+        if start_date and end_date:
+            date_filter = f"""
+            WHERE DATE(qr.date_of_file_submission) >= DATE('{start_date}')
+            AND DATE(qr.date_of_file_submission) <= DATE('{end_date}')
+            """
+
+        query += date_filter + """
         GROUP BY
         qa.qc_record_id,
         qa.created_date,
+        qr.updated_at,
         tu.user_name,
         qc_user.user_name,
         p.project_name,
