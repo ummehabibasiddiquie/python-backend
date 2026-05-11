@@ -129,8 +129,8 @@ def qc_audit_report():
         qc_user.user_name AS qc_agent_name,
         p.project_name AS project,
         t.task_name AS task,
-        SUM(qr.qc_generated_count) AS total_qcs,
-        AVG(qa.qc_score) AS avg_qc_score,
+        qr.qc_generated_count AS total_qcs,
+        qa.qc_score AS avg_qc_score,
         qr.error_list AS total_errors,
         qa.qc_checked_file,
         qr.qc_status,
@@ -163,20 +163,6 @@ def qc_audit_report():
             """
 
         query += date_filter + """
-        GROUP BY
-        qa.qc_record_id,
-        qa.created_date,
-        qr.updated_at,
-        tu.user_name,
-        qc_user.user_name,
-        p.project_name,
-        t.task_name,
-        qr.`qc_generated_count`,
-        qr.error_list,
-        qa.qc_checked_file,
-        qr.qc_status,
-        qa.error_notes
-
         ORDER BY qa.created_date DESC
         """
 
