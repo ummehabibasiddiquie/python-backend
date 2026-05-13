@@ -19,16 +19,16 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 RECIPIENTS = [
     "ummehabiba.siddiquie@transformsolution.net",
-    "mohsin.pathan@transformsolution.net",
-    "dharmesh.jotania@transformsolution.net",
-    "venkateshwaran.iyer@transformsolution.net",
-    "yahya.irani@transformsolution.net",
-    "amit.mandviwala@transformsolution.net",
-    "sriman.narayan@transformsolution.net",
-    "shirin.gafoor@transformsolution.net",
-    "avinash.dwivedi@transformsolution.net",
-    "jimil.kinariwala@transformsolution.net",
-    "manas.pradhan@transformsolution.net"
+    # "mohsin.pathan@transformsolution.net",
+    # "dharmesh.jotania@transformsolution.net",
+    # "venkateshwaran.iyer@transformsolution.net",
+    # "yahya.irani@transformsolution.net",
+    # "amit.mandviwala@transformsolution.net",
+    # "sriman.narayan@transformsolution.net",
+    # "shirin.gafoor@transformsolution.net",
+    # "avinash.dwivedi@transformsolution.net",
+    # "jimil.kinariwala@transformsolution.net",
+    # "manas.pradhan@transformsolution.net"
 ]
 
 CC_RECIPIENTS = [
@@ -380,6 +380,12 @@ def fetch_data():
                     "daily_required_hours": daily_required,
                 }
             )
+
+        # Filter out deactivated users with zero monthly goal
+        users = [
+            u for u in users
+            if not (u["is_active"] == 0 and u["monthly_goal"] == 0)
+        ]
 
         return report_date, users
 
