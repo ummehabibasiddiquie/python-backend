@@ -478,6 +478,51 @@ def dashboard_filter():
         cursor.execute(summary_query, tuple(params))
         summary = cursor.fetchone() or {}
 
+        # Total assigned hours from temp_qc (same logic as tracker view)
+        assigned_query = f"""
+            SELECT COALESCE(SUM(tqc.assigned_hours), 0) AS total_assigned
+            FROM (
+                SELECT DISTINCT twt.user_id, DATE(CAST(twt.date_time AS DATETIME)) AS work_date
+                FROM task_work_tracker twt
+                JOIN tfs_user u ON u.user_id = twt.user_id
+                JOIN project p ON p.project_id = twt.project_id
+                WHERE u.is_active=1 AND u.is_delete=1
+                  AND twt.is_active=1
+                  AND p.is_active=1
+            ) twt_distinct
+            INNER JOIN temp_qc tqc
+                ON tqc.user_id = twt_distinct.user_id
+                AND DATE(tqc.date) = twt_distinct.work_date
+        """
+        assigned_params = []
+
+        # Apply same user_id filter
+        if visible_user_ids is not None:
+            in_ph = ",".join(["%s"] * len(visible_user_ids))
+            assigned_query += f" WHERE twt_distinct.user_id IN ({in_ph})"
+            assigned_params.extend(visible_user_ids)
+
+        # Apply date filters
+        if data.get("date"):
+            assigned_query += " AND twt_distinct.work_date = %s"
+            assigned_params.append(data["date"])
+        if data.get("date_from"):
+            df = data["date_from"]
+            if len(df) == 10:
+                df = df[:10]
+            assigned_query += " AND twt_distinct.work_date >= %s"
+            assigned_params.append(df)
+        if data.get("date_to"):
+            dt = data["date_to"]
+            if len(dt) == 10:
+                dt = dt[:10]
+            assigned_query += " AND twt_distinct.work_date <= %s"
+            assigned_params.append(dt)
+
+        cursor.execute(assigned_query, tuple(assigned_params))
+        total_assigned_hours = float((cursor.fetchone() or {}).get("total_assigned") or 0)
+        summary["total_assigned_hours"] = round(total_assigned_hours, 2)
+
         # --------------------
         # QC SUMMARY + QC PER USER (NEW)
         # Uses temp_qc.date (NOT updated_date)
