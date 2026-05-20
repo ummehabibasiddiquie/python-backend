@@ -73,7 +73,7 @@ def view_qc_history_user_based():
             where_clauses.append("(JSON_CONTAINS(u.asst_manager_id, %s) OR u.user_id = %s)")
             params.extend([f"{logged_in_user_id}", logged_in_user_id])
 
-        else:
+        else:   
             where_clauses.append("u.user_id = %s")
             params.append(logged_in_user_id)
 
