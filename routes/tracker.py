@@ -887,6 +887,7 @@ def view_daily_trackers():
                 ) AS assistant_manager_name,
 
                 dwc.work_date,
+                DAYNAME(dwc.work_date) AS day,
 
                 ROUND(dwc.total_billable_hours_day, 4) AS total_billable_hours_day,
                 dwc.trackers_count_day,

@@ -17,16 +17,29 @@ def now_str() -> str:
 
 
 def month_year_to_yyyymm_sql(month_year_col: str) -> str:
-    """
-    Your DB stores month_year like 'JAN2026', 'DEC2025' (MONYYYY).
-    Convert MONYYYY -> integer YYYYMM inside SQL.
-    """
     return f"""
     CAST(
-      DATE_FORMAT(
-        STR_TO_DATE(CONCAT('01-', {month_year_col}), '%d-%b%Y'),
-        '%Y%m'
-      ) AS UNSIGNED
+        CONCAT(
+            RIGHT({month_year_col},4),
+            LPAD(
+                CASE LEFT(UPPER({month_year_col}),3)
+                    WHEN 'JAN' THEN 1
+                    WHEN 'FEB' THEN 2
+                    WHEN 'MAR' THEN 3
+                    WHEN 'APR' THEN 4
+                    WHEN 'MAY' THEN 5
+                    WHEN 'JUN' THEN 6
+                    WHEN 'JUL' THEN 7
+                    WHEN 'AUG' THEN 8
+                    WHEN 'SEP' THEN 9
+                    WHEN 'OCT' THEN 10
+                    WHEN 'NOV' THEN 11
+                    WHEN 'DEC' THEN 12
+                END,
+                2,
+                '0'
+            )
+        ) AS UNSIGNED
     )
     """
 
@@ -441,55 +454,62 @@ def list_user_monthly_targets():
 
         # ---------------- Joins: month_year optional ----------------
         # temp_qc.date is TEXT 'YYYY-MM-DD'
-        QC_YEAR_MONTH = "DATE_FORMAT(STR_TO_DATE(tq.date, '%Y-%m-%d'), '%Y%m')"
-
         if month_year:
             umt_join = """
                 INNER JOIN user_monthly_tracker umt
-                  ON umt.user_id = u.user_id
-                 AND umt.is_active=1
-                 AND umt.month_year=%s
+                ON umt.user_id = u.user_id
+                AND umt.is_active=1
+                AND umt.month_year=%s
             """
+
             twt_join = f"""
                 LEFT JOIN task_work_tracker twt
-                  ON twt.user_id = u.user_id
-                 AND twt.is_active=1
-                 AND {TRACKER_YEAR_MONTH} = {month_year_to_yyyymm_sql('%s')}
+                ON twt.user_id = u.user_id
+                AND twt.is_active=1
+                AND {TRACKER_YEAR_MONTH}=%s
             """
-            # ✅ avg_qc_score = SUM(qc_score) / COUNT(days having qc_score)
-            qc_join = f"""
-                LEFT JOIN (
-                    SELECT
-                        tq.user_id,
-                        ROUND(SUM(tq.qc_score) / NULLIF(COUNT(DISTINCT tq.date), 0), 2) AS avg_qc_score,
-                        COUNT(DISTINCT tq.date) AS qc_days_count
-                    FROM temp_qc tq
-                    WHERE tq.qc_score IS NOT NULL
-                      AND {QC_YEAR_MONTH} = {month_year_to_yyyymm_sql('%s')}
-                    GROUP BY tq.user_id
-                ) qc ON qc.user_id = u.user_id
-            """
-        else:
-            umt_join = """
-                LEFT JOIN user_monthly_tracker umt
-                  ON umt.user_id = u.user_id
-                 AND umt.is_active=1
-            """
-            twt_join = """
-                LEFT JOIN task_work_tracker twt
-                  ON twt.user_id = u.user_id
-                 AND twt.is_active=1
-            """
+
             qc_join = """
                 LEFT JOIN (
                     SELECT
-                        tq.user_id,
-                        ROUND(SUM(tq.qc_score) / NULLIF(COUNT(DISTINCT tq.date), 0), 2) AS avg_qc_score,
-                        COUNT(DISTINCT tq.date) AS qc_days_count
-                    FROM temp_qc tq
-                    WHERE tq.qc_score IS NOT NULL
-                    GROUP BY tq.user_id
-                ) qc ON qc.user_id = u.user_id
+                        x.user_id,
+                        ROUND(AVG(x.daily_qc_avg),2) AS avg_qc_score,
+                        COUNT(*) AS qc_days_count
+                    FROM
+                    (
+                        -- OLD SYSTEM (temp_qc already has one record/day)
+                        SELECT
+                            tq.user_id,
+                            tq.date AS qc_date,
+                            tq.qc_score AS daily_qc_avg
+                        FROM temp_qc tq
+                        WHERE tq.qc_score IS NOT NULL
+
+                        UNION ALL
+
+                        -- NEW SYSTEM (many files/day)
+                        SELECT
+                            qr.agent_id AS user_id,
+                            DATE(qr.date_of_file_submission) AS qc_date,
+                            ROUND(AVG(qr.qc_score),2) AS daily_qc_avg
+                        FROM qc_records qr
+                        WHERE qr.qc_score IS NOT NULL
+                        GROUP BY
+                            qr.agent_id,
+                            DATE(qr.date_of_file_submission)
+
+                    ) x
+
+                    WHERE DATE_FORMAT(
+                            STR_TO_DATE(x.qc_date,'%Y-%m-%d'),
+                            '%Y%m'
+                        )
+                        = %s
+
+                    GROUP BY x.user_id
+
+                ) qc
+                ON qc.user_id=u.user_id
             """
 
         # ---------------- Main query ----------------
@@ -536,8 +556,8 @@ def list_user_monthly_targets():
                 umt.user_monthly_tracker_id,
                 umt.month_year,
                 umt.working_days,
-                monthly_target,
-                extra_assigned_hours,
+                umt.monthly_target,
+                umt.extra_assigned_hours,
                 qc.avg_qc_score,
                 qc.qc_days_count
             ORDER BY u.user_name ASC
@@ -546,13 +566,24 @@ def list_user_monthly_targets():
         # Params order:
         # if month_year: umt_join(%s), twt_join(%s), qc_join(%s), then user_where params
         if month_year:
-            final_params = [month_year, month_year, month_year]
+
+            month_dt = datetime.strptime(month_year, "%b%Y")
+            yyyymm = month_dt.strftime("%Y%m")
+
+            final_params = [
+                month_year,  # umt
+                yyyymm,      # twt
+                yyyymm       # qc
+            ]
         else:
-            final_params = []
+            final_params=[]
+
         final_params.extend(user_params)
+        print(f"DEBUG: Final params: {final_params}")
 
         cursor.execute(query, tuple(final_params))
         rows = cursor.fetchall()
+
         return api_response(200, "User monthly targets fetched successfully", rows)
 
     except Exception as e:
