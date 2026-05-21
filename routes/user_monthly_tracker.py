@@ -511,6 +511,53 @@ def list_user_monthly_targets():
                 ) qc
                 ON qc.user_id=u.user_id
             """
+        else:
+            umt_join = """
+                LEFT JOIN user_monthly_tracker umt
+                ON umt.user_id=u.user_id
+                AND umt.is_active=1
+            """
+
+            twt_join = """
+                LEFT JOIN task_work_tracker twt
+                ON twt.user_id=u.user_id
+                AND twt.is_active=1
+            """
+
+            qc_join = """
+                LEFT JOIN (
+                    SELECT
+                        x.user_id,
+                        ROUND(AVG(x.daily_qc_avg),2) AS avg_qc_score,
+                        COUNT(*) AS qc_days_count
+                    FROM
+                    (
+                        -- OLD QC system
+                        SELECT
+                            tq.user_id,
+                            tq.date AS qc_date,
+                            tq.qc_score AS daily_qc_avg
+                        FROM temp_qc tq
+                        WHERE tq.qc_score IS NOT NULL
+
+                        UNION ALL
+
+                        -- NEW QC system
+                        SELECT
+                            qr.agent_id AS user_id,
+                            DATE(qr.date_of_file_submission) AS qc_date,
+                            ROUND(AVG(qr.qc_score),2) AS daily_qc_avg
+                        FROM qc_records qr
+                        WHERE qr.qc_score IS NOT NULL
+                        GROUP BY
+                            qr.agent_id,
+                            DATE(qr.date_of_file_submission)
+
+                    ) x
+                    GROUP BY x.user_id
+                ) qc
+                ON qc.user_id=u.user_id
+            """
 
         # ---------------- Main query ----------------
         query = f"""
