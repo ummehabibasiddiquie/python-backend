@@ -835,21 +835,21 @@ def view_daily_trackers():
                 GROUP BY twt.user_id, twt.shift, DATE(CAST(twt.date_time AS DATETIME))
             ),
             worked_days AS (
-                SELECT DISTINCT
+                SELECT
                     twt.user_id,
                     DATE(CAST(twt.date_time AS DATETIME)) AS work_date,
                     CASE
-                        WHEN tq.assigned_hours = 4.5 THEN 0.5
-                        ELSE 1
+                        WHEN MAX(tq.assigned_hours) = 4.5 THEN 0.5
+                        WHEN MAX(tq.assigned_hours) > 0 THEN 1
+                        ELSE 0
                     END AS day_weight
                 FROM task_work_tracker twt
                 LEFT JOIN tfs_user u ON u.user_id = twt.user_id
                 INNER JOIN temp_qc tq
                     ON tq.user_id = twt.user_id
                     AND DATE(tq.date) = DATE(CAST(twt.date_time AS DATETIME))
-                    AND tq.assigned_hours IS NOT NULL
-                    AND tq.assigned_hours > 0
                 {where}
+                GROUP BY twt.user_id, DATE(CAST(twt.date_time AS DATETIME))
             ),
             daily_with_cum AS (
                 SELECT
@@ -921,7 +921,12 @@ def view_daily_trackers():
                         COALESCE(CAST(umt.working_days AS DECIMAL(10,2)), 0)
                         - COALESCE(dwc.worked_days_till_day, 0),
                         0
-                      ) = 0 THEN NULL
+                      ) = 0 THEN
+                    (
+                      COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0)
+                      + COALESCE(umt.extra_assigned_hours, 0)
+                    )
+                    - COALESCE(dwc.cumulative_billable_hours_till_day, 0)
                   ELSE
                     (
                       (
@@ -1030,7 +1035,18 @@ def view_daily_trackers():
                                    AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff
                                ), 0),
                              0
-                           ) = 0 THEN NULL
+                           ) = 0 THEN
+                        (
+                          COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0)
+                          + COALESCE(umt.extra_assigned_hours, 0)
+                        )
+                        - COALESCE((
+                            SELECT SUM(twt3.production / NULLIF(twt3.tenure_target, 0))
+                            FROM task_work_tracker twt3
+                            WHERE twt3.user_id = u.user_id
+                              AND twt3.is_active = 1
+                              AND (YEAR(CAST(twt3.date_time AS DATETIME))*100 + MONTH(CAST(twt3.date_time AS DATETIME))) = m.yyyymm
+                          ), 0)
                       ELSE
                         (
                           (
