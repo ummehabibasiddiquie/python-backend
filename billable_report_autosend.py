@@ -220,13 +220,13 @@ def fetch_data():
 
         cursor.execute(
             f"""
-            SELECT 
+            SELECT
                 user_id,
                 SUM(day_value) AS days_worked
             FROM (
-                SELECT 
+                SELECT
                     twt.user_id,
-                    DATE(twt.date_time) AS work_date,
+                    DATE(CAST(twt.date_time AS DATETIME)) AS work_date,
                     CASE
                         WHEN MAX(tq.assigned_hours) = 4.5 THEN 0.5
                         WHEN MAX(tq.assigned_hours) > 0 THEN 1
@@ -235,11 +235,11 @@ def fetch_data():
                 FROM task_work_tracker twt
                 INNER JOIN temp_qc tq
                     ON tq.user_id = twt.user_id
-                    AND DATE(tq.date) = DATE(twt.date_time)
+                    AND DATE(tq.date) = DATE(CAST(twt.date_time AS DATETIME))
                 WHERE DATE(twt.date_time) BETWEEN %s AND %s
                 AND twt.user_id IN ({in_ph})
                 AND twt.is_active = 1
-                GROUP BY twt.user_id, DATE(twt.date_time)
+                GROUP BY twt.user_id, DATE(CAST(twt.date_time AS DATETIME))
             ) t
             GROUP BY user_id
             """,
