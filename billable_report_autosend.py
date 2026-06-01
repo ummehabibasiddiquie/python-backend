@@ -19,8 +19,8 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 RECIPIENTS = [
     "ummehabiba.siddiquie@transformsolution.net",
-    # "mohsin.pathan@transformsolution.net",
-    # "dharmesh.jotania@transformsolution.net",
+    "mohsin.pathan@transformsolution.net",
+    "dharmesh.jotania@transformsolution.net",
     # "venkateshwaran.iyer@transformsolution.net",
     # "yahya.irani@transformsolution.net",
     # "amit.mandviwala@transformsolution.net",
@@ -366,20 +366,7 @@ def fetch_data():
             days_worked = days_worked_map.get(uid, 0)
             remaining_days = max(0, working_days - days_worked)
 
-            print(f"DEBUG - User: {u['user_name']}, Team: {u['team_name']}")
-            print(f"  working_days: {working_days}")
-            print(f"  days_worked: {days_worked}")
-            print(f"  remaining_days: {remaining_days}")
-            print(f"  monthly_target: {monthly_target}")
-            print(f"  extra_assigned_hours: {extra}")
-            print(f"  monthly_goal: {monthly_goal}")
-            print(f"  mtd_hours: {mtd}")
-            print(f"  pending_goal: {pending}")
-
-            daily_required = pending / remaining_days if remaining_days > 0 else 0
-
-            print(f"  daily_required_hours: {daily_required}")
-            print(f"  ---")
+            daily_required = pending / remaining_days if remaining_days else 0
 
             u.update(
                 {
