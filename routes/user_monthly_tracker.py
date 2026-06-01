@@ -583,13 +583,10 @@ def list_user_monthly_targets():
                 qc.avg_qc_score AS avg_qc_score,
                 COALESCE(qc.qc_days_count, 0) AS qc_days_count,
 
-                GREATEST(
-                    (
-                        COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0)
-                        + COALESCE(umt.extra_assigned_hours, 0)
-                    ) - COALESCE(SUM(COALESCE(twt.production, 0) / NULLIF(twt.tenure_target, 0)), 0),
-                    0
-                ) AS pending_target
+                (
+                    COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0)
+                    + COALESCE(umt.extra_assigned_hours, 0)
+                ) - COALESCE(SUM(COALESCE(twt.production, 0) / NULLIF(twt.tenure_target, 0)), 0) AS pending_target
             FROM tfs_user u
             LEFT JOIN team t ON u.team_id = t.team_id
             {umt_join}
