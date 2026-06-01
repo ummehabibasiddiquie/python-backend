@@ -250,6 +250,13 @@ def fetch_data():
             r["user_id"]: float(r["days_worked"]) for r in cursor.fetchall()
         }
 
+        print(f"DEBUG - Days worked summary:")
+        for uid, days in days_worked_map.items():
+            user = next((u for u in users if u["user_id"] == uid), None)
+            if user:
+                print(f"  {user['user_name']} (Team {user['team_name']}): {days} days")
+        print(f"  ---")
+
         qc_map = {}
 
         # Get QC scores for report date
