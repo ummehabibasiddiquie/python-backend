@@ -19,8 +19,8 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 RECIPIENTS = [
     "ummehabiba.siddiquie@transformsolution.net",
-    "mohsin.pathan@transformsolution.net",
-    "dharmesh.jotania@transformsolution.net",
+    # "mohsin.pathan@transformsolution.net",
+    # "dharmesh.jotania@transformsolution.net",
     # "venkateshwaran.iyer@transformsolution.net",
     # "yahya.irani@transformsolution.net",
     # "amit.mandviwala@transformsolution.net",
@@ -366,7 +366,7 @@ def fetch_data():
             days_worked = days_worked_map.get(uid, 0)
             remaining_days = max(0, working_days - days_worked)
 
-            daily_required = pending / remaining_days if remaining_days else 0
+            daily_required = pending / remaining_days if remaining_days else pending
 
             u.update(
                 {
