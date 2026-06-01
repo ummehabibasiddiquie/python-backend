@@ -19,22 +19,22 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 RECIPIENTS = [
     "ummehabiba.siddiquie@transformsolution.net",
-    "mohsin.pathan@transformsolution.net",
-    "dharmesh.jotania@transformsolution.net",
-    "venkateshwaran.iyer@transformsolution.net",
-    "yahya.irani@transformsolution.net",
-    "amit.mandviwala@transformsolution.net",
-    "sriman.narayan@transformsolution.net",
-    "shirin.gafoor@transformsolution.net",
-    "avinash.dwivedi@transformsolution.net",
-    "jimil.kinariwala@transformsolution.net",
-    "manas.pradhan@transformsolution.net",
-    "ishan.sharma@transformsolution.net"
+    # "mohsin.pathan@transformsolution.net",
+    # "dharmesh.jotania@transformsolution.net",
+    # "venkateshwaran.iyer@transformsolution.net",
+    # "yahya.irani@transformsolution.net",
+    # "amit.mandviwala@transformsolution.net",
+    # "sriman.narayan@transformsolution.net",
+    # "shirin.gafoor@transformsolution.net",
+    # "avinash.dwivedi@transformsolution.net",
+    # "jimil.kinariwala@transformsolution.net",
+    # "manas.pradhan@transformsolution.net",
+    # "ishan.sharma@transformsolution.net"
 ]
 
 CC_RECIPIENTS = [
-    "ashfaq@transformsolution.com",
-    "seema@transformsolution.com"
+    # "ashfaq@transformsolution.com",
+    # "seema@transformsolution.com"
 ]
 
 
@@ -361,7 +361,7 @@ def fetch_data():
             working_days = float(u["working_days"])
 
             monthly_goal = monthly_target + extra
-            pending = max(0, monthly_goal - mtd)
+            pending = monthly_goal - mtd
 
             days_worked = days_worked_map.get(uid, 0)
             remaining_days = max(0, working_days - days_worked)
