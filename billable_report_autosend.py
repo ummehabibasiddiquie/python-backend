@@ -100,11 +100,11 @@ def fetch_data():
                 u.is_active,
                 u.deactivated_at,
                 CASE
-                    WHEN u.deactivated_at IS NOT NULL
-                        AND DATE(u.deactivated_at) < %s
-                    THEN 'Exited'
-                    ELSE 'Active'
-                END AS exit_status
+        WHEN u.deactivated_at IS NOT NULL
+            AND DATE(u.deactivated_at) < %s
+        THEN 'Exited'
+        ELSE 'Active'
+    END AS exit_status
             FROM tfs_user u
             JOIN user_role r ON u.role_id = r.role_id
             LEFT JOIN team t ON u.team_id = t.team_id
@@ -131,7 +131,7 @@ def fetch_data():
                 END,
                 u.user_name
             """,
-            (report_month, report_date, month_start),
+            (report_date,report_month, report_date, month_start),
         )
 
         users = cursor.fetchall()
