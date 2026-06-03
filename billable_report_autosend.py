@@ -114,7 +114,7 @@ def fetch_data():
             WHERE u.is_delete = 1
             AND r.role_name='Agent'
             AND t.team_name IN ('A','B')
-            AND DATE(u.created_at) <= %s
+            AND DATE(u.created_date) <= %s
             AND (
                 u.is_active = 1
                 OR (
