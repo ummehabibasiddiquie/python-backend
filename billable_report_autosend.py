@@ -20,8 +20,8 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 RECIPIENTS = [
     "ummehabiba.siddiquie@transformsolution.net",
     # "mohsin.pathan@transformsolution.net",
-    "dharmesh.jotania@transformsolution.net",
-    "venkateshwaran.iyer@transformsolution.net",
+    # "dharmesh.jotania@transformsolution.net",
+    # "venkateshwaran.iyer@transformsolution.net",
     # "yahya.irani@transformsolution.net",
     # "amit.mandviwala@transformsolution.net",
     # "sriman.narayan@transformsolution.net",
@@ -76,7 +76,7 @@ def fetch_data():
         report_date = today - timedelta(days=1)
 
         # TEST DATE
-        # report_date = datetime.strptime("2026-06-01", "%Y-%m-%d").date()
+        report_date = datetime.strptime("2026-05-31", "%Y-%m-%d").date()
         
         report_month = report_date.strftime("%b%Y").upper()
 
