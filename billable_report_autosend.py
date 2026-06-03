@@ -20,8 +20,8 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 RECIPIENTS = [
     "ummehabiba.siddiquie@transformsolution.net",
     # "mohsin.pathan@transformsolution.net",
-    "dharmesh.jotania@transformsolution.net",
-    "venkateshwaran.iyer@transformsolution.net",
+    # "dharmesh.jotania@transformsolution.net",
+    # "venkateshwaran.iyer@transformsolution.net",
     # "yahya.irani@transformsolution.net",
     # "amit.mandviwala@transformsolution.net",
     # "sriman.narayan@transformsolution.net",
@@ -114,12 +114,12 @@ def fetch_data():
             WHERE u.is_delete = 1
             AND r.role_name='Agent'
             AND t.team_name IN ('A','B')
+            AND DATE(u.created_at) <= %s
             AND (
                 u.is_active = 1
                 OR (
-                    u.is_active = 0
-                    AND u.deactivated_at IS NOT NULL
-                    AND u.deactivated_at BETWEEN %s AND %s
+                    u.deactivated_at IS NOT NULL
+                    AND DATE(u.deactivated_at) >= %s
                 )
             )
             ORDER BY
@@ -130,7 +130,7 @@ def fetch_data():
                 END,
                 u.user_name
             """,
-            (report_month, month_start, month_end),
+            (report_month, report_date, month_start),
         )
 
         users = cursor.fetchall()
