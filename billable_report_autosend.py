@@ -99,10 +99,11 @@ def fetch_data():
                 COALESCE(umt.working_days,0) AS working_days,
                 u.is_active,
                 u.deactivated_at,
-                CASE 
-                    WHEN u.is_active = 1 THEN 'Active'
-                    WHEN u.is_active = 0 AND u.deactivated_at IS NOT NULL THEN 'Exited'
-                    ELSE 'Inactive'
+                CASE
+                    WHEN u.deactivated_at IS NOT NULL
+                        AND DATE(u.deactivated_at) < %s
+                    THEN 'Exited'
+                    ELSE 'Active'
                 END AS exit_status
             FROM tfs_user u
             JOIN user_role r ON u.role_id = r.role_id
