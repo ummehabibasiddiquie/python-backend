@@ -17,6 +17,7 @@ from routes.qc_afd import qc_afd_bp
 from routes.qc_audit import qc_audit_bp
 from routes.qc_rework import qc_rework_bp
 from routes.qc_history_user_based import qc_history_user_bp
+from routes.user_monthly_report import user_monthly_report_bp
 
 from scheduler import start_scheduler
 
@@ -49,6 +50,7 @@ app.register_blueprint(qc_afd_bp, url_prefix="/qc_afd")
 app.register_blueprint(qc_audit_bp, url_prefix="/qc_audit")
 app.register_blueprint(qc_rework_bp, url_prefix="/qc_rework")
 app.register_blueprint(qc_history_user_bp, url_prefix="/qc_history_user")
+app.register_blueprint(user_monthly_report_bp, url_prefix="/user_monthly_report")
 
 # print("\n==== REGISTERED ROUTES ====")
 # for r in app.url_map.iter_rules():
