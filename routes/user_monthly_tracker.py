@@ -415,9 +415,17 @@ def list_user_monthly_targets():
         user_where = """
             WHERE u.is_delete=1
             AND u.role_id=%s
+            AND (
+                    u.is_active = 1
+                    OR (
+                        u.is_active = 0
+                        AND u.deactivated_at IS NOT NULL
+                        AND u.deactivated_at BETWEEN %s AND %s
+                    )
+            )
         """
 
-        user_params = [agent_role_id]
+        user_params = [agent_role_id, month_start_str, month_end_str]
 
         if filter_user_id:
             user_where += " AND u.user_id=%s"
