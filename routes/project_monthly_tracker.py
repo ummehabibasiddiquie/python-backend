@@ -274,7 +274,7 @@ def list_project_monthly_tracker():
     # 1) Filters for pmt list
     # -----------------------
     pmt_params = []
-    where_pmt = "WHERE pmt.is_active=1"
+    where_pmt = "WHERE pmt.is_active=1 AND p.is_active=1"
 
     if data.get("project_monthly_tracker_id"):
         where_pmt += " AND pmt.project_monthly_tracker_id=%s"
@@ -377,7 +377,7 @@ def list_project_monthly_tracker():
                         END
                     ) AS tenure_achieved_hours
                 FROM task_work_tracker twt
-                {where_twt}
+                {where_twt} 
                 GROUP BY twt.project_id, DATE_FORMAT(twt.date_time, '%b%Y')
             ) twt_sum
                 ON twt_sum.project_id = pmt.project_id
