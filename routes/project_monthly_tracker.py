@@ -377,7 +377,7 @@ def list_project_monthly_tracker():
                         END
                     ) AS tenure_achieved_hours
                 FROM task_work_tracker twt
-                {where_twt} and p.is_active = 1
+                {where_twt}
                 GROUP BY twt.project_id, DATE_FORMAT(twt.date_time, '%b%Y')
             ) twt_sum
                 ON twt_sum.project_id = pmt.project_id
