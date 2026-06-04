@@ -82,6 +82,128 @@ def get_role_context(cursor, user_id: int) -> dict:
 
 
 # ---------------------------
+# LIST USERS (for user monthly tracker page)
+# - For current month: returns all active users (so managers can add goals)
+# - For past months: returns users who have tracker data for that month
+# ---------------------------
+@user_monthly_report_bp.route("/list_users", methods=["POST"])
+def list_users_for_monthly_tracker():
+    data = request.get_json(silent=True) or {}
+
+    logged_in_user_id = data.get("logged_in_user_id")
+    month_year = (data.get("month_year") or "").strip()  # OPTIONAL (MonYYYY)
+    filter_team_id = data.get("team_id")  # OPTIONAL
+
+    if not logged_in_user_id:
+        return api_response(400, "logged_in_user_id is required", None)
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        ctx = get_role_context(cursor, int(logged_in_user_id))
+        my_role_name = (ctx.get("user_role_name") or "").lower()
+        agent_role_id = ctx.get("agent_role_id")
+
+        if not agent_role_id:
+            return api_response(500, "Agent role not found in user_role table", None)
+        
+        # Determine if requested month is current month
+        is_current_month = False
+        if month_year:
+            dt = datetime.strptime(month_year, "%b%Y")
+            now = datetime.now()
+            is_current_month = (dt.month == now.month and dt.year == now.year)
+        else:
+            is_current_month = True  # Default to current month
+
+        # ---------------- Base WHERE: only agent rows ----------------
+        if is_current_month:
+            # For current month: show only active users
+            user_where = """
+                WHERE u.is_delete=1
+                AND u.is_active=1
+                AND u.role_id=%s
+            """
+        else:
+            # For past months: show users based on tracker data (no is_active check)
+            user_where = """
+                WHERE u.is_delete=1
+                AND u.role_id=%s
+            """
+
+        user_params = [agent_role_id]
+
+        if filter_team_id:
+            user_where += " AND u.team_id=%s"
+            user_params.append(int(filter_team_id))
+
+        if my_role_name in ("admin", "super admin"):
+            pass
+        elif my_role_name == "agent":
+            user_where += " AND u.user_id=%s"
+            user_params.append(int(logged_in_user_id))
+        else:
+            mid = str(logged_in_user_id)
+            user_where += """
+                AND (
+                    JSON_CONTAINS(u.project_manager_id, %s)
+                    OR JSON_CONTAINS(u.asst_manager_id, %s)
+                    OR JSON_CONTAINS(u.qa_id, %s)
+                )
+            """
+            user_params.extend([str(mid), str(mid), str(mid)])
+
+        # ---------------- Joins: based on current vs past month ----------------
+        if month_year and not is_current_month:
+            # Past month: INNER JOIN with task_work_tracker to show only users with data
+            twt_join = f"""
+                INNER JOIN task_work_tracker twt
+                ON twt.user_id = u.user_id
+                AND twt.is_active=1
+                AND {TRACKER_YEAR_MONTH}=%s
+            """
+            month_dt = datetime.strptime(month_year, "%b%Y")
+            yyyymm = month_dt.strftime("%Y%m")
+            final_params = [yyyymm]
+        else:
+            # Current month or no month specified: no tracker join needed
+            twt_join = ""
+            final_params = []
+
+        final_params.extend(user_params)
+
+        # ---------------- Main query ----------------
+        query = f"""
+            SELECT
+                u.user_id,
+                u.user_name,
+                t.team_name
+            FROM tfs_user u
+            LEFT JOIN team t ON u.team_id = t.team_id
+            {twt_join}
+            {user_where}
+            GROUP BY
+                u.user_id,
+                u.user_name,
+                t.team_name
+            ORDER BY u.user_name ASC
+        """
+
+        cursor.execute(query, tuple(final_params))
+        rows = cursor.fetchall()
+
+        return api_response(200, "Users fetched successfully", rows)
+
+    except Exception as e:
+        return api_response(500, f"List users failed: {str(e)}", None)
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------
 # LIST
 # Changes:
 # - month_year optional: if missing -> default current month (MONYYYY) so pending_days works

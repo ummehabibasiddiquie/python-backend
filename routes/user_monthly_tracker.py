@@ -375,6 +375,10 @@ def delete_user_monthly_target():
 # - monthly_total_target = monthly_target + extra_assigned_hours
 # - pending_days = working_days(from UMT) - distinct worked days till today (month-wise)
 # - do NOT return working_days or working_days_till_today separately
+# - Show users based on actual tracker data availability for the month
+# - When month_year provided: only show users who have task_work_tracker data for that month
+# - Deactivated users still appear if they have tracker data for the selected month
+# - user_monthly_tracker is LEFT JOIN (optional) - users without monthly targets can still appear
 # ---------------------------
 @user_monthly_tracker_bp.route("/list", methods=["POST"])
 def list_user_monthly_targets():
@@ -412,20 +416,13 @@ def list_user_monthly_targets():
         month_end_str = month_end.strftime("%Y-%m-%d %H:%M:%S")
 
         # ---------------- Base WHERE: only agent rows ----------------
+        # Remove is_active check to show deactivated users if they have tracker data
         user_where = """
             WHERE u.is_delete=1
             AND u.role_id=%s
-            AND (
-                    u.is_active = 1
-                    OR (
-                        u.is_active = 0
-                        AND u.deactivated_at IS NOT NULL
-                        AND u.deactivated_at BETWEEN %s AND %s
-                    )
-            )
         """
 
-        user_params = [agent_role_id, month_start_str, month_end_str]
+        user_params = [agent_role_id]
 
         if filter_user_id:
             user_where += " AND u.user_id=%s"
@@ -455,15 +452,17 @@ def list_user_monthly_targets():
         # ---------------- Joins: month_year optional ----------------
         # temp_qc.date is TEXT 'YYYY-MM-DD'
         if month_year:
+            # Use LEFT JOIN for user_monthly_tracker (optional)
+            # Use INNER JOIN for task_work_tracker to show only users with tracker data for this month
             umt_join = """
-                INNER JOIN user_monthly_tracker umt
+                LEFT JOIN user_monthly_tracker umt
                 ON umt.user_id = u.user_id
                 AND umt.is_active=1
                 AND umt.month_year=%s
             """
 
             twt_join = f"""
-                LEFT JOIN task_work_tracker twt
+                INNER JOIN task_work_tracker twt
                 ON twt.user_id = u.user_id
                 AND twt.is_active=1
                 AND {TRACKER_YEAR_MONTH}=%s
@@ -560,13 +559,16 @@ def list_user_monthly_targets():
             """
 
         # ---------------- Main query ----------------
+        # Use COALESCE for month_year only when month_year is provided
+        month_year_coalesce = f"COALESCE(umt.month_year, '{month_year}')" if month_year else "umt.month_year"
+        
         query = f"""
             SELECT
                 u.user_id,
                 u.user_name,
                 t.team_name,
                 umt.user_monthly_tracker_id,
-                umt.month_year,
+                {month_year_coalesce} AS month_year,
                 umt.working_days,
                 COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0) AS monthly_target,
                 COALESCE(umt.extra_assigned_hours, 0) AS extra_assigned_hours,
