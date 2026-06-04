@@ -364,7 +364,7 @@ def list_project_monthly_tracker():
                     SUM(
                         CASE
                             WHEN twt.actual_billable_hours REGEXP '^[0-9]+(\\.[0-9]+)?$'
-                            THEN CAST(twt.actual_billable_hours AS DECIMAL(12,2))
+                            THEN twt.actual_billable_hours
                             ELSE 0
                         END
                     ) AS achieved_hours,
