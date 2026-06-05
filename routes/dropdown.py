@@ -42,9 +42,11 @@ def get():
 
     dropdown_type = (data["dropdown_type"] or "").strip().lower()
 
-    # Calculate month start and end for deactivated_at logic
-    month_start = datetime.now().replace(day=1)
-    month_end = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(seconds=1)
+    # Calculate 2-month window for deactivated_at logic
+    # If current month is June, show users deactivated from May 1st to June 30th
+    current_month_start = datetime.now().replace(day=1)
+    month_start = (current_month_start - timedelta(days=32)).replace(day=1)  # Previous month start
+    month_end = (current_month_start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(seconds=1)  # Current month end
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
