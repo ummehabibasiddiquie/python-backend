@@ -9,6 +9,19 @@ QC_DATE_COL = "date"  # change if your column name is different
 def response(status, message, data=None, code=200):
     return jsonify({"status": status, "message": message, "data": data}), code
 
+def get_user_role(cursor, user_id: int) -> str | None:
+    """Get the role name for a given user_id"""
+    cursor.execute("""
+        SELECT r.role_name
+        FROM tfs_user u
+        JOIN user_role r ON r.role_id = u.role_id
+        WHERE u.user_id=%s AND u.is_active=1 AND u.is_delete=1
+    """, (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return (row.get("role_name") or "").strip().lower()
+
 # ---------------------------
 # DAILY ASSIGNED HOURS (NEW)
 # ---------------------------
@@ -88,6 +101,7 @@ def upsert_temp_qc():
 
     user_id = data.get("user_id")
     qc_date = (data.get("date") or "").strip()  # YYYY-MM-DD
+    logged_in_user_id = data.get("logged_in_user_id")
 
     # OPTIONAL fields (can come separately)
     qc_score = data.get("qc_score")            # can be missing
@@ -99,6 +113,9 @@ def upsert_temp_qc():
     if not qc_date:
         return response(False, "date is required (YYYY-MM-DD)", None, 400)
 
+    if not logged_in_user_id:
+        return response(False, "logged_in_user_id is required", None, 400)
+
     try:
         datetime.strptime(qc_date, "%Y-%m-%d")
     except ValueError:
@@ -107,6 +124,34 @@ def upsert_temp_qc():
     # At least one of qc_score/assigned_hours should be provided
     if qc_score is None and assigned_hours is None:
         return response(False, "Provide qc_score or assigned_hours (at least one).", None, 400)
+
+    # Permission check: Only Assistant Manager and Project Manager can update assigned_hours
+    # Admin and Super Admin also have permission
+    if assigned_hours is not None:
+        conn = None
+        cur = None
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor(dictionary=True)
+            
+            user_role = get_user_role(cur, int(logged_in_user_id))
+            
+            # Allowed roles for assigned_hours: admin, super admin, project manager, assistant manager
+            allowed_roles = ["admin", "super admin", "project manager", "assistant manager"]
+            
+            if user_role not in allowed_roles:
+                return response(False, "Permission denied. Only Assistant Manager and Project Manager can update assigned hours.", None, 403)
+                
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            return response(False, f"Permission check failed: {str(e)}", None, 500)
+        finally:
+            try:
+                if cur: cur.close()
+                if conn: conn.close()
+            except:
+                pass
 
     updated_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
