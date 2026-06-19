@@ -375,10 +375,10 @@ def delete_user_monthly_target():
 # - monthly_total_target = monthly_target + extra_assigned_hours
 # - pending_days = working_days(from UMT) - distinct worked days till today (month-wise)
 # - do NOT return working_days or working_days_till_today separately
-# - Show users based on actual tracker data availability for the month
-# - When month_year provided: only show users who have task_work_tracker data for that month
-# - Deactivated users still appear if they have tracker data for the selected month
-# - user_monthly_tracker is LEFT JOIN (optional) - users without monthly targets can still appear
+# - Show users based on monthly targets availability for the month
+# - When month_year provided: only show users who have monthly targets for that month
+# - Deactivated users still appear if they have monthly targets for the selected month
+# - user_monthly_tracker is INNER JOIN (required) - only users with monthly targets appear
 # ---------------------------
 @user_monthly_tracker_bp.route("/list", methods=["POST"])
 def list_user_monthly_targets():
@@ -452,17 +452,16 @@ def list_user_monthly_targets():
         # ---------------- Joins: month_year optional ----------------
         # temp_qc.date is TEXT 'YYYY-MM-DD'
         if month_year:
-            # Use LEFT JOIN for user_monthly_tracker (optional)
-            # Use INNER JOIN for task_work_tracker to show only users with tracker data for this month
+            # Use INNER JOIN for user_monthly_tracker to show only users with monthly targets for this month
             umt_join = """
-                LEFT JOIN user_monthly_tracker umt
+                INNER JOIN user_monthly_tracker umt
                 ON umt.user_id = u.user_id
                 AND umt.is_active=1
                 AND umt.month_year=%s
             """
 
             twt_join = f"""
-                INNER JOIN task_work_tracker twt
+                LEFT JOIN task_work_tracker twt
                 ON twt.user_id = u.user_id
                 AND twt.is_active=1
                 AND {TRACKER_YEAR_MONTH}=%s

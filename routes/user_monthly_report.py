@@ -84,7 +84,7 @@ def get_role_context(cursor, user_id: int) -> dict:
 # ---------------------------
 # LIST USERS (for user monthly tracker page)
 # - For current month: returns all active users (so managers can add goals)
-# - For past months: returns users who have tracker data for that month
+# - For past months: returns users who have monthly targets for that month
 # ---------------------------
 @user_monthly_report_bp.route("/list_users", methods=["POST"])
 def list_users_for_monthly_tracker():
@@ -156,19 +156,17 @@ def list_users_for_monthly_tracker():
 
         # ---------------- Joins: based on current vs past month ----------------
         if month_year and not is_current_month:
-            # Past month: INNER JOIN with task_work_tracker to show only users with data
-            twt_join = f"""
-                INNER JOIN task_work_tracker twt
-                ON twt.user_id = u.user_id
-                AND twt.is_active=1
-                AND {TRACKER_YEAR_MONTH}=%s
+            # Past month: INNER JOIN with user_monthly_tracker to show only users with targets
+            umt_join = """
+                INNER JOIN user_monthly_tracker umt
+                ON umt.user_id = u.user_id
+                AND umt.is_active=1
+                AND umt.month_year=%s
             """
-            month_dt = datetime.strptime(month_year, "%b%Y")
-            yyyymm = month_dt.strftime("%Y%m")
-            final_params = [yyyymm]
+            final_params = [month_year]
         else:
             # Current month or no month specified: no tracker join needed
-            twt_join = ""
+            umt_join = ""
             final_params = []
 
         final_params.extend(user_params)
@@ -181,7 +179,7 @@ def list_users_for_monthly_tracker():
                 t.team_name
             FROM tfs_user u
             LEFT JOIN team t ON u.team_id = t.team_id
-            {twt_join}
+            {umt_join}
             {user_where}
             GROUP BY
                 u.user_id,
@@ -211,10 +209,10 @@ def list_users_for_monthly_tracker():
 # - monthly_total_target = monthly_target + extra_assigned_hours
 # - pending_days = working_days(from UMT) - distinct worked days till today (month-wise)
 # - do NOT return working_days or working_days_till_today separately
-# - Show users based on actual tracker data availability for the month
-# - When month_year provided: only show users who have task_work_tracker data for that month
-# - Deactivated users still appear if they have tracker data for the selected month
-# - user_monthly_tracker is LEFT JOIN (optional) - users without monthly targets can still appear
+# - Show users based on monthly targets availability for the month
+# - When month_year provided: only show users who have monthly targets for that month
+# - Deactivated users still appear if they have monthly targets for the selected month
+# - user_monthly_tracker is INNER JOIN (required) - only users with monthly targets appear
 # ---------------------------
 @user_monthly_report_bp.route("/list", methods=["POST"])
 def list_user_monthly_targets():
@@ -288,16 +286,16 @@ def list_user_monthly_targets():
         # ---------------- Joins: month_year optional ----------------
         # temp_qc.date is TEXT 'YYYY-MM-DD'
         if month_year:
-            # Use INNER JOIN with a subquery to get users who have tracker data for this month
+            # Use INNER JOIN with user_monthly_tracker to get users who have monthly targets for this month
             umt_join = """
-                LEFT JOIN user_monthly_tracker umt
+                INNER JOIN user_monthly_tracker umt
                 ON umt.user_id = u.user_id
                 AND umt.is_active=1
                 AND umt.month_year=%s
             """
 
             twt_join = f"""
-                INNER JOIN task_work_tracker twt
+                LEFT JOIN task_work_tracker twt
                 ON twt.user_id = u.user_id
                 AND twt.is_active=1
                 AND {TRACKER_YEAR_MONTH}=%s
