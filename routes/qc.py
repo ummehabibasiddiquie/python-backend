@@ -125,8 +125,7 @@ def upsert_temp_qc():
     if qc_score is None and assigned_hours is None:
         return response(False, "Provide qc_score or assigned_hours (at least one).", None, 400)
 
-    # Permission check: Only Assistant Manager and Project Manager can update assigned_hours
-    # Admin and Super Admin also have permission
+    # Permission check: Only Admin, Super Admin, Assistant Manager and Project Manager can update assigned_hours
     if assigned_hours is not None:
         conn = None
         cur = None
@@ -140,7 +139,7 @@ def upsert_temp_qc():
             allowed_roles = ["admin", "super admin", "project manager", "assistant manager"]
             
             if user_role not in allowed_roles:
-                return response(False, "Permission denied. Only Assistant Manager and Project Manager can update assigned hours.", None, 403)
+                return response(False, "Permission denied. Only Admin, Super Admin, Assistant Manager and Project Manager can update assigned hours.", None, 403)
                 
         except Exception as e:
             if conn:
