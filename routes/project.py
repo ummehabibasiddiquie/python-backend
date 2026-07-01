@@ -85,7 +85,7 @@ def create_project():
 
     form = request.form
 
-    required_fields = ["project_name", "project_code", "project_manager_id"]
+    required_fields = ["project_name", "project_code"]
 
     for f in required_fields:
         if not form.get(f):
