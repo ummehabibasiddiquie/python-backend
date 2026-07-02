@@ -1300,6 +1300,133 @@ def get_eod_report_list():
         conn.close()
 
 
+@tracker_bp.route("/eod-report/trackers", methods=["POST"])
+def get_eod_report_trackers():
+    data = request.get_json(silent=True) or {}
+    logged_in_user_id = data.get("logged_in_user_id")
+    task_id = data.get("task_id")
+    project_id = data.get("project_id")
+    selected_date = data.get("date")
+
+    if not logged_in_user_id:
+        return api_response(400, "logged_in_user_id is required")
+
+    if not task_id or not project_id or not selected_date:
+        return api_response(400, "task_id, project_id, and date are required")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    def is_blank(value):
+        return value is None or str(value).strip() == ""
+
+    try:
+        role_context = get_role_context(cursor, int(logged_in_user_id))
+        if not can_access_task_eod_report(role_context):
+            return api_response(403, "Only Assistant Manager, Project Manager, and Admin can access Task EOD Report")
+
+        cursor.execute(
+            """
+            SELECT
+                twt.tracker_id,
+                twt.user_id,
+                usr.user_name,
+                twt.date_time,
+                twt.production,
+                twt.actual_target,
+                twt.tenure_target,
+                twt.shift,
+                twt.tracker_file,
+                twt.is_active
+            FROM task_work_tracker twt
+            JOIN tfs_user usr ON twt.user_id = usr.user_id
+            WHERE twt.task_id = %s
+              AND twt.project_id = %s
+              AND DATE(twt.date_time) = %s
+            ORDER BY twt.date_time DESC
+            """,
+            (task_id, project_id, selected_date),
+        )
+        trackers = cursor.fetchall() or []
+
+        valid_trackers = []
+        invalid_trackers = []
+
+        for row in trackers:
+            reasons = []
+            if int(row.get("is_active") or 0) != 1:
+                reasons.append("inactive")
+
+            production = row.get("production")
+            try:
+                production_value = float(production) if production is not None else None
+            except Exception:
+                production_value = None
+
+            if production_value is None:
+                reasons.append("production_missing")
+            elif production_value <= 0:
+                reasons.append("production_zero")
+
+            if is_blank(row.get("actual_target")):
+                reasons.append("actual_target_missing")
+
+            tenure_target = row.get("tenure_target")
+            if is_blank(tenure_target):
+                reasons.append("tenure_target_missing")
+            elif str(tenure_target).strip() == "0":
+                reasons.append("tenure_target_zero")
+
+            if is_blank(row.get("tracker_file")):
+                reasons.append("tracker_file_missing")
+
+            date_time_value = row.get("date_time")
+            date_time_str = ""
+            date_time_display = ""
+            if hasattr(date_time_value, "strftime"):
+                date_time_str = date_time_value.strftime("%Y-%m-%d %H:%M:%S")
+                date_time_display = date_time_value.strftime("%m-%d-%Y %I:%M:%S %p")
+
+            payload = {
+                "tracker_id": row.get("tracker_id"),
+                "user_id": row.get("user_id"),
+                "user_name": row.get("user_name") or "-",
+                "date_time": date_time_str,
+                "date_time_display": date_time_display or date_time_str,
+                "production": row.get("production"),
+                "actual_target": row.get("actual_target"),
+                "tenure_target": row.get("tenure_target"),
+                "shift": row.get("shift"),
+                "tracker_file": row.get("tracker_file"),
+                "is_active": row.get("is_active"),
+                "reasons": reasons,
+            }
+
+            if reasons:
+                invalid_trackers.append(payload)
+            else:
+                valid_trackers.append(payload)
+
+        return api_response(
+            200,
+            "EOD trackers fetched successfully",
+            {
+                "total_all": len(trackers),
+                "total_valid": len(valid_trackers),
+                "total_invalid": len(invalid_trackers),
+                "valid_trackers": valid_trackers,
+                "invalid_trackers": invalid_trackers,
+            },
+        )
+
+    except Exception as e:
+        return api_response(500, f"Failed to fetch EOD trackers: {str(e)}")
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @tracker_bp.route("/eod-report/generate", methods=["POST"])
 def generate_eod_report():
     """
@@ -1326,7 +1453,6 @@ def generate_eod_report():
         if not can_access_task_eod_report(role_context):
             return api_response(403, "Only Assistant Manager, Project Manager, and Admin can access Task EOD Report")
 
-        # Fetch task details to get important_columns
         cursor.execute(
             "SELECT task_id, task_name, important_columns, task_target FROM task WHERE task_id = %s",
             (task_id,)
@@ -1336,11 +1462,12 @@ def generate_eod_report():
         if not task:
             return api_response(404, "Task not found")
         
-        # Parse important_columns from JSON
         import json
+        import io
+        import pandas as pd
+        import requests
         important_columns = json.loads(task.get('important_columns') or '[]')
         
-        # Fetch all valid tracker entries for this task-project-date
         query = """
             SELECT 
                 twt.tracker_id,
@@ -1388,11 +1515,89 @@ def generate_eod_report():
 
         valid_trackers = trackers
 
-        # Download and merge all tracker files
-        import pandas as pd
-        import requests
-        import io
-        
+        def is_blank(value):
+            return value is None or str(value).strip() == ""
+
+        cursor.execute(
+            """
+            SELECT
+                twt.tracker_id,
+                twt.project_id,
+                twt.task_id,
+                twt.user_id,
+                usr.user_name,
+                twt.date_time,
+                twt.production,
+                twt.actual_target,
+                twt.tenure_target,
+                twt.shift,
+                twt.tracker_file,
+                twt.is_active
+            FROM task_work_tracker twt
+            JOIN tfs_user usr ON twt.user_id = usr.user_id
+            WHERE twt.task_id = %s
+              AND twt.project_id = %s
+              AND DATE(twt.date_time) = %s
+              AND twt.tracker_file IS NOT NULL
+              AND twt.tracker_file != ''
+            ORDER BY twt.date_time DESC
+            """,
+            (task_id, project_id, selected_date),
+        )
+        trackers_with_file = cursor.fetchall() or []
+
+        tracker_list_rows = []
+        for tracker in trackers_with_file:
+            reasons = []
+            if int(tracker.get("is_active") or 0) != 1:
+                reasons.append("inactive")
+
+            production = tracker.get("production")
+            try:
+                production_value = float(production) if production is not None else None
+            except Exception:
+                production_value = None
+
+            if production_value is None:
+                reasons.append("production_missing")
+            elif production_value <= 0:
+                reasons.append("production_zero")
+
+            if is_blank(tracker.get("actual_target")):
+                reasons.append("actual_target_missing")
+
+            tenure_target = tracker.get("tenure_target")
+            if is_blank(tenure_target):
+                reasons.append("tenure_target_missing")
+            elif str(tenure_target).strip() == "0":
+                reasons.append("tenure_target_zero")
+
+            date_time_value = tracker.get("date_time")
+            date_time_str = ""
+            date_time_display = ""
+            if hasattr(date_time_value, "strftime"):
+                date_time_str = date_time_value.strftime("%Y-%m-%d %H:%M:%S")
+                date_time_display = date_time_value.strftime("%m-%d-%Y %I:%M:%S %p")
+
+            tracker_list_rows.append(
+                {
+                    "tracker_id": tracker.get("tracker_id"),
+                    "project_id": tracker.get("project_id"),
+                    "task_id": tracker.get("task_id"),
+                    "user_id": tracker.get("user_id"),
+                    "user_name": tracker.get("user_name") or "-",
+                    "date_time": date_time_str,
+                    "date_time_display": date_time_display or date_time_str,
+                    "production": tracker.get("production"),
+                    "actual_target": tracker.get("actual_target"),
+                    "tenure_target": tracker.get("tenure_target"),
+                    "shift": tracker.get("shift"),
+                    "tracker_file": tracker.get("tracker_file"),
+                    "status": "rejected" if reasons else "accepted",
+                    "reason": ", ".join(reasons),
+                }
+            )
+
         all_dataframes = []
         
         for tracker in valid_trackers:
@@ -1467,10 +1672,31 @@ def generate_eod_report():
             date_format = '%m-%d-%Y %I:%M:%S %p' if include_time else '%m-%d-%Y'
             merged_df[column] = parsed_series.dt.strftime(date_format).where(parsed_series.notna(), series)
         
-        # Create Excel file
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             merged_df.to_excel(writer, index=False, sheet_name='Consolidated Report')
+            trackers_df = pd.DataFrame(tracker_list_rows)
+            if not trackers_df.empty:
+                ordered_columns = [
+                    "tracker_id",
+                    "project_id",
+                    "task_id",
+                    "user_id",
+                    "user_name",
+                    "date_time_display",
+                    "date_time",
+                    "production",
+                    "actual_target",
+                    "tenure_target",
+                    "shift",
+                    "status",
+                    "reason",
+                    "tracker_file",
+                ]
+                existing_columns = [col for col in ordered_columns if col in trackers_df.columns]
+                remaining_columns = [col for col in trackers_df.columns if col not in existing_columns]
+                trackers_df = trackers_df[existing_columns + remaining_columns]
+            trackers_df.to_excel(writer, index=False, sheet_name='Tracker List')
         
         output.seek(0)
 
