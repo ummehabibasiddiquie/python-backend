@@ -442,14 +442,12 @@ def delete_tracker():
 @tracker_bp.route("/view", methods=["POST"])
 def view_trackers():
     print("====== INSIDE /tracker/view ======")
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     try:
-        params = []
-
         logged_in_user_id = data.get("logged_in_user_id")
         if not logged_in_user_id:
             return api_response(400, "logged_in_user_id is required")
@@ -457,10 +455,139 @@ def view_trackers():
         ctx = get_role_context(cursor, int(logged_in_user_id))
         role_name = ctx["user_role_name"]
 
-        # -----------------------------
-        # Main Tracker Query
-        # -----------------------------
-        query = """
+        pagination_requested = (
+            bool(data.get("paginate"))
+            or data.get("page") is not None
+            or data.get("page_size") is not None
+            or data.get("limit") is not None
+        )
+
+        current_page = 1
+        page_size = 20
+
+        if pagination_requested:
+            try:
+                current_page = int(data.get("page", 1))
+                page_size = int(data.get("page_size", data.get("limit", 20)))
+            except (TypeError, ValueError):
+                return api_response(400, "page and page_size must be valid integers")
+
+            if current_page < 1 or page_size < 1:
+                return api_response(400, "page and page_size must be greater than 0")
+
+            page_size = min(page_size, 500)
+
+        params = []
+        from_clause = """
+        FROM task_work_tracker twt
+        LEFT JOIN tfs_user u ON u.user_id = twt.user_id
+        LEFT JOIN project p ON p.project_id = twt.project_id
+        LEFT JOIN task tk ON tk.task_id = twt.task_id
+        LEFT JOIN project_category pc ON pc.project_category_id = p.project_category_id
+        LEFT JOIN team t ON u.team_id = t.team_id
+        """
+        where_clauses = ["twt.is_active != 0"]
+
+        if data.get("team_id"):
+            where_clauses.append("u.team_id=%s")
+            params.append(data["team_id"])
+        if data.get("user_id"):
+            user_ids_filter = data["user_id"]
+
+            if not isinstance(user_ids_filter, list):
+                user_ids_filter = [user_ids_filter]
+
+            placeholders = ",".join(["%s"] * len(user_ids_filter))
+            where_clauses.append(f"twt.user_id IN ({placeholders})")
+            params.extend(user_ids_filter)
+        elif role_name not in ("admin", "super admin", "project manager"):
+            manager_id_str = str(logged_in_user_id)
+            manager_id_int = int(logged_in_user_id)
+            where_clauses.append(
+                """
+                twt.user_id IN (
+                    SELECT tu.user_id
+                    FROM tfs_user tu
+                    WHERE tu.is_delete = 1
+                    AND (
+                        tu.project_manager_id = %s 
+                        OR tu.project_manager_id = %s
+                        OR tu.asst_manager_id = %s 
+                        OR tu.asst_manager_id = %s
+                        OR tu.qa_id = %s 
+                        OR tu.qa_id = %s
+                        OR tu.user_id = %s
+                        OR (JSON_VALID(tu.project_manager_id) AND JSON_CONTAINS(tu.project_manager_id, JSON_ARRAY(%s)))
+                        OR (JSON_VALID(tu.project_manager_id) AND JSON_CONTAINS(tu.project_manager_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
+                        OR (JSON_VALID(tu.asst_manager_id) AND JSON_CONTAINS(tu.asst_manager_id, JSON_ARRAY(%s)))
+                        OR (JSON_VALID(tu.asst_manager_id) AND JSON_CONTAINS(tu.asst_manager_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
+                        OR (JSON_VALID(tu.qa_id) AND JSON_CONTAINS(tu.qa_id, JSON_ARRAY(%s)))
+                        OR (JSON_VALID(tu.qa_id) AND JSON_CONTAINS(tu.qa_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
+                    )
+                )
+                """
+            )
+            params.extend([
+                manager_id_str, manager_id_int,
+                manager_id_str, manager_id_int,
+                manager_id_str, manager_id_int,
+                manager_id_int,
+                manager_id_str, manager_id_str,
+                manager_id_str, manager_id_str,
+                manager_id_str, manager_id_str
+            ])
+        if data.get("project_id"):
+            where_clauses.append("twt.project_id=%s")
+            params.append(data["project_id"])
+        if data.get("task_id"):
+            where_clauses.append("twt.task_id=%s")
+            params.append(data["task_id"])
+        if data.get("shift"):
+            where_clauses.append("twt.shift=%s")
+            params.append(data["shift"].upper())
+        if data.get("date_from"):
+            df = data["date_from"]
+            if len(df) == 10:
+                df += " 00:00:00"
+            where_clauses.append("CAST(twt.date_time AS DATETIME) >= %s")
+            params.append(df)
+        if data.get("date_to"):
+            dt_ = data["date_to"]
+            if len(dt_) == 10:
+                dt_ += " 23:59:59"
+            where_clauses.append("CAST(twt.date_time AS DATETIME) <= %s")
+            params.append(dt_)
+        if data.get("is_active") is not None:
+            where_clauses.append("twt.is_active=%s")
+            params.append(data["is_active"])
+        if data.get("qc_pending") is not None:
+            where_clauses.append("twt.qc_status = %s")
+            params.append(data["qc_pending"])
+            where_clauses.append("twt.tracker_file IS NOT NULL")
+            where_clauses.append("twt.tracker_file != ''")
+
+        where_sql = " WHERE " + " AND ".join(where_clauses)
+        filtered_query_suffix = f"{from_clause}{where_sql}"
+
+        count_query = f"""
+            SELECT COUNT(*) AS total_records
+            {filtered_query_suffix}
+        """
+        cursor.execute(count_query, tuple(params))
+        total_records = int((cursor.fetchone() or {}).get("total_records") or 0)
+
+        total_pages = 1
+        data_params = list(params)
+        pagination_sql = ""
+
+        if pagination_requested:
+            total_pages = max((total_records + page_size - 1) // page_size, 1)
+            current_page = min(current_page, total_pages)
+            offset = (current_page - 1) * page_size
+            pagination_sql = " LIMIT %s OFFSET %s"
+            data_params.extend([page_size, offset])
+
+        query = f"""
         SELECT 
             twt.*, u.user_id, u.user_id AS agent_id, u.user_name, u.user_email, u.user_tenure,
             (SELECT GROUP_CONCAT(DISTINCT am.user_id) 
@@ -481,98 +608,13 @@ def view_trackers():
             p.project_id, p.project_name, p.project_category_id, pc.afd_id,
             tk.task_name, tk.qc_percentage, t.team_name,
             (twt.production / NULLIF(twt.tenure_target, 0)) AS billable_hours
-        FROM task_work_tracker twt
-        LEFT JOIN tfs_user u ON u.user_id = twt.user_id
-        LEFT JOIN project p ON p.project_id = twt.project_id
-        LEFT JOIN task tk ON tk.task_id = twt.task_id
-        LEFT JOIN project_category pc ON pc.project_category_id = p.project_category_id
-        LEFT JOIN team t ON u.team_id = t.team_id
-        WHERE twt.is_active != 0
+            {filtered_query_suffix}
+            ORDER BY CAST(twt.date_time AS DATETIME) DESC
+            {pagination_sql}
         """
-
-        # Dynamic filters
-        if data.get("team_id"):
-            query += " AND u.team_id=%s"
-            params.append(data["team_id"])
-        if data.get("user_id"):
-            user_ids_filter = data["user_id"]
-
-            # if single value convert to list
-            if not isinstance(user_ids_filter, list):
-                user_ids_filter = [user_ids_filter]
-
-            placeholders = ",".join(["%s"] * len(user_ids_filter))
-            query += f" AND twt.user_id IN ({placeholders})"
-
-            params.extend(user_ids_filter)
-        elif role_name not in ("admin", "super admin", "project manager"):
-            manager_id_str = str(logged_in_user_id)
-            manager_id_int = int(logged_in_user_id)
-            query += """
-                AND twt.user_id IN (
-                    SELECT tu.user_id
-                    FROM tfs_user tu
-                    WHERE tu.is_delete = 1
-                    AND (
-                        tu.project_manager_id = %s 
-                        OR tu.project_manager_id = %s
-                        OR tu.asst_manager_id = %s 
-                        OR tu.asst_manager_id = %s
-                        OR tu.qa_id = %s 
-                        OR tu.qa_id = %s
-                        OR tu.user_id = %s
-                        OR (JSON_VALID(tu.project_manager_id) AND JSON_CONTAINS(tu.project_manager_id, JSON_ARRAY(%s)))
-                        OR (JSON_VALID(tu.project_manager_id) AND JSON_CONTAINS(tu.project_manager_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
-                        OR (JSON_VALID(tu.asst_manager_id) AND JSON_CONTAINS(tu.asst_manager_id, JSON_ARRAY(%s)))
-                        OR (JSON_VALID(tu.asst_manager_id) AND JSON_CONTAINS(tu.asst_manager_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
-                        OR (JSON_VALID(tu.qa_id) AND JSON_CONTAINS(tu.qa_id, JSON_ARRAY(%s)))
-                        OR (JSON_VALID(tu.qa_id) AND JSON_CONTAINS(tu.qa_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
-                    )
-                )
-            """
-            params.extend([
-                manager_id_str, manager_id_int,  # project_manager_id
-                manager_id_str, manager_id_int,  # asst_manager_id
-                manager_id_str, manager_id_int,  # qa_id
-                manager_id_int,  # user_id
-                manager_id_str, manager_id_str,  # project_manager_id JSON
-                manager_id_str, manager_id_str,  # asst_manager_id JSON
-                manager_id_str, manager_id_str   # qa_id JSON
-            ])
-        if data.get("project_id"):
-            query += " AND twt.project_id=%s"
-            params.append(data["project_id"])
-        if data.get("task_id"):
-            query += " AND twt.task_id=%s"
-            params.append(data["task_id"])
-        if data.get("shift"):
-            query += " AND twt.shift=%s"
-            params.append(data["shift"].upper())
-        if data.get("date_from"):
-            df = data["date_from"]
-            if len(df) == 10: df += " 00:00:00"
-            query += " AND CAST(twt.date_time AS DATETIME) >= %s"
-            params.append(df)   
-        if data.get("date_to"):
-            dt_ = data["date_to"]
-            if len(dt_) == 10: dt_ += " 23:59:59"
-            query += " AND CAST(twt.date_time AS DATETIME) <= %s"
-            params.append(dt_)
-        if data.get("is_active") is not None:
-            query += " AND twt.is_active=%s"
-            params.append(data["is_active"])
-        if data.get("qc_pending") is not None:
-            query += " AND twt.qc_status = %s"
-            params.append(data["qc_pending"])
-
-            # ensure tracker file exists
-            query += " AND twt.tracker_file IS NOT NULL AND twt.tracker_file != ''"
-
-        query += " ORDER BY CAST(twt.date_time AS DATETIME) DESC"
-        cursor.execute(query, tuple(params))
+        cursor.execute(query, tuple(data_params))
         trackers = cursor.fetchall()
 
-        # Normalize tracker_file
         for t in trackers:
             file_path = t.get("tracker_file")
             t["agent_id"] = t.get("user_id")
@@ -592,59 +634,57 @@ def view_trackers():
             else:
                 t["tracker_file"] = file_path
 
-        # -----------------------------
-        # Totals
-        # -----------------------------
-        # Total assigned hours from temp_qc but only for dates where trackers exist (per day, not per tracker)
+        totals_query = f"""
+            SELECT
+                COALESCE(SUM(COALESCE(twt.tenure_target, 0)), 0) AS total_tenure_target,
+                COALESCE(SUM(COALESCE(twt.production, 0)), 0) AS total_production,
+                COALESCE(SUM(COALESCE(twt.production, 0) / NULLIF(twt.tenure_target, 0)), 0) AS total_billable_hours,
+                COUNT(DISTINCT twt.user_id) AS total_active_agents
+            {filtered_query_suffix}
+        """
+        cursor.execute(totals_query, tuple(params))
+        totals_row = cursor.fetchone() or {}
+
         assigned_query = """
             SELECT COALESCE(SUM(tqc.assigned_hours), 0) AS total_assigned
             FROM (
                 SELECT DISTINCT twt.user_id, DATE(CAST(twt.date_time AS DATETIME)) AS work_date
-                FROM task_work_tracker twt
-                WHERE twt.is_active = 1
-            ) twt_distinct
+        """ + filtered_query_suffix + """
+            ) filtered_days
             INNER JOIN temp_qc tqc
-                ON tqc.user_id = twt_distinct.user_id
-                AND DATE(tqc.date) = twt_distinct.work_date
+                ON tqc.user_id = filtered_days.user_id
+                AND DATE(tqc.date) = filtered_days.work_date
         """
-        assigned_params = []
-
-        if trackers:
-            user_ids = [t["user_id"] for t in trackers if t.get("user_id")]
-            in_ph = ",".join(["%s"]*len(user_ids))
-            assigned_query += f" WHERE twt_distinct.user_id IN ({in_ph})"
-            assigned_params.extend(user_ids)
-
-        if data.get("date_from") and data.get("date_to"):
-            assigned_query += " AND twt_distinct.work_date BETWEEN %s AND %s"
-            assigned_params.extend([data["date_from"], data["date_to"]])
-
-        cursor.execute(assigned_query, tuple(assigned_params))
+        cursor.execute(assigned_query, tuple(params))
         total_assigned_hours = float((cursor.fetchone() or {}).get("total_assigned") or 0)
 
-        
         totals = {
-            "total_tenure_target": round(sum(float(t.get("tenure_target") or 0) for t in trackers), 2),
-            "total_billable_hours": round(sum(float(t.get("billable_hours") or 0) for t in trackers), 2),
-            "total_production": round(sum(float(t.get("production") or 0) for t in trackers), 2),
+            "total_tenure_target": round(float(totals_row.get("total_tenure_target") or 0), 2),
+            "total_billable_hours": round(float(totals_row.get("total_billable_hours") or 0), 2),
+            "total_production": round(float(totals_row.get("total_production") or 0), 2),
             "total_assigned_hours": round(total_assigned_hours, 2),
-            "total_active_agents": len(set(t["user_id"] for t in trackers if t.get("user_id")))
+            "total_active_agents": int(totals_row.get("total_active_agents") or 0)
         }
 
-        # -----------------------------
-        # Log API call
-        # -----------------------------
         log_api_call("view_trackers", logged_in_user_id, data.get("device_id"), data.get("device_type"), datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-        return api_response(
-            200,
-            "Trackers fetched successfully",
-            {
-                "count": len(trackers),
-                "trackers": trackers,
-                "totals": totals
+        response_data = {
+            "count": len(trackers),
+            "trackers": trackers,
+            "totals": totals
+        }
+
+        if pagination_requested:
+            response_data["pagination"] = {
+                "current_page": current_page,
+                "page_size": page_size,
+                "total_records": total_records,
+                "total_pages": total_pages,
+                "has_previous": current_page > 1,
+                "has_next": current_page < total_pages
             }
-        )
+
+        return api_response(200, "Trackers fetched successfully", response_data)
 
     except Exception as e:
         return api_response(500, f"Failed to fetch trackers: {str(e)}")
@@ -1121,6 +1161,310 @@ def view_daily_trackers():
     except Exception as e:
         return api_response(500, f"Failed to fetch daily trackers: {str(e)}")
 
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ------------------------
+# TASK EOD CONSOLIDATED REPORT
+# ------------------------
+@tracker_bp.route("/eod-report/list", methods=["POST"])
+def get_eod_report_list():
+    """
+    Fetch valid task-wise data for the EOD consolidated report.
+    Only returns tasks that have all required fields filled.
+    """
+    data = request.get_json(silent=True) or {}
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        from datetime import date, datetime
+        today = date.today()
+        default_from_date = today.replace(day=1)
+        default_to_date = today
+        from_date_str = data.get("from_date")
+        to_date_str = data.get("to_date")
+
+        from_date = default_from_date
+        to_date = default_to_date
+
+        if from_date_str:
+            try:
+                from_date = datetime.strptime(from_date_str, "%Y-%m-%d").date()
+            except ValueError:
+                return api_response(400, "from_date must be in YYYY-MM-DD format")
+
+        if to_date_str:
+            try:
+                to_date = datetime.strptime(to_date_str, "%Y-%m-%d").date()
+            except ValueError:
+                return api_response(400, "to_date must be in YYYY-MM-DD format")
+
+        if from_date > to_date:
+            return api_response(400, "from_date cannot be greater than to_date")
+
+        # Query to get valid tracker entries with all required fields
+        # Validation: production, actual_target, tenure_target, tracker_file must NOT be NULL
+        # Also exclude tasks that do not have important_columns configured.
+        # Note: billable_hours is calculated as production/tenure_target, so we check the base fields
+        query = """
+            SELECT 
+                twt.tracker_id,
+                twt.project_id,
+                twt.task_id,
+                twt.user_id,
+                DATE(twt.date_time) as work_date,
+                twt.production,
+                twt.actual_target,
+                twt.tenure_target,
+                twt.tracker_file,
+                p.project_name,
+                p.project_code,
+                t.task_name,
+                twt.date_time
+            FROM task_work_tracker twt
+            JOIN project p ON twt.project_id = p.project_id
+            JOIN task t ON twt.task_id = t.task_id
+            WHERE DATE(twt.date_time) BETWEEN %s AND %s
+                AND twt.is_active = 1
+                AND twt.production IS NOT NULL
+                AND twt.production > 0
+                AND twt.actual_target IS NOT NULL
+                AND twt.actual_target != ''
+                AND twt.tenure_target IS NOT NULL
+                AND twt.tenure_target != ''
+                AND twt.tenure_target != '0'
+                AND twt.tracker_file IS NOT NULL
+                AND twt.tracker_file != ''
+                AND t.important_columns IS NOT NULL
+                AND TRIM(t.important_columns) != ''
+                AND JSON_VALID(t.important_columns)
+                AND JSON_LENGTH(t.important_columns) > 0
+            ORDER BY twt.date_time DESC
+        """
+        
+        cursor.execute(query, (from_date, to_date))
+        all_trackers = cursor.fetchall()
+
+        # Build unique task list for UI display (group by task_id, project_id, work_date)
+        task_list = []
+        seen_tasks = set()
+        
+        for tracker in all_trackers:
+            task_key = (tracker['task_id'], tracker['project_id'], str(tracker['work_date']))
+            if task_key not in seen_tasks:
+                seen_tasks.add(task_key)
+                task_list.append({
+                    "report_date": str(tracker['work_date']),
+                    "date": tracker['work_date'].strftime('%d-%b-%Y') if hasattr(tracker['work_date'], 'strftime') else str(tracker['work_date']),
+                    "project_id": tracker['project_id'],
+                    "project_name": tracker['project_name'],
+                    "project_code": tracker['project_code'],
+                    "task_id": tracker['task_id'],
+                    "task_name": tracker['task_name'],
+                    "tracker_count": len([t for t in all_trackers if t['task_id'] == tracker['task_id'] and t['project_id'] == tracker['project_id'] and str(t['work_date']) == str(tracker['work_date'])])
+                })
+        
+        # Sort by latest date first, then project, then task
+        task_list.sort(key=lambda x: (x['report_date'], x['project_name'], x['task_name']), reverse=True)
+        
+        return api_response(200, "EOD report list fetched successfully", {
+            "from_date": str(from_date),
+            "to_date": str(to_date),
+            "total_tasks": len(task_list),
+            "tasks": task_list
+        })
+        
+    except Exception as e:
+        return api_response(500, f"Failed to fetch EOD report list: {str(e)}")
+    
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@tracker_bp.route("/eod-report/generate", methods=["POST"])
+def generate_eod_report():
+    """
+    Generate consolidated EOD report for a specific task on a specific date.
+    Downloads all tracker files, merges them, deduplicates based on important_columns, and returns Excel file.
+    """
+    data = request.get_json(silent=True) or {}
+    task_id = data.get("task_id")
+    project_id = data.get("project_id")
+    selected_date = data.get("date")
+    
+    if not task_id or not project_id or not selected_date:
+        return api_response(400, "task_id, project_id, and date are required")
+    
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        # Fetch task details to get important_columns
+        cursor.execute(
+            "SELECT task_id, task_name, important_columns, task_target FROM task WHERE task_id = %s",
+            (task_id,)
+        )
+        task = cursor.fetchone()
+        
+        if not task:
+            return api_response(404, "Task not found")
+        
+        # Parse important_columns from JSON
+        import json
+        important_columns = json.loads(task.get('important_columns') or '[]')
+        
+        # Fetch all valid tracker entries for this task-project-date
+        query = """
+            SELECT 
+                twt.tracker_id,
+                twt.project_id,
+                twt.task_id,
+                twt.user_id,
+                DATE(twt.date_time) as work_date,
+                twt.production,
+                twt.actual_target,
+                twt.tenure_target,
+                twt.tracker_file,
+                twt.tracker_note,
+                twt.shift,
+                p.project_name,
+                p.project_code,
+                t.task_name,
+                t.task_target,
+                usr.user_name,
+                twt.date_time
+            FROM task_work_tracker twt
+            JOIN project p ON twt.project_id = p.project_id
+            JOIN task t ON twt.task_id = t.task_id
+            JOIN tfs_user usr ON twt.user_id = usr.user_id
+            WHERE twt.task_id = %s
+                AND twt.project_id = %s
+                AND DATE(twt.date_time) = %s
+                AND twt.is_active = 1
+                AND twt.production IS NOT NULL
+                AND twt.production > 0
+                AND twt.actual_target IS NOT NULL
+                AND twt.actual_target != ''
+                AND twt.tenure_target IS NOT NULL
+                AND twt.tenure_target != ''
+                AND twt.tenure_target != '0'
+                AND twt.tracker_file IS NOT NULL
+                AND twt.tracker_file != ''
+            ORDER BY twt.date_time DESC
+        """
+        
+        cursor.execute(query, (task_id, project_id, selected_date))
+        trackers = cursor.fetchall()
+        
+        if not trackers:
+            return api_response(404, "No valid tracker entries found for this task on the specified date")
+
+        valid_trackers = trackers
+
+        # Download and merge all tracker files
+        import pandas as pd
+        import requests
+        import io
+        
+        all_dataframes = []
+        
+        for tracker in valid_trackers:
+            file_url = tracker['tracker_file']
+            if not file_url:
+                continue
+            
+            try:
+                # Download file from URL
+                response = requests.get(file_url, timeout=30)
+                response.raise_for_status()
+                
+                # Read file based on content type or extension
+                file_ext = file_url.split('.')[-1].lower() if '.' in file_url else ''
+                
+                if file_ext == 'csv':
+                    df = pd.read_csv(io.BytesIO(response.content))
+                elif file_ext in ['xlsx', 'xls']:
+                    df = pd.read_excel(io.BytesIO(response.content))
+                else:
+                    # Try to detect format
+                    try:
+                        df = pd.read_excel(io.BytesIO(response.content))
+                    except:
+                        df = pd.read_csv(io.BytesIO(response.content))
+                
+                # Add metadata columns
+                df['user_id'] = tracker['user_id']
+                df['user_name'] = tracker['user_name']
+                df['work_date'] = tracker['work_date']
+                
+                all_dataframes.append(df)
+                
+            except Exception as e:
+                print(f"Error processing file {file_url}: {str(e)}")
+                continue
+        
+        if not all_dataframes:
+            return api_response(500, "No valid files could be processed")
+        
+        # Merge all dataframes
+        merged_df = pd.concat(all_dataframes, ignore_index=True)
+        
+        # Deduplicate based on important_columns
+        if important_columns:
+            # Filter to only include columns that exist in the dataframe
+            existing_important_cols = [col for col in important_columns if col in merged_df.columns]
+            
+            if existing_important_cols:
+                # Drop duplicates based on important columns, keeping the first occurrence
+                merged_df = merged_df.drop_duplicates(subset=existing_important_cols, keep='first')
+
+        # Keep date columns readable in the exported workbook.
+        for column in merged_df.columns:
+            series = merged_df[column]
+            column_name = str(column).strip().lower()
+
+            if pd.api.types.is_datetime64_any_dtype(series):
+                merged_df[column] = series.dt.strftime('%m-%d-%Y')
+                continue
+
+            if 'date' not in column_name:
+                continue
+
+            parsed_series = pd.to_datetime(series, errors='coerce')
+            if parsed_series.notna().sum() == 0:
+                continue
+
+            merged_df[column] = parsed_series.dt.strftime('%m-%d-%Y').where(parsed_series.notna(), series)
+        
+        # Create Excel file
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            merged_df.to_excel(writer, index=False, sheet_name='Consolidated Report')
+        
+        output.seek(0)
+
+        formatted_selected_date = selected_date
+        try:
+            formatted_selected_date = datetime.strptime(selected_date, "%Y-%m-%d").strftime("%m-%d-%Y")
+        except Exception:
+            pass
+        
+        # Return file as response
+        from flask import send_file
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name=f"EOD_Report_{task['task_name']}_{formatted_selected_date}.xlsx",
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        
+    except Exception as e:
+        return api_response(500, f"Failed to generate EOD report: {str(e)}")
+    
     finally:
         cursor.close()
         conn.close()
