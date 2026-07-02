@@ -59,6 +59,13 @@ def get_role_context(cursor, user_id: int) -> dict:
     }
 
 
+def can_access_task_eod_report(role_context: dict) -> bool:
+    role_id = int(role_context.get("user_role_id") or 0)
+    role_name = (role_context.get("user_role_name") or "").strip().lower()
+
+    return role_id in (2, 3, 4) or role_name in ("admin", "project manager", "assistant manager")
+
+
 def cleaned_csv_col(col_sql: str) -> str:
     return f"REPLACE(REPLACE(REPLACE({col_sql}, '[', ''), ']', ''), ' ', '')"
 
@@ -1180,6 +1187,14 @@ def get_eod_report_list():
     cursor = conn.cursor(dictionary=True)
     
     try:
+        logged_in_user_id = data.get("logged_in_user_id")
+        if not logged_in_user_id:
+            return api_response(400, "logged_in_user_id is required")
+
+        role_context = get_role_context(cursor, int(logged_in_user_id))
+        if not can_access_task_eod_report(role_context):
+            return api_response(403, "Only Assistant Manager, Project Manager, and Admin can access Task EOD Report")
+
         from datetime import date, datetime
         today = date.today()
         default_from_date = today.replace(day=1)
@@ -1292,10 +1307,14 @@ def generate_eod_report():
     Downloads all tracker files, merges them, deduplicates based on important_columns, and returns Excel file.
     """
     data = request.get_json(silent=True) or {}
+    logged_in_user_id = data.get("logged_in_user_id")
     task_id = data.get("task_id")
     project_id = data.get("project_id")
     selected_date = data.get("date")
     
+    if not logged_in_user_id:
+        return api_response(400, "logged_in_user_id is required")
+
     if not task_id or not project_id or not selected_date:
         return api_response(400, "task_id, project_id, and date are required")
     
@@ -1303,6 +1322,10 @@ def generate_eod_report():
     cursor = conn.cursor(dictionary=True)
     
     try:
+        role_context = get_role_context(cursor, int(logged_in_user_id))
+        if not can_access_task_eod_report(role_context):
+            return api_response(403, "Only Assistant Manager, Project Manager, and Admin can access Task EOD Report")
+
         # Fetch task details to get important_columns
         cursor.execute(
             "SELECT task_id, task_name, important_columns, task_target FROM task WHERE task_id = %s",
