@@ -62,8 +62,16 @@ def get_role_context(cursor, user_id: int) -> dict:
 def can_access_task_eod_report(role_context: dict) -> bool:
     role_id = int(role_context.get("user_role_id") or 0)
     role_name = (role_context.get("user_role_name") or "").strip().lower()
+    agent_role_id = int(role_context.get("agent_role_id") or 0)
 
-    return role_id in (2, 3, 4) or role_name in ("admin", "project manager", "assistant manager")
+    # Task EOD report should be accessible to all roles except Agent.
+    # We check both role name and role id (if available) to be safe.
+    if role_name == "agent":
+        return False
+    if agent_role_id and role_id == agent_role_id:
+        return False
+
+    return True
 
 
 def cleaned_csv_col(col_sql: str) -> str:
@@ -1193,7 +1201,7 @@ def get_eod_report_list():
 
         role_context = get_role_context(cursor, int(logged_in_user_id))
         if not can_access_task_eod_report(role_context):
-            return api_response(403, "Only Assistant Manager, Project Manager, and Admin can access Task EOD Report")
+            return api_response(403, "Task EOD Report is not available for Agent role")
 
         from datetime import date, datetime
         today = date.today()
@@ -1321,7 +1329,7 @@ def get_eod_report_trackers():
     try:
         role_context = get_role_context(cursor, int(logged_in_user_id))
         if not can_access_task_eod_report(role_context):
-            return api_response(403, "Only Assistant Manager, Project Manager, and Admin can access Task EOD Report")
+            return api_response(403, "Task EOD Report is not available for Agent role")
 
         cursor.execute(
             """
@@ -1438,7 +1446,7 @@ def generate_eod_report():
     try:
         role_context = get_role_context(cursor, int(logged_in_user_id))
         if not can_access_task_eod_report(role_context):
-            return api_response(403, "Only Assistant Manager, Project Manager, and Admin can access Task EOD Report")
+            return api_response(403, "Task EOD Report is not available for Agent role")
 
         cursor.execute(
             "SELECT task_id, task_name, important_columns, task_target FROM task WHERE task_id = %s",
