@@ -1422,7 +1422,7 @@ def generate_eod_report():
                 # Add metadata columns
                 df['user_id'] = tracker['user_id']
                 df['user_name'] = tracker['user_name']
-                df['work_date'] = tracker['work_date']
+                df['work_date'] = tracker['date_time']
                 
                 all_dataframes.append(df)
                 
@@ -1450,8 +1450,11 @@ def generate_eod_report():
             series = merged_df[column]
             column_name = str(column).strip().lower()
 
+            include_time = column_name == 'work_date'
+
             if pd.api.types.is_datetime64_any_dtype(series):
-                merged_df[column] = series.dt.strftime('%m-%d-%Y')
+                date_format = '%m-%d-%Y %I:%M:%S %p' if include_time else '%m-%d-%Y'
+                merged_df[column] = series.dt.strftime(date_format)
                 continue
 
             if 'date' not in column_name:
@@ -1461,7 +1464,8 @@ def generate_eod_report():
             if parsed_series.notna().sum() == 0:
                 continue
 
-            merged_df[column] = parsed_series.dt.strftime('%m-%d-%Y').where(parsed_series.notna(), series)
+            date_format = '%m-%d-%Y %I:%M:%S %p' if include_time else '%m-%d-%Y'
+            merged_df[column] = parsed_series.dt.strftime(date_format).where(parsed_series.notna(), series)
         
         # Create Excel file
         output = io.BytesIO()
