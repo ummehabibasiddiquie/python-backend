@@ -1244,8 +1244,6 @@ def get_eod_report_list():
             JOIN task t ON twt.task_id = t.task_id
             WHERE DATE(twt.date_time) BETWEEN %s AND %s
                 AND twt.is_active = 1
-                AND twt.production IS NOT NULL
-                AND twt.production > 0
                 AND twt.actual_target IS NOT NULL
                 AND twt.actual_target != ''
                 AND twt.tenure_target IS NOT NULL
@@ -1356,17 +1354,6 @@ def get_eod_report_trackers():
             reasons = []
             if int(row.get("is_active") or 0) != 1:
                 reasons.append("inactive")
-
-            production = row.get("production")
-            try:
-                production_value = float(production) if production is not None else None
-            except Exception:
-                production_value = None
-
-            if production_value is None:
-                reasons.append("production_missing")
-            elif production_value <= 0:
-                reasons.append("production_zero")
 
             if is_blank(row.get("actual_target")):
                 reasons.append("actual_target_missing")
@@ -1495,8 +1482,6 @@ def generate_eod_report():
                 AND twt.project_id = %s
                 AND DATE(twt.date_time) = %s
                 AND twt.is_active = 1
-                AND twt.production IS NOT NULL
-                AND twt.production > 0
                 AND twt.actual_target IS NOT NULL
                 AND twt.actual_target != ''
                 AND twt.tenure_target IS NOT NULL
@@ -1551,17 +1536,6 @@ def generate_eod_report():
             reasons = []
             if int(tracker.get("is_active") or 0) != 1:
                 reasons.append("inactive")
-
-            production = tracker.get("production")
-            try:
-                production_value = float(production) if production is not None else None
-            except Exception:
-                production_value = None
-
-            if production_value is None:
-                reasons.append("production_missing")
-            elif production_value <= 0:
-                reasons.append("production_zero")
 
             if is_blank(tracker.get("actual_target")):
                 reasons.append("actual_target_missing")
