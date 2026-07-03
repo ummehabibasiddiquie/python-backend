@@ -11,6 +11,7 @@ import os
 tracker_bp = Blueprint("tracker", __name__)
 logger = logging.getLogger(__name__)
 TRACKER_UPLOAD_FAILURE_MESSAGE = "File upload failed. Your tracker has not been submitted. Please upload the file again and retry."
+TRACKER_UPDATE_UPLOAD_FAILURE_MESSAGE = "File upload failed. Your tracker has not been updated. Please upload the file again and retry."
 
 
 # ------------------------
@@ -370,9 +371,17 @@ def update_tracker():
             )
 
             # ✅ Upload new file to Cloudinary first
-            cloudinary_url, _ = upload_to_cloudinary(
-                uploaded, FOLDER_TRACKER, display_name=custom_filename, resource_type="raw"
-            )
+            try:
+                cloudinary_url, _ = upload_to_cloudinary(
+                    uploaded, FOLDER_TRACKER, display_name=custom_filename, resource_type="raw"
+                )
+            except ValueError as e:
+                log_tracker_upload_failure(tracker.get("user_id"), form, uploaded, e)
+                return api_response(400, TRACKER_UPDATE_UPLOAD_FAILURE_MESSAGE)
+            except Exception as e:
+                log_tracker_upload_failure(tracker.get("user_id"), form, uploaded, e)
+                return api_response(500, TRACKER_UPDATE_UPLOAD_FAILURE_MESSAGE)
+
             new_file_saved = cloudinary_url
 
             # ✅ Delete old Cloudinary file (only if it differs)
