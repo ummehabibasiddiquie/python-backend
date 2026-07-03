@@ -76,8 +76,22 @@ def upload_to_cloudinary(source, folder: str, display_name: str = None, resource
         unique_filename=False,
         overwrite=True,
     )
-    print(f"✅ Cloudinary upload OK: {result['public_id']}")
-    return result["secure_url"], result["public_id"]
+    if not isinstance(result, dict) or not result:
+        raise ValueError("Cloudinary upload returned an empty response")
+
+    secure_url = result.get("secure_url")
+    public_id = result.get("public_id")
+    status = str(result.get("status") or "").strip().lower()
+
+    if status and status not in {"success", "ok"}:
+        raise ValueError(f"Cloudinary upload did not complete successfully (status: {result.get('status')})")
+    if not secure_url:
+        raise ValueError("Cloudinary upload response missing secure_url")
+    if not public_id:
+        raise ValueError("Cloudinary upload response missing public_id")
+
+    print(f"✅ Cloudinary upload OK: {public_id}")
+    return secure_url, public_id
 
 
 def delete_from_cloudinary(url_or_public_id: str, resource_type: str = "raw") -> bool:

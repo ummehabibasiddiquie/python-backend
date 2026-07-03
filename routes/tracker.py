@@ -4,10 +4,13 @@ from utils.response import api_response
 from utils.api_log_utils import log_api_call
 from utils.cloudinary_utils import upload_to_cloudinary, delete_from_cloudinary, FOLDER_TRACKER
 from datetime import datetime, timedelta
+import logging
 import re
 import os
 
 tracker_bp = Blueprint("tracker", __name__)
+logger = logging.getLogger(__name__)
+TRACKER_UPLOAD_FAILURE_MESSAGE = "File upload failed. Your tracker has not been submitted. Please upload the file again and retry."
 
 
 # ------------------------
@@ -87,7 +90,13 @@ def _clean_part(value: str) -> str:
     return value or "NA"
 
 
-def build_tracker_filename(project_code: str, task_name: str, user_name: str, original_filename: str) -> str:
+def build_tracker_filename(
+    project_code: str,
+    task_name: str,
+    user_name: str,
+    original_filename: str,
+    date_source_dt=None,
+) -> str:
     """
     Keep your exact format:
     projectcode_taskname_username_date_time
@@ -98,14 +107,38 @@ def build_tracker_filename(project_code: str, task_name: str, user_name: str, or
 
     ext = original_filename.rsplit(".", 1)[1].lower().strip()
     now = datetime.now()
-    date_part = now.strftime("%d-%b-%Y")   # 05-Feb-2026
-    time_part = now.strftime("%I%p")       # 10AM (kept exactly)
+    # Keep existing naming format unchanged.
+    # During updates, allow the tracker datetime to drive the date/time parts
+    # while keeping the same formatting.
+    source_dt = date_source_dt or now
+    date_part = source_dt.strftime("%d-%b-%Y")   # 05-Feb-2026
+    time_part = source_dt.strftime("%I%p")       # 10AM (kept exactly)
     return (
         f"{_clean_part(project_code)}_"
         f"{_clean_part(task_name)}_"
         f"{_clean_part(user_name)}_"
         f"{date_part}_{time_part}.{ext}"
     )
+
+
+def _parse_tracker_date_source(date_time_value):
+    """
+    Best-effort parser to extract the tracker date to be used in file naming during updates.
+    This intentionally affects ONLY the date portion of the filename (format unchanged).
+    """
+    if isinstance(date_time_value, datetime):
+        return date_time_value
+
+    s = str(date_time_value or "").strip()
+    if not s:
+        return None
+
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except Exception:
+            continue
+    return None
 
 
 def safe_delete_cloudinary_tracker(url_or_public_id: str) -> None:
@@ -120,6 +153,20 @@ def safe_delete_cloudinary_tracker(url_or_public_id: str) -> None:
     except Exception as e:
         print(f"Cloudinary tracker delete failed: {e} | ref={url_or_public_id}")
 
+
+def log_tracker_upload_failure(user_id, form, uploaded, error) -> None:
+    logger.exception(
+        "Tracker file upload failed | user_id=%s project_id=%s task_id=%s shift=%s production=%s file_name=%s timestamp=%s error=%s",
+        user_id,
+        form.get("project_id"),
+        form.get("task_id"),
+        form.get("shift"),
+        form.get("production"),
+        getattr(uploaded, "filename", None),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        str(error),
+    )
+
 # ------------------------
 # ADD TRACKER  (multipart + custom filename)
 # ------------------------
@@ -127,6 +174,7 @@ def safe_delete_cloudinary_tracker(url_or_public_id: str) -> None:
 def add_tracker():
     now_str = None
     form = request.form
+    new_file_saved = None
 
     required_fields = ["project_id", "task_id", "user_id", "production", "tenure_target"]
     for f in required_fields:
@@ -183,10 +231,13 @@ def add_tracker():
                 )
                 print(f"Cloudinary upload successful: {cloudinary_url}")
                 tracker_file = cloudinary_url
+                new_file_saved = cloudinary_url
             except ValueError as e:
-                return api_response(400, str(e))
+                log_tracker_upload_failure(user_id, form, uploaded, e)
+                return api_response(400, TRACKER_UPLOAD_FAILURE_MESSAGE)
             except Exception as e:
-                return api_response(500, f"File upload failed: {str(e)}")
+                log_tracker_upload_failure(user_id, form, uploaded, e)
+                return api_response(500, TRACKER_UPLOAD_FAILURE_MESSAGE)
 
         # now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if now_str is None:
@@ -226,6 +277,8 @@ def add_tracker():
 
     except Exception as e:
         conn.rollback()
+        if new_file_saved:
+            safe_delete_cloudinary_tracker(new_file_saved)
         return api_response(500, f"Failed to add tracker: {str(e)}")
 
     finally:
@@ -305,7 +358,16 @@ def update_tracker():
 
             user_name = user_row.get("user_name") or "USER"
 
-            custom_filename = build_tracker_filename(project_code, task_name, user_name, uploaded.filename)
+            # Use the tracker's stored date (date_time) for the DATE part of the filename.
+            # Keep the filename format and upload flow unchanged.
+            date_source_dt = _parse_tracker_date_source(date_time)
+            custom_filename = build_tracker_filename(
+                project_code,
+                task_name,
+                user_name,
+                uploaded.filename,
+                date_source_dt=date_source_dt,
+            )
 
             # ✅ Upload new file to Cloudinary first
             cloudinary_url, _ = upload_to_cloudinary(
@@ -1201,7 +1263,7 @@ def get_eod_report_list():
 
         role_context = get_role_context(cursor, int(logged_in_user_id))
         if not can_access_task_eod_report(role_context):
-            return api_response(403, "Task EOD Report is not available for Agent role")
+            return api_response(403, "Only Assistant Manager, Project Manager, and Admin can access Task EOD Report")
 
         from datetime import date, datetime
         today = date.today()
@@ -1329,7 +1391,7 @@ def get_eod_report_trackers():
     try:
         role_context = get_role_context(cursor, int(logged_in_user_id))
         if not can_access_task_eod_report(role_context):
-            return api_response(403, "Task EOD Report is not available for Agent role")
+            return api_response(403, "Only Assistant Manager, Project Manager, and Admin can access Task EOD Report")
 
         cursor.execute(
             """
@@ -1446,7 +1508,7 @@ def generate_eod_report():
     try:
         role_context = get_role_context(cursor, int(logged_in_user_id))
         if not can_access_task_eod_report(role_context):
-            return api_response(403, "Task EOD Report is not available for Agent role")
+            return api_response(403, "Only Assistant Manager, Project Manager, and Admin can access Task EOD Report")
 
         cursor.execute(
             "SELECT task_id, task_name, important_columns, task_target FROM task WHERE task_id = %s",
