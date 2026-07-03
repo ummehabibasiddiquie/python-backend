@@ -82,10 +82,42 @@ def cleaned_csv_col(col_sql: str) -> str:
     return f"REPLACE(REPLACE(REPLACE({col_sql}, '[', ''), ']', ''), ' ', '')"
 
 
+def check_cloudinary_file_status(url: str):
+    """
+    Lightweight Cloudinary reachability check for existing stored URLs.
+
+    Returns:
+      - None if reachable/ok (HTTP < 400)
+      - "file_not_found" if HTTP 404
+      - "file_unreachable" for other HTTP >= 400 or network errors
+    """
+    if not url or "res.cloudinary.com" not in str(url):
+        return None
+
+    import time
+    import requests
+
+    last_err = None
+    for attempt in range(1, 3):  # small retry for transient issues
+        try:
+            resp = requests.head(str(url), timeout=8, allow_redirects=True)
+            if resp.status_code == 404:
+                return "file_not_found"
+            if resp.status_code >= 400:
+                return "file_unreachable"
+            return None
+        except Exception as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(1)
+
+    return "file_unreachable" if last_err else None
+
+
+
 # ---------- NEW: filename helpers (tracker-specific, NOT in file_utils)
 
 def _clean_part(value: str) -> str:
-    value = (value or "").strip()
     value = re.sub(r"\s+", "_", value)
     value = re.sub(r"[^A-Za-z0-9_]", "", value)
     return value or "NA"
@@ -1445,6 +1477,10 @@ def get_eod_report_trackers():
 
             if is_blank(row.get("tracker_file")):
                 reasons.append("tracker_file_missing")
+            else:
+                file_reason = check_cloudinary_file_status(row.get("tracker_file"))
+                if file_reason:
+                    reasons.append(file_reason)
 
             date_time_value = row.get("date_time")
             date_time_str = ""
@@ -1625,6 +1661,14 @@ def generate_eod_report():
             elif str(tenure_target).strip() == "0":
                 reasons.append("tenure_target_zero")
 
+            tracker_file = tracker.get("tracker_file")
+            if is_blank(tracker_file):
+                reasons.append("tracker_file_missing")
+            else:
+                file_reason = check_cloudinary_file_status(tracker_file)
+                if file_reason:
+                    reasons.append(file_reason)
+
             date_time_value = tracker.get("date_time")
             date_time_str = ""
             date_time_display = ""
@@ -1652,30 +1696,60 @@ def generate_eod_report():
             )
 
         all_dataframes = []
+        failed_files = []
+
+        import time
+
+        def _download_with_retry(url: str, attempts: int = 3, timeout: int = 30) -> bytes:
+            last_err = None
+            for attempt in range(1, attempts + 1):
+                try:
+                    resp = requests.get(url, timeout=timeout)
+                    resp.raise_for_status()
+                    return resp.content
+                except Exception as e:
+                    last_err = e
+                    if attempt < attempts:
+                        # brief backoff for transient Cloudinary/network issues
+                        time.sleep(2 * attempt)
+            raise last_err
         
         for tracker in valid_trackers:
             file_url = tracker['tracker_file']
             if not file_url:
                 continue
+
+            # If the stored Cloudinary URL is missing/unreachable, fail early with a clear reason
+            file_reason = check_cloudinary_file_status(file_url)
+            if file_reason:
+                failed_files.append(
+                    {
+                        "tracker_id": tracker.get("tracker_id"),
+                        "user_id": tracker.get("user_id"),
+                        "user_name": tracker.get("user_name"),
+                        "file_url": file_url,
+                        "error": file_reason,
+                    }
+                )
+                continue
             
             try:
-                # Download file from URL
-                response = requests.get(file_url, timeout=30)
-                response.raise_for_status()
+                # Download file from URL (retry to reduce transient failures)
+                file_bytes = _download_with_retry(file_url, attempts=3, timeout=30)
                 
                 # Read file based on content type or extension
                 file_ext = file_url.split('.')[-1].lower() if '.' in file_url else ''
                 
                 if file_ext == 'csv':
-                    df = pd.read_csv(io.BytesIO(response.content))
+                    df = pd.read_csv(io.BytesIO(file_bytes))
                 elif file_ext in ['xlsx', 'xls']:
-                    df = pd.read_excel(io.BytesIO(response.content))
+                    df = pd.read_excel(io.BytesIO(file_bytes))
                 else:
                     # Try to detect format
                     try:
-                        df = pd.read_excel(io.BytesIO(response.content))
+                        df = pd.read_excel(io.BytesIO(file_bytes))
                     except:
-                        df = pd.read_csv(io.BytesIO(response.content))
+                        df = pd.read_csv(io.BytesIO(file_bytes))
                 
                 # Add metadata columns
                 df['user_id'] = tracker['user_id']
@@ -1685,8 +1759,30 @@ def generate_eod_report():
                 all_dataframes.append(df)
                 
             except Exception as e:
-                print(f"Error processing file {file_url}: {str(e)}")
-                continue
+                logger.exception(
+                    "EOD report file download/process failed | tracker_id=%s user_id=%s file_url=%s error=%s",
+                    tracker.get("tracker_id"),
+                    tracker.get("user_id"),
+                    file_url,
+                    str(e),
+                )
+                failed_files.append(
+                    {
+                        "tracker_id": tracker.get("tracker_id"),
+                        "user_id": tracker.get("user_id"),
+                        "user_name": tracker.get("user_name"),
+                        "file_url": file_url,
+                        "error": str(e),
+                    }
+                )
+
+        # IMPORTANT: do not generate partial reports; either all files are processed or we fail.
+        if failed_files:
+            return api_response(
+                400,
+                "Some tracker files were not found/reachable on Cloudinary. Report not generated. Please re-upload and retry.",
+                {"failed_files": failed_files},
+            )
         
         if not all_dataframes:
             return api_response(500, "No valid files could be processed")
