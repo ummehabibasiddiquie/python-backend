@@ -1,5 +1,6 @@
 import os
 import uuid
+import requests
 import cloudinary
 import cloudinary.uploader
 import cloudinary.api
@@ -89,6 +90,24 @@ def upload_to_cloudinary(source, folder: str, display_name: str = None, resource
         raise ValueError("Cloudinary upload response missing secure_url")
     if not public_id:
         raise ValueError("Cloudinary upload response missing public_id")
+
+    # Extra verification: ensure the uploaded asset is actually reachable before we let callers
+    # persist the URL into DB (prevents saving trackers with a Cloudinary URL that later 404s).
+    try:
+        head_res = requests.head(secure_url, timeout=10, allow_redirects=True)
+        if head_res.status_code >= 400:
+            raise ValueError(f"Cloudinary upload verification failed (HTTP {head_res.status_code})")
+    except Exception:
+        # Some environments may block/handle HEAD differently; fallback to a lightweight GET.
+        try:
+            get_res = requests.get(secure_url, timeout=10, stream=True, allow_redirects=True)
+            if get_res.status_code >= 400:
+                raise ValueError(f"Cloudinary upload verification failed (HTTP {get_res.status_code})")
+        finally:
+            try:
+                get_res.close()
+            except Exception:
+                pass
 
     print(f"✅ Cloudinary upload OK: {public_id}")
     return secure_url, public_id
