@@ -416,10 +416,9 @@ def update_tracker():
 
             new_file_saved = cloudinary_url
 
-            # ✅ Delete old Cloudinary file (only if it differs)
-            if old_file and old_file != cloudinary_url:
-                safe_delete_cloudinary_tracker(old_file)
-
+            # ✅ Don't delete old file immediately - let Cloudinary handle overwrites
+            # This prevents 404 errors due to timing issues between upload and delete
+            # Cloudinary will automatically manage versions when overwrite=True is used
             tracker_file = cloudinary_url
 
         # updated_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
