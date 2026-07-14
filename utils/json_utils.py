@@ -1,4 +1,30 @@
 import json
+from datetime import date, datetime, time
+from decimal import Decimal
+
+
+def json_safe(value):
+    """Recursively convert DB types (Decimal, date, etc.) for JSON encoding."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, time):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    return value
+
+
+def dumps_json_safe(value) -> str:
+    return json.dumps(json_safe(value))
+
 
 def to_db_json(value, *, allow_single=False):
     """

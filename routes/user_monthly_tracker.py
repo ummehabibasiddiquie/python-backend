@@ -3,6 +3,7 @@
 from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
+from utils.roster_helpers import sync_tracker_extra_hours_to_roster
 from datetime import datetime, timedelta
 
 user_monthly_tracker_bp = Blueprint("user_monthly_tracker", __name__)
@@ -187,6 +188,9 @@ def add_user_monthly_target():
                 ),
             )
             inserted_ids.append(cursor.lastrowid)
+            sync_tracker_extra_hours_to_roster(
+                cursor, user_id, month_year, extra_assigned_hours
+            )
 
         conn.commit()
 
@@ -317,6 +321,21 @@ def update_user_monthly_target():
             WHERE user_monthly_tracker_id=%s
         """
         cursor.execute(query, tuple(params))
+
+        if "extra_assigned_hours" in data and data["extra_assigned_hours"] not in [None, ""]:
+            final_user_id = int(
+                data["user_id"] if data.get("user_id") not in [None, ""] else current["user_id"]
+            )
+            final_month_year = str(
+                data["month_year"] if data.get("month_year") not in [None, ""] else current["month_year"]
+            ).strip()
+            sync_tracker_extra_hours_to_roster(
+                cursor,
+                final_user_id,
+                final_month_year,
+                float(data["extra_assigned_hours"]),
+            )
+
         conn.commit()
 
         return api_response(200, "User monthly target updated successfully")

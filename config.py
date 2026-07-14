@@ -44,9 +44,9 @@ if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
         api_key=CLOUDINARY_API_KEY,
         api_secret=CLOUDINARY_API_SECRET
     )
-    print("✅ Cloudinary configured successfully")
+    print("Cloudinary configured successfully")
 else:
-    print("⚠️  Cloudinary configuration missing - check .env file")
+    print("WARNING: Cloudinary configuration missing - check .env file")
 
 if not RESET_SECRET_KEY:
     raise RuntimeError("RESET_SECRET_KEY is missing")
@@ -60,9 +60,9 @@ else:
     try:
         from cryptography.fernet import Fernet
         Fernet(ENCRYPTION_KEY.encode())
-        print("✅ ENCRYPTION_KEY is valid")
+        print("ENCRYPTION_KEY is valid")
     except Exception as e:
-        print(f"⚠️  Invalid ENCRYPTION_KEY format: {e}")
+        print(f"WARNING: Invalid ENCRYPTION_KEY format: {e}")
         print("A new key will be generated. Please update your .env file.")
         
         
@@ -93,13 +93,13 @@ def validate_environment():
             missing_vars.append(f"{var} ({description})")
     
     if missing_vars:
-        print("❌ Missing required environment variables:")
+        print("ERROR: Missing required environment variables:")
         for var in missing_vars:
             print(f"   - {var}")
         print("\nPlease add these to your .env file.")
         return False
     
-    print("✅ All required environment variables are present")
+    print("All required environment variables are present")
     return True
 
 # Run validation on import

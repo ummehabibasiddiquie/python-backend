@@ -262,7 +262,17 @@ def add_tracker():
                 cloudinary_url, _ = upload_to_cloudinary(
                     uploaded, FOLDER_TRACKER, display_name=custom_name, resource_type="raw"
                 )
-                print(f"Cloudinary upload successful: {cloudinary_url}")
+                print(f"Cloudi nary  upload successful: {cloudinary_url}")
+                
+                # Verify the uploaded file is accessible on Cloudinary
+                file_status = check_cloudinary_file_status(cloudinary_url)
+                if file_status == "file_not_found":
+                    log_tracker_upload_failure(user_id, form, uploaded, "File not found on Cloudinary after upload")
+                    return api_response(400, TRACKER_UPLOAD_FAILURE_MESSAGE)
+                elif file_status == "file_unreachable":
+                    log_tracker_upload_failure(user_id, form, uploaded, "File unreachable on Cloudinary after upload")
+                    return api_response(500, TRACKER_UPLOAD_FAILURE_MESSAGE)
+                
                 tracker_file = cloudinary_url
                 new_file_saved = cloudinary_url
             except ValueError as e:
@@ -407,6 +417,15 @@ def update_tracker():
                 cloudinary_url, _ = upload_to_cloudinary(
                     uploaded, FOLDER_TRACKER, display_name=custom_filename, resource_type="raw"
                 )
+                
+                # Verify the uploaded file is accessible on Cloudinary
+                file_status = check_cloudinary_file_status(cloudinary_url)
+                if file_status == "file_not_found":
+                    log_tracker_upload_failure(tracker.get("user_id"), form, uploaded, "File not found on Cloudinary after upload")
+                    return api_response(400, TRACKER_UPDATE_UPLOAD_FAILURE_MESSAGE)
+                elif file_status == "file_unreachable":
+                    log_tracker_upload_failure(tracker.get("user_id"), form, uploaded, "File unreachable on Cloudinary after upload")
+                    return api_response(500, TRACKER_UPDATE_UPLOAD_FAILURE_MESSAGE)
             except ValueError as e:
                 log_tracker_upload_failure(tracker.get("user_id"), form, uploaded, e)
                 return api_response(400, TRACKER_UPDATE_UPLOAD_FAILURE_MESSAGE)

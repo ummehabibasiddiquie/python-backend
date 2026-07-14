@@ -190,6 +190,7 @@ def list_users():
                 u.user_tenure,
                 u.profile_picture,
                 u.is_active,
+                u.joining_date,
                 u.project_manager_id,
                 u.asst_manager_id,
                 u.qa_id,
@@ -308,6 +309,8 @@ def list_users():
         for user in users:
             if user.get("user_password"):
                 user["user_password"] = safe_decrypt_password(user["user_password"])
+            if user.get("joining_date"):
+                user["joining_date"] = user["joining_date"].isoformat()
 
         return api_response(200, "Users fetched successfully", users)
 
@@ -387,6 +390,17 @@ def update_user():
 
         if form.get("qa_id") is not None:
             user_fields["qa_id"] = to_db_json(form.get("qa_id"), allow_single=True)
+
+        if form.get("joining_date") is not None:
+            joining_date_raw = (form.get("joining_date") or "").strip()
+            if joining_date_raw:
+                try:
+                    datetime.strptime(joining_date_raw[:10], "%Y-%m-%d")
+                    user_fields["joining_date"] = joining_date_raw[:10]
+                except ValueError:
+                    return api_response(400, "Invalid joining_date format. Expected YYYY-MM-DD")
+            else:
+                user_fields["joining_date"] = None
         
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         

@@ -223,7 +223,7 @@ def send_email(to_emails, subject, html_body):
         server.ehlo()
         server.login(user, password)
         server.sendmail(user, all_recipients, msg.as_string())
-    print("✅ Email sent successfully")
+    print("Email sent successfully")
 
 # -------------------------------
 # MAIN

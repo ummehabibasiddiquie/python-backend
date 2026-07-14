@@ -99,7 +99,7 @@ def upload_to_cloudinary(source, folder: str, display_name: str = None, resource
     except Exception as e:
         raise ValueError(f"Cloudinary upload verification failed: {e}")
 
-    print(f"✅ Cloudinary upload OK (verified via HEAD): {public_id}")
+    print(f"Cloudinary upload OK (verified via HEAD): {public_id}")
     return secure_url, public_id
 
 
@@ -123,12 +123,12 @@ def delete_from_cloudinary(url_or_public_id: str, resource_type: str = "raw") ->
         result = cloudinary.uploader.destroy(public_id, resource_type=resource_type)
         success = result.get("result") == "ok"
         if success:
-            print(f"✅ Cloudinary delete OK: {public_id}")
+            print(f"Cloudinary delete OK: {public_id}")
         else:
-            print(f"⚠️  Cloudinary delete result: {result} for {public_id}")
+            print(f"WARNING: Cloudinary delete result: {result} for {public_id}")
         return success
     except Exception as e:
-        print(f"❌ Cloudinary delete failed: {e} | public_id={public_id}")
+        print(f"ERROR: Cloudinary delete failed: {e} | public_id={public_id}")
         return False
 
 
@@ -138,8 +138,8 @@ def check_cloudinary_connection() -> bool:
     """
     try:
         cloudinary.api.ping()
-        print("✅ Cloudinary connection successful")
+        print("Cloudinary connection successful")
         return True
     except Exception as e:
-        print(f"❌ Cloudinary connection failed: {e}")
+        print(f"ERROR: Cloudinary connection failed: {e}")
         return False
