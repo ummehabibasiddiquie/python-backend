@@ -71,7 +71,7 @@ def get_db_connection():
         host=os.getenv("DB_HOST"),  # Use env var or default to 'localhost'
         port=int(os.getenv("DB_PORT", 3306)),  # Use env var or default to 3306
         user=os.getenv("DB_USERNAME"),  # Use env var or default to 'root'
-        password=os.getenv("DB_PASSWORD", ""),  # Use env var or default to empty string
+        password=os.getenv("DB_PASSWORD"),  # Use env var or default to empty string
         database=os.getenv(
             "DB_DATABASE", "tfs_hrms"
         ),  # Use env var or default to 'tfs_hrms'
