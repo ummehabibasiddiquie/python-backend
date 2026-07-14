@@ -246,60 +246,54 @@ def roster_submit_batch():
         placeholders = ",".join(["%s"] * len(employee_ids))
         cursor.execute(
             f"""
-            SELECT roster_month_id, user_id, status
-            FROM roster_month
-            WHERE month_year=%s AND is_active=1 AND user_id IN ({placeholders})
+            SELECT rcr.request_id, rcr.roster_month_id
+            FROM roster_change_request rcr
+            JOIN roster_month rm ON rm.roster_month_id = rcr.roster_month_id
+            WHERE rm.month_year=%s
+              AND rm.is_active=1
+              AND rm.user_id IN ({placeholders})
+              AND rm.status IN ('Draft', 'Approved')
+              AND rcr.status='Pending'
+              AND rcr.is_active=1
+              AND (rcr.batch_id IS NULL OR rcr.batch_id='')
             """,
             tuple([month_year, *employee_ids]),
         )
-        roster_months = cursor.fetchall() or []
+        pending_rows = cursor.fetchall() or []
+        if not pending_rows:
+            return api_response(400, "No pending change requests to submit in scope")
 
         batch_id = new_batch_id()
         now = now_str()
-        attached = 0
+        request_ids = [int(r["request_id"]) for r in pending_rows]
+        month_ids = sorted({int(r["roster_month_id"]) for r in pending_rows})
 
-        for rm in roster_months:
-            status = rm.get("status")
-            if status not in SUBMITTABLE_STATUSES:
-                continue
-            if status == "Pending Approval":
-                continue
+        req_placeholders = ",".join(["%s"] * len(request_ids))
+        cursor.execute(
+            f"""
+            UPDATE roster_change_request
+            SET batch_id=%s, submitted_by=%s, submitted_date=%s
+            WHERE request_id IN ({req_placeholders})
+            """,
+            tuple([batch_id, logged_in_user_id, now, *request_ids]),
+        )
 
-            cursor.execute(
-                """
-                SELECT request_id FROM roster_change_request
-                WHERE roster_month_id=%s AND status='Pending' AND is_active=1
-                  AND (batch_id IS NULL OR batch_id='')
-                """,
-                (int(rm["roster_month_id"]),),
-            )
-            pending = cursor.fetchall() or []
-            if not pending:
-                continue
+        month_placeholders = ",".join(["%s"] * len(month_ids))
+        cursor.execute(
+            f"""
+            UPDATE roster_month
+            SET status='Pending Approval',
+                submitted_by=%s,
+                submitted_date=%s,
+                updated_date=%s
+            WHERE roster_month_id IN ({month_placeholders})
+              AND is_active=1
+              AND status IN ('Draft', 'Approved')
+            """,
+            tuple([logged_in_user_id, now, now, *month_ids]),
+        )
 
-            for row in pending:
-                cursor.execute(
-                    """
-                    UPDATE roster_change_request
-                    SET batch_id=%s, submitted_by=%s, submitted_date=%s
-                    WHERE request_id=%s
-                    """,
-                    (batch_id, logged_in_user_id, now, int(row["request_id"])),
-                )
-                attached += 1
-
-            cursor.execute(
-                """
-                UPDATE roster_month
-                SET status='Pending Approval', submitted_by=%s, submitted_date=%s, updated_date=%s
-                WHERE roster_month_id=%s
-                """,
-                (logged_in_user_id, now, now, int(rm["roster_month_id"])),
-            )
-
-        if attached == 0:
-            conn.rollback()
-            return api_response(400, "No pending change requests to submit in scope")
+        attached = len(request_ids)
 
         write_audit_log(
             cursor,
@@ -384,37 +378,35 @@ def roster_withdraw_batch():
                 "You can only withdraw submissions that you submitted for approval",
             )
 
-        month_ids = set()
-        for row in rows:
-            cursor.execute(
-                """
-                UPDATE roster_change_request
-                SET status='Cancelled due to Withdrawal',
-                    reviewer_comment=%s,
-                    reviewed_by=%s,
-                    reviewed_date=%s,
-                    batch_id=NULL
-                WHERE request_id=%s
-                """,
-                (
-                    data.get("withdraw_comment") or "Withdrawn by submitter",
-                    logged_in_user_id,
-                    now,
-                    int(row["request_id"]),
-                ),
-            )
-            month_ids.add(int(row["roster_month_id"]))
+        request_ids = [int(row["request_id"]) for row in rows]
+        month_ids = sorted({int(row["roster_month_id"]) for row in rows})
+        withdraw_comment = data.get("withdraw_comment") or "Withdrawn by submitter"
 
-        for mid in month_ids:
-            cursor.execute(
-                """
-                UPDATE roster_month
-                SET status='Draft', submitted_by=NULL, submitted_date=NULL, updated_date=%s
-                WHERE roster_month_id=%s AND status='Pending Approval'
-                  AND submitted_by=%s
-                """,
-                (now, mid, logged_in_user_id),
-            )
+        req_placeholders = ",".join(["%s"] * len(request_ids))
+        cursor.execute(
+            f"""
+            UPDATE roster_change_request
+            SET status='Cancelled due to Withdrawal',
+                reviewer_comment=%s,
+                reviewed_by=%s,
+                reviewed_date=%s,
+                batch_id=NULL
+            WHERE request_id IN ({req_placeholders})
+            """,
+            tuple([withdraw_comment, logged_in_user_id, now, *request_ids]),
+        )
+
+        month_placeholders = ",".join(["%s"] * len(month_ids))
+        cursor.execute(
+            f"""
+            UPDATE roster_month
+            SET status='Draft', submitted_by=NULL, submitted_date=NULL, updated_date=%s
+            WHERE roster_month_id IN ({month_placeholders})
+              AND status='Pending Approval'
+              AND submitted_by=%s
+            """,
+            tuple([now, *month_ids, logged_in_user_id]),
+        )
 
         write_audit_log(
             cursor,
