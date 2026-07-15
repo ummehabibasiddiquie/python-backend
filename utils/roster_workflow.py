@@ -607,14 +607,15 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
     shift = payload.get("shift", day.get("shift", "DAY"))
 
     current_hours = float(day.get("working_hours") or FULL_DAY_HOURS)
+    old_working_type = (day.get("working_type") or "Full").strip()
     if working_type == "Half":
-        if (day.get("working_type") or "Full") == "Full":
-            full_ref = float(payload.get("working_hours") or current_hours)
-            working_hours = round(full_ref / 2, 2)
+        # Always derive half from the day's full-day hours (ignore stale form hours)
+        if old_working_type == "Full":
+            working_hours = round(current_hours / 2, 2)
         else:
             working_hours = float(payload.get("working_hours") or current_hours)
     elif working_type == "Full":
-        if (day.get("working_type") or "Full") == "Half":
+        if old_working_type == "Half":
             working_hours = round(current_hours * 2, 2)
         else:
             working_hours = float(payload.get("working_hours") or current_hours)

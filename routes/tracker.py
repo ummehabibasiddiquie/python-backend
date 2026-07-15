@@ -1093,19 +1093,25 @@ def view_daily_trackers():
                 ROUND(dwc.cumulative_billable_hours_till_day, 4)
                     AS cumulative_billable_hours_till_day,
 
-                -- QC score from temp_qc / qc_records; assigned hours from roster (tenure-based)
+                -- QC score from temp_qc / qc_records.
+                -- Assigned hours: derive from roster day_type + working_type + tenure
+                -- (do NOT prefer raw working_hours — it can stay at full-day after Half is selected)
                 COALESCE(tqc.qc_score, qr.qc_score) AS qc_score,
-                COALESCE(
-                    NULLIF(rd.working_hours, 0),
-                    CASE
-                        WHEN rd.working_type = 'Half' THEN
-                            ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1) / 2, 2)
-                        ELSE
-                            ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
-                    END,
-                    tqc.assigned_hours,
-                    0
-                ) AS assigned_hours,
+                CASE
+                  WHEN rd.day_type = 'Leave' AND (
+                        rd.working_type = 'Half'
+                     OR COALESCE(rl.is_half_day, 0) = 1
+                  ) THEN
+                    ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                  WHEN rd.day_type IN ('Leave', 'WeekOff', 'Holiday') THEN 0
+                  WHEN rd.working_type = 'Half' THEN
+                    ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                  WHEN rd.roster_day_id IS NOT NULL THEN
+                    ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                  WHEN tqc.assigned_hours IS NOT NULL THEN tqc.assigned_hours
+                  ELSE
+                    ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                END AS assigned_hours,
                 COALESCE(rd.working_type, 'Full') AS working_type,
 
                 umt.user_monthly_tracker_id,
@@ -1180,6 +1186,9 @@ def view_daily_trackers():
               ON rd.roster_month_id = rm.roster_month_id
              AND rd.is_active = 1
              AND DATE(rd.roster_date) = dwc.work_date
+            LEFT JOIN roster_leave rl
+              ON rl.leave_id = rd.leave_id
+             AND rl.is_active = 1
 
             LEFT JOIN user_monthly_tracker umt
               ON umt.user_id = dwc.user_id
