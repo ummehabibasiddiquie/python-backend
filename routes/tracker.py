@@ -1230,45 +1230,32 @@ def view_daily_trackers():
                       WHEN umt.user_monthly_tracker_id IS NULL THEN NULL
                       ELSE GREATEST(
                              COALESCE(CAST(umt.working_days AS DECIMAL(10,2)), 0)
-                             - (
-                                 COALESCE((
-                                   SELECT SUM(CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END)
-                                   FROM (
-                                     SELECT DISTINCT DATE(CAST(twt2.date_time AS DATETIME)) AS work_date
-                                     FROM task_work_tracker twt2
-                                     WHERE twt2.user_id = u.user_id
-                                       AND twt2.is_active = 1
-                                       AND (YEAR(CAST(twt2.date_time AS DATETIME))*100 + MONTH(CAST(twt2.date_time AS DATETIME))) = m.yyyymm
-                                       AND (
-                                            (m.is_current_month = 1 AND DATE(CAST(twt2.date_time AS DATETIME)) < m.cutoff)
-                                         OR (m.is_current_month = 0 AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff)
-                                       )
-                                   ) wd
-                                   LEFT JOIN roster_month rm
-                                     ON rm.user_id = u.user_id
-                                    AND rm.is_active = 1
-                                    AND UPPER(rm.month_year) = UPPER(m.mon)
-                                   LEFT JOIN roster_day rd
+                             - COALESCE((
+                                 SELECT COUNT(DISTINCT DATE(CAST(twt2.date_time AS DATETIME)))
+                                 FROM task_work_tracker twt2
+                                 WHERE twt2.user_id = u.user_id
+                                   AND twt2.is_active = 1
+                                   AND (YEAR(CAST(twt2.date_time AS DATETIME))*100 + MONTH(CAST(twt2.date_time AS DATETIME))) = m.yyyymm
+                                   AND (
+                                        (m.is_current_month = 1 AND DATE(CAST(twt2.date_time AS DATETIME)) < m.cutoff)
+                                     OR (m.is_current_month = 0 AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff)
+                                   )
+                               ), 0)
+                             - CASE
+                                 WHEN m.is_current_month = 1 THEN COALESCE((
+                                   SELECT CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END
+                                   FROM roster_month rm
+                                   INNER JOIN roster_day rd
                                      ON rd.roster_month_id = rm.roster_month_id
                                     AND rd.is_active = 1
-                                    AND DATE(rd.roster_date) = wd.work_date
-                                 ), 0)
-                                 + CASE
-                                     WHEN m.is_current_month = 1 THEN COALESCE((
-                                       SELECT CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END
-                                       FROM roster_month rm
-                                       INNER JOIN roster_day rd
-                                         ON rd.roster_month_id = rm.roster_month_id
-                                        AND rd.is_active = 1
-                                        AND DATE(rd.roster_date) = m.cutoff
-                                       WHERE rm.user_id = u.user_id
-                                         AND rm.is_active = 1
-                                         AND UPPER(rm.month_year) = UPPER(m.mon)
-                                       LIMIT 1
-                                     ), 1)
-                                     ELSE 0
-                                   END
-                               ),
+                                    AND DATE(rd.roster_date) = m.cutoff
+                                   WHERE rm.user_id = u.user_id
+                                     AND rm.is_active = 1
+                                     AND UPPER(rm.month_year) = UPPER(m.mon)
+                                   LIMIT 1
+                                 ), 1)
+                                 ELSE 0
+                               END,
                              0
                            )
                     END AS pending_days,
@@ -1276,45 +1263,32 @@ def view_daily_trackers():
                       WHEN umt.user_monthly_tracker_id IS NULL THEN NULL
                       WHEN GREATEST(
                              COALESCE(CAST(umt.working_days AS DECIMAL(10,2)), 0)
-                             - (
-                                 COALESCE((
-                                   SELECT SUM(CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END)
-                                   FROM (
-                                     SELECT DISTINCT DATE(CAST(twt2.date_time AS DATETIME)) AS work_date
-                                     FROM task_work_tracker twt2
-                                     WHERE twt2.user_id = u.user_id
-                                       AND twt2.is_active = 1
-                                       AND (YEAR(CAST(twt2.date_time AS DATETIME))*100 + MONTH(CAST(twt2.date_time AS DATETIME))) = m.yyyymm
-                                       AND (
-                                            (m.is_current_month = 1 AND DATE(CAST(twt2.date_time AS DATETIME)) < m.cutoff)
-                                         OR (m.is_current_month = 0 AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff)
-                                       )
-                                   ) wd
-                                   LEFT JOIN roster_month rm
-                                     ON rm.user_id = u.user_id
-                                    AND rm.is_active = 1
-                                    AND UPPER(rm.month_year) = UPPER(m.mon)
-                                   LEFT JOIN roster_day rd
+                             - COALESCE((
+                                 SELECT COUNT(DISTINCT DATE(CAST(twt2.date_time AS DATETIME)))
+                                 FROM task_work_tracker twt2
+                                 WHERE twt2.user_id = u.user_id
+                                   AND twt2.is_active = 1
+                                   AND (YEAR(CAST(twt2.date_time AS DATETIME))*100 + MONTH(CAST(twt2.date_time AS DATETIME))) = m.yyyymm
+                                   AND (
+                                        (m.is_current_month = 1 AND DATE(CAST(twt2.date_time AS DATETIME)) < m.cutoff)
+                                     OR (m.is_current_month = 0 AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff)
+                                   )
+                               ), 0)
+                             - CASE
+                                 WHEN m.is_current_month = 1 THEN COALESCE((
+                                   SELECT CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END
+                                   FROM roster_month rm
+                                   INNER JOIN roster_day rd
                                      ON rd.roster_month_id = rm.roster_month_id
                                     AND rd.is_active = 1
-                                    AND DATE(rd.roster_date) = wd.work_date
-                                 ), 0)
-                                 + CASE
-                                     WHEN m.is_current_month = 1 THEN COALESCE((
-                                       SELECT CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END
-                                       FROM roster_month rm
-                                       INNER JOIN roster_day rd
-                                         ON rd.roster_month_id = rm.roster_month_id
-                                        AND rd.is_active = 1
-                                        AND DATE(rd.roster_date) = m.cutoff
-                                       WHERE rm.user_id = u.user_id
-                                         AND rm.is_active = 1
-                                         AND UPPER(rm.month_year) = UPPER(m.mon)
-                                       LIMIT 1
-                                     ), 1)
-                                     ELSE 0
-                                   END
-                               ),
+                                    AND DATE(rd.roster_date) = m.cutoff
+                                   WHERE rm.user_id = u.user_id
+                                     AND rm.is_active = 1
+                                     AND UPPER(rm.month_year) = UPPER(m.mon)
+                                   LIMIT 1
+                                 ), 1)
+                                 ELSE 0
+                               END,
                              0
                            ) = 0 THEN
                         (
@@ -1345,45 +1319,32 @@ def view_daily_trackers():
                         / NULLIF(
                             GREATEST(
                               COALESCE(CAST(umt.working_days AS DECIMAL(10,2)), 0)
-                              - (
-                                  COALESCE((
-                                    SELECT SUM(CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END)
-                                    FROM (
-                                      SELECT DISTINCT DATE(CAST(twt2.date_time AS DATETIME)) AS work_date
-                                      FROM task_work_tracker twt2
-                                      WHERE twt2.user_id = u.user_id
-                                        AND twt2.is_active = 1
-                                        AND (YEAR(CAST(twt2.date_time AS DATETIME))*100 + MONTH(CAST(twt2.date_time AS DATETIME))) = m.yyyymm
-                                        AND (
-                                             (m.is_current_month = 1 AND DATE(CAST(twt2.date_time AS DATETIME)) < m.cutoff)
-                                          OR (m.is_current_month = 0 AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff)
-                                        )
-                                    ) wd
-                                    LEFT JOIN roster_month rm
-                                      ON rm.user_id = u.user_id
-                                     AND rm.is_active = 1
-                                     AND UPPER(rm.month_year) = UPPER(m.mon)
-                                    LEFT JOIN roster_day rd
+                              - COALESCE((
+                                  SELECT COUNT(DISTINCT DATE(CAST(twt2.date_time AS DATETIME)))
+                                  FROM task_work_tracker twt2
+                                  WHERE twt2.user_id = u.user_id
+                                    AND twt2.is_active = 1
+                                    AND (YEAR(CAST(twt2.date_time AS DATETIME))*100 + MONTH(CAST(twt2.date_time AS DATETIME))) = m.yyyymm
+                                    AND (
+                                         (m.is_current_month = 1 AND DATE(CAST(twt2.date_time AS DATETIME)) < m.cutoff)
+                                      OR (m.is_current_month = 0 AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff)
+                                    )
+                                ), 0)
+                              - CASE
+                                  WHEN m.is_current_month = 1 THEN COALESCE((
+                                    SELECT CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END
+                                    FROM roster_month rm
+                                    INNER JOIN roster_day rd
                                       ON rd.roster_month_id = rm.roster_month_id
                                      AND rd.is_active = 1
-                                     AND DATE(rd.roster_date) = wd.work_date
-                                  ), 0)
-                                  + CASE
-                                      WHEN m.is_current_month = 1 THEN COALESCE((
-                                        SELECT CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END
-                                        FROM roster_month rm
-                                        INNER JOIN roster_day rd
-                                          ON rd.roster_month_id = rm.roster_month_id
-                                         AND rd.is_active = 1
-                                         AND DATE(rd.roster_date) = m.cutoff
-                                        WHERE rm.user_id = u.user_id
-                                          AND rm.is_active = 1
-                                          AND UPPER(rm.month_year) = UPPER(m.mon)
-                                        LIMIT 1
-                                      ), 1)
-                                      ELSE 0
-                                    END
-                                ),
+                                     AND DATE(rd.roster_date) = m.cutoff
+                                    WHERE rm.user_id = u.user_id
+                                      AND rm.is_active = 1
+                                      AND UPPER(rm.month_year) = UPPER(m.mon)
+                                    LIMIT 1
+                                  ), 1)
+                                  ELSE 0
+                                END,
                               0
                             ),
                             0

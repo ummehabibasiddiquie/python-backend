@@ -25,13 +25,24 @@ def get_user_role(cursor, user_id: int) -> str | None:
 # ---------------------------
 # DAILY ASSIGNED HOURS (cron + manual)
 # ---------------------------
-@qc_bp.route("/assign-daily-hours", methods=["POST"])
+@qc_bp.route("/assign-daily-hours", methods=["GET", "POST"])
 def assign_daily_hours():
     """
-    Scheduled job endpoint (triggered by assign_daily_hours.py / crontab ~08:00).
-    Assigns hours per agent from roster Working/Half + user tenure (not fixed 9h).
+    Scheduled job endpoint.
+    - Local/crontab: assign_daily_hours.py → POST
+    - Vercel Cron: GET /qc/assign-daily-hours (Vercel always uses GET)
+
+    Assigns hours per agent from roster Working/Half + user tenure.
+    Optional env CRON_SECRET: require Authorization: Bearer <secret>.
     """
+    import os
     from utils.roster_helpers import assigned_hours_for_roster_day, month_year_label
+
+    cron_secret = (os.getenv("CRON_SECRET") or "").strip()
+    if cron_secret:
+        auth = (request.headers.get("Authorization") or "").strip()
+        if auth != f"Bearer {cron_secret}":
+            return response(False, "Unauthorized", None, 401)
 
     now = datetime.now()
 
