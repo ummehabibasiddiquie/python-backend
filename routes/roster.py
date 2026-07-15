@@ -9,8 +9,9 @@ from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
 from utils.roster_helpers import (
-    cancel_pending_requests_for_month,
+    clear_change_requests_for_month,
     can_manage_roster_employees,
+    deactivate_active_rosters_for_employee,
     deactivate_active_rosters_for_month,
     deactivate_roster_month,
     employee_already_has_roster,
@@ -340,7 +341,7 @@ def reset_regenerate_roster():
                 notes="Bulk deactivated due to month reset and regenerate",
             )
 
-        cancelled_count = cancel_pending_requests_for_month(
+        cleared_count = clear_change_requests_for_month(
             cursor, target_month_year, logged_in_user_id
         )
 
@@ -388,7 +389,7 @@ def reset_regenerate_roster():
             new_value={
                 "created_count": created_count,
                 "skipped_count": skipped_count,
-                "cancelled_pending_requests": cancelled_count,
+                "cleared_change_requests": cleared_count,
                 "deactivated_count": len(deactivated_ids),
                 "skip_reasons": skip_reasons,
             },
@@ -402,7 +403,7 @@ def reset_regenerate_roster():
             "Roster month reset and regenerated successfully",
             {
                 "month_year": target_month_year,
-                "cancelled_pending_requests": cancelled_count,
+                "cleared_change_requests": cleared_count,
                 "deactivated_count": len(deactivated_ids),
                 "created_count": created_count,
                 "skipped_count": skipped_count,
@@ -412,6 +413,127 @@ def reset_regenerate_roster():
     except Exception as e:
         conn.rollback()
         return api_response(500, f"Reset and regenerate failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@roster_bp.route("/reset_regenerate_employee", methods=["POST"])
+def reset_regenerate_employee_roster():
+    """
+    Super Admin only. Reset & regenerate roster for one employee in a month.
+    Clears that employee's change-request history for the month (pending/approved/rejected).
+    """
+    data = request.get_json(silent=True) or {}
+    logged_in_user_id, err = _require_logged_in_user(data)
+    if err:
+        return err
+
+    if not data.get("confirm_reset"):
+        return api_response(400, "confirm_reset=true is required for reset and regenerate")
+
+    target_user_id = data.get("user_id")
+    if not target_user_id:
+        return api_response(400, "user_id is required")
+
+    target_year, target_month, target_month_year, month_err = _resolve_target_month(
+        data, required=True
+    )
+    if month_err:
+        return month_err
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, logged_in_user_id)
+        role_name = ctx.get("user_role_name", "")
+        if not is_super_admin(role_name):
+            return api_response(403, "Only Super Admin can reset and regenerate a roster")
+
+        employees = get_eligible_employees(
+            cursor,
+            logged_in_user_id,
+            role_name,
+            target_year,
+            target_month,
+            user_id=int(target_user_id),
+        )
+        if not employees:
+            return api_response(404, "Employee not found or not eligible for roster")
+
+        employee = employees[0]
+        holidays = load_active_holidays(cursor, target_year)
+        month_start, month_end = month_date_range(target_year, target_month)
+
+        cleared_count = clear_change_requests_for_month(
+            cursor,
+            target_month_year,
+            logged_in_user_id,
+            user_id=int(target_user_id),
+        )
+        deactivated_ids = deactivate_active_rosters_for_employee(
+            cursor, int(target_user_id), target_month_year
+        )
+
+        tracker_map = load_tracker_baselines_map(
+            cursor, [int(target_user_id)], target_month_year
+        )
+        default_tracker = {
+            "daily_full_hours": FULL_DAY_HOURS,
+            "extra_assigned_hours": 0.0,
+            "from_tracker": False,
+        }
+        result = insert_roster_for_employee(
+            cursor,
+            employee,
+            target_month_year,
+            month_start,
+            month_end,
+            holidays,
+            logged_in_user_id,
+            tracker_baseline=tracker_map.get(int(target_user_id), default_tracker),
+            write_audit=True,
+        )
+        if result.get("status") != "created":
+            conn.rollback()
+            return api_response(
+                400,
+                result.get("reason", "Employee roster reset failed"),
+                result,
+            )
+
+        write_audit_log(
+            cursor,
+            roster_month_id=result.get("roster_month_id"),
+            user_id=int(target_user_id),
+            action="ROSTER_EMPLOYEE_RESET_REGENERATED",
+            entity_type="roster_month",
+            entity_id=result.get("roster_month_id"),
+            old_value={"month_year": target_month_year, "deactivated": deactivated_ids},
+            new_value={
+                "cleared_change_requests": cleared_count,
+                "roster_month_id": result.get("roster_month_id"),
+            },
+            performed_by=logged_in_user_id,
+            notes="Super Admin reset and regenerated single employee roster",
+        )
+
+        conn.commit()
+        return api_response(
+            200,
+            "Employee roster reset and regenerated successfully",
+            {
+                "month_year": target_month_year,
+                "user_id": int(target_user_id),
+                "user_name": employee.get("user_name"),
+                "cleared_change_requests": cleared_count,
+                "deactivated_count": len(deactivated_ids),
+                "roster": result,
+            },
+        )
+    except Exception as e:
+        conn.rollback()
+        return api_response(500, f"Employee reset and regenerate failed: {str(e)}")
     finally:
         cursor.close()
         conn.close()

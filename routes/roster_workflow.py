@@ -212,6 +212,108 @@ def roster_create_change_request():
         conn.close()
 
 
+@roster_bp.route("/change_request/withdraw_draft", methods=["POST"])
+def roster_withdraw_draft_change_request():
+    """
+    Withdraw a draft change request (Pending, not yet submitted in a batch)
+    so a mistaken leave/week-off request can be removed before submit.
+    """
+    data = request.get_json(silent=True) or {}
+    logged_in_user_id, err = _require_logged_in_user(data)
+    if err:
+        return err
+
+    request_id = data.get("request_id")
+    if not request_id:
+        return api_response(400, "request_id is required")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, logged_in_user_id)
+        role_name = ctx.get("user_role_name", "")
+        if not can_manage_roster_employees(role_name):
+            return api_response(403, "You do not have permission to withdraw draft requests")
+
+        cursor.execute(
+            """
+            SELECT rcr.*, rm.month_year, rm.user_id AS roster_user_id, rm.status AS roster_status
+            FROM roster_change_request rcr
+            JOIN roster_month rm ON rm.roster_month_id = rcr.roster_month_id
+            WHERE rcr.request_id=%s AND rcr.is_active=1
+            LIMIT 1
+            """,
+            (int(request_id),),
+        )
+        req = cursor.fetchone()
+        if not req:
+            return api_response(404, "Change request not found")
+
+        if req.get("status") != "Pending":
+            return api_response(400, "Only pending draft requests can be withdrawn")
+        if req.get("batch_id"):
+            return api_response(
+                400,
+                "This request is already submitted for approval. Use Withdraw Submission instead.",
+            )
+        if int(req.get("submitted_by") or 0) != int(logged_in_user_id) and not is_admin_or_super_admin(
+            role_name
+        ):
+            return api_response(403, "You can only withdraw draft requests you created")
+
+        roster_month = get_roster_month(cursor, int(req["roster_month_id"]))
+        if roster_month:
+            scope_err = assert_manager_scope(cursor, logged_in_user_id, role_name, roster_month)
+            if scope_err and not is_admin_or_super_admin(role_name):
+                return api_response(403, scope_err)
+
+        now = now_str()
+        cursor.execute(
+            """
+            UPDATE roster_change_request
+            SET is_active=0,
+                status='Cancelled due to Withdrawal',
+                reviewer_comment=%s,
+                reviewed_by=%s,
+                reviewed_date=%s,
+                batch_id=NULL
+            WHERE request_id=%s AND is_active=1
+            """,
+            (
+                data.get("withdraw_comment") or "Draft request withdrawn before submit",
+                logged_in_user_id,
+                now,
+                int(request_id),
+            ),
+        )
+
+        write_audit_log(
+            cursor,
+            roster_month_id=int(req["roster_month_id"]),
+            user_id=int(req["user_id"]),
+            action="CHANGE_REQUEST_DRAFT_WITHDRAWN",
+            entity_type="roster_change_request",
+            entity_id=int(request_id),
+            old_value={"status": "Pending", "batch_id": None},
+            new_value={"status": "Cancelled due to Withdrawal", "is_active": 0},
+            performed_by=logged_in_user_id,
+            notes=data.get("withdraw_comment"),
+        )
+
+        conn.commit()
+        return api_response(
+            200,
+            "Draft change request withdrawn",
+            {"request_id": int(request_id)},
+        )
+    except Exception as e:
+        conn.rollback()
+        return api_response(500, f"Draft withdraw failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @roster_bp.route("/submit", methods=["POST"])
 def roster_submit_batch():
     """PM/AM/Admin submit one batch for employees in scope (M)."""

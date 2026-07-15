@@ -725,6 +725,7 @@ def deactivate_active_rosters_for_month(cursor, month_year: str) -> list[int]:
 
 
 def cancel_pending_requests_for_month(cursor, month_year: str, performed_by: int) -> int:
+    """Legacy: cancel Pending only. Prefer clear_change_requests_for_month on reset."""
     now = now_str()
     cursor.execute(
         """
@@ -740,6 +741,58 @@ def cancel_pending_requests_for_month(cursor, month_year: str, performed_by: int
         (int(performed_by), now, str(month_year).strip()),
     )
     return int(cursor.rowcount or 0)
+
+
+def clear_change_requests_for_month(
+    cursor,
+    month_year: str,
+    performed_by: int,
+    *,
+    user_id: int | None = None,
+) -> int:
+    """
+    Soft-deactivate ALL change requests for a month (Pending / Approved / Rejected / etc.)
+    so Approval Queue and My Submissions no longer show them.
+    Optional user_id limits clear to one employee (single reset).
+    """
+    now = now_str()
+    sql = """
+        UPDATE roster_change_request rcr
+        JOIN roster_month rm ON rm.roster_month_id = rcr.roster_month_id
+        SET rcr.is_active=0,
+            rcr.status=CASE
+                WHEN rcr.status='Pending' THEN 'Cancelled due to Regeneration'
+                ELSE rcr.status
+            END,
+            rcr.reviewed_by=COALESCE(rcr.reviewed_by, %s),
+            rcr.reviewed_date=COALESCE(rcr.reviewed_date, %s)
+        WHERE rm.month_year=%s
+          AND rcr.is_active=1
+    """
+    params: list = [int(performed_by), now, str(month_year).strip()]
+    if user_id is not None:
+        sql += " AND rm.user_id=%s"
+        params.append(int(user_id))
+    cursor.execute(sql, tuple(params))
+    return int(cursor.rowcount or 0)
+
+
+def deactivate_active_rosters_for_employee(
+    cursor, user_id: int, month_year: str
+) -> list[int]:
+    """Soft-deactivate active roster(s) for one employee in a month."""
+    cursor.execute(
+        """
+        SELECT roster_month_id
+        FROM roster_month
+        WHERE user_id=%s AND month_year=%s AND is_active=1
+        """,
+        (int(user_id), str(month_year).strip()),
+    )
+    ids = [int(r["roster_month_id"]) for r in (cursor.fetchall() or [])]
+    for rid in ids:
+        deactivate_roster_month(cursor, rid)
+    return ids
 
 
 def load_tracker_baselines_map(
