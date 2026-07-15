@@ -23,25 +23,28 @@ def get_user_role(cursor, user_id: int) -> str | None:
     return (row.get("role_name") or "").strip().lower()
 
 # ---------------------------
-# DAILY ASSIGNED HOURS (NEW)
+# DAILY ASSIGNED HOURS (cron + manual)
 # ---------------------------
 @qc_bp.route("/assign-daily-hours", methods=["POST"])
 def assign_daily_hours():
     """
-    Scheduled job endpoint.
-    Assigns 9 hours to all active agents for the current day.
+    Scheduled job endpoint (triggered by assign_daily_hours.py / crontab ~08:00).
+    Assigns hours per agent from roster Working/Half + user tenure (not fixed 9h).
     """
+    from utils.roster_helpers import assigned_hours_for_roster_day, month_year_label
+
     now = datetime.now()
-    
-    
+
     # Developer fix: Set specific date if needed
     # Uncomment and change the date below to assign hours for a specific date
     # if now.strftime("%Y-%m-%d") == "2025-04-15":
     # now = datetime.strptime("2026-04-20", "%Y-%m-%d")
     # print("Now:",now)
 
-    today_str = now.strftime("%Y-%m-%d")
+    today = now.date()
+    today_str = today.strftime("%Y-%m-%d")
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    month_year = month_year_label(today.year, today.month)
 
     conn = None
     cur = None
@@ -49,37 +52,78 @@ def assign_daily_hours():
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
 
-        # 1. Get all active agent user_ids
-        cur.execute("""
-            SELECT u.user_id
+        # Active agents + today's roster day (if any)
+        cur.execute(
+            """
+            SELECT
+                u.user_id,
+                u.user_tenure,
+                rd.day_type,
+                rd.working_type,
+                rd.roster_day_id
             FROM tfs_user u
             JOIN user_role ur ON u.role_id = ur.role_id
-            WHERE ur.role_name = 'agent' AND u.is_active = 1 AND u.is_delete = 1
-        """)
-        agent_rows = cur.fetchall()
-        agent_ids = [row['user_id'] for row in agent_rows]
+            LEFT JOIN roster_month rm
+                ON rm.user_id = u.user_id
+               AND rm.is_active = 1
+               AND UPPER(rm.month_year) = UPPER(%s)
+            LEFT JOIN roster_day rd
+                ON rd.roster_month_id = rm.roster_month_id
+               AND rd.is_active = 1
+               AND DATE(rd.roster_date) = %s
+            WHERE LOWER(TRIM(ur.role_name)) = 'agent'
+              AND u.is_active = 1
+              AND u.is_delete = 1
+            """,
+            (month_year, today_str),
+        )
+        agent_rows = cur.fetchall() or []
 
-        if not agent_ids:
+        if not agent_rows:
             return response(True, "No active agents found to assign hours.", None, 200)
 
-        # 2. Bulk insert/update
-        # Use ON DUPLICATE KEY UPDATE to be idempotent
         sql = f"""
             INSERT INTO temp_qc (user_id, assigned_hours, {QC_DATE_COL}, updated_date)
-            VALUES (%s, 9, %s, %s)
+            VALUES (%s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 assigned_hours = VALUES(assigned_hours),
                 updated_date = VALUES(updated_date)
         """
-        
-        # Prepare data for executemany
-        data_to_insert = [(agent_id, today_str, now_str) for agent_id in agent_ids]
-        
+
+        data_to_insert = []
+        summary = {"full": 0, "half": 0, "zero": 0}
+        for row in agent_rows:
+            hours = assigned_hours_for_roster_day(
+                row.get("user_tenure"),
+                day_type=row.get("day_type"),
+                working_type=row.get("working_type"),
+                has_roster_day=row.get("roster_day_id") is not None,
+            )
+            data_to_insert.append((int(row["user_id"]), hours, today_str, now_str))
+            if hours <= 0:
+                summary["zero"] += 1
+            elif (row.get("working_type") or "Full") == "Half":
+                summary["half"] += 1
+            else:
+                summary["full"] += 1
+
         cur.executemany(sql, data_to_insert)
-        
         conn.commit()
 
-        return response(True, f"Successfully assigned 9 hours to {cur.rowcount} agents for {today_str}.", None, 200)
+        return response(
+            True,
+            (
+                f"Assigned roster/tenure-based hours to {len(data_to_insert)} agents for {today_str} "
+                f"(full={summary['full']}, half={summary['half']}, off/leave={summary['zero']})."
+            ),
+            {
+                "date": today_str,
+                "month_year": month_year,
+                "assigned_count": len(data_to_insert),
+                **summary,
+            },
+            200,
+        )
 
     except Exception as e:
         if conn:

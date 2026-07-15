@@ -35,6 +35,46 @@ def daily_hours_for_tenure(user_tenure) -> float:
     return round(FULL_DAY_HOURS * tenure, 2)
 
 
+def tenure_cap(user_tenure) -> float:
+    """Cap tenure to [0, 1] for hour assignment."""
+    try:
+        tenure = float(user_tenure)
+    except (TypeError, ValueError):
+        tenure = 1.0
+    if tenure < 0:
+        return 0.0
+    if tenure > 1:
+        return 1.0
+    return tenure
+
+
+def assigned_hours_for_roster_day(
+    user_tenure,
+    *,
+    day_type: str | None = None,
+    working_type: str | None = None,
+    has_roster_day: bool = False,
+) -> float:
+    """
+    Morning cron / QC assign-hours rules (roster + tenure):
+      Full Working + tenure >= 1 → 9
+      Full Working + tenure < 1  → 9 * tenure
+      Half Working + tenure >= 1 → 4.5
+      Half Working + tenure < 1  → 4.5 * tenure
+      WeekOff / Leave / Holiday  → 0
+      No roster day for date     → full-day tenure hours (same as Full Working)
+    """
+    factor = tenure_cap(user_tenure)
+    dt = (day_type or "").strip()
+    wt = (working_type or "Full").strip()
+
+    if has_roster_day and dt and dt != "Working":
+        return 0.0
+
+    base = HALF_DAY_HOURS if wt == "Half" else FULL_DAY_HOURS
+    return round(base * factor, 2)
+
+
 AGENT_DAY_SHIFT_START = time(9, 0)
 AGENT_DAY_SHIFT_END = time(18, 30)
 QA_DAY_SHIFT_START = time(10, 0)
