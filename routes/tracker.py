@@ -1026,11 +1026,12 @@ def view_daily_trackers():
                     CASE
                         WHEN MAX(tq.assigned_hours) = 4.5 THEN 0.5
                         WHEN MAX(tq.assigned_hours) > 0 THEN 1
-                        ELSE 0
+                        -- Tracker exists for the day → treat as 1 day consumed even without QC yet
+                        ELSE 1
                     END AS day_weight
                 FROM task_work_tracker twt
                 LEFT JOIN tfs_user u ON u.user_id = twt.user_id
-                INNER JOIN temp_qc tq
+                LEFT JOIN temp_qc tq
                     ON tq.user_id = twt.user_id
                     AND DATE(tq.date) = DATE(CAST(twt.date_time AS DATETIME))
                 {where}
@@ -1042,12 +1043,20 @@ def view_daily_trackers():
                     SUM(d.total_billable_hours_day)
                         OVER (PARTITION BY d.user_id ORDER BY d.work_date)
                         AS cumulative_billable_hours_till_day,
-                    (
+                    -- Consumed days through this work_date (this day never stays in "remaining")
+                    COALESCE((
                         SELECT SUM(wd.day_weight)
                         FROM worked_days wd
                         WHERE wd.user_id = d.user_id
-                        AND wd.work_date <= d.work_date
-                    ) AS worked_days_till_day
+                          AND wd.work_date < d.work_date
+                    ), 0)
+                    + COALESCE((
+                        SELECT wd.day_weight
+                        FROM worked_days wd
+                        WHERE wd.user_id = d.user_id
+                          AND wd.work_date = d.work_date
+                        LIMIT 1
+                    ), 1) AS worked_days_till_day
                 FROM daily d
             )
             SELECT
@@ -1202,8 +1211,12 @@ def view_daily_trackers():
                                  WHERE twt2.user_id = u.user_id
                                    AND twt2.is_active = 1
                                    AND (YEAR(CAST(twt2.date_time AS DATETIME))*100 + MONTH(CAST(twt2.date_time AS DATETIME))) = m.yyyymm
-                                   AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff
-                               ), 0),
+                                   AND (
+                                        (m.is_current_month = 1 AND DATE(CAST(twt2.date_time AS DATETIME)) < m.cutoff)
+                                     OR (m.is_current_month = 0 AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff)
+                                   )
+                               ), 0)
+                             - m.is_current_month,
                              0
                            )
                     END AS pending_days,
@@ -1217,8 +1230,12 @@ def view_daily_trackers():
                                  WHERE twt2.user_id = u.user_id
                                    AND twt2.is_active = 1
                                    AND (YEAR(CAST(twt2.date_time AS DATETIME))*100 + MONTH(CAST(twt2.date_time AS DATETIME))) = m.yyyymm
-                                   AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff
-                               ), 0),
+                                   AND (
+                                        (m.is_current_month = 1 AND DATE(CAST(twt2.date_time AS DATETIME)) < m.cutoff)
+                                     OR (m.is_current_month = 0 AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff)
+                                   )
+                               ), 0)
+                             - m.is_current_month,
                              0
                            ) = 0 THEN
                         (
@@ -1255,8 +1272,12 @@ def view_daily_trackers():
                                   WHERE twt2.user_id = u.user_id
                                     AND twt2.is_active = 1
                                     AND (YEAR(CAST(twt2.date_time AS DATETIME))*100 + MONTH(CAST(twt2.date_time AS DATETIME))) = m.yyyymm
-                                    AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff
-                                ), 0),
+                                    AND (
+                                         (m.is_current_month = 1 AND DATE(CAST(twt2.date_time AS DATETIME)) < m.cutoff)
+                                      OR (m.is_current_month = 0 AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff)
+                                    )
+                                ), 0)
+                              - m.is_current_month,
                               0
                             ),
                             0
@@ -1276,7 +1297,13 @@ def view_daily_trackers():
                              CAST(DATE_FORMAT(STR_TO_DATE(CONCAT('01-', %s), '%d-%b%Y'), '%Y%m') AS UNSIGNED)
                         THEN LAST_DAY(STR_TO_DATE(CONCAT('01-', %s), '%d-%b%Y'))
                         ELSE DATE_SUB(STR_TO_DATE(CONCAT('01-', %s), '%d-%b%Y'), INTERVAL 1 DAY)
-                      END AS cutoff
+                      END AS cutoff,
+                      CASE
+                        WHEN (YEAR(CURDATE())*100 + MONTH(CURDATE())) =
+                             CAST(DATE_FORMAT(STR_TO_DATE(CONCAT('01-', %s), '%d-%b%Y'), '%Y%m') AS UNSIGNED)
+                        THEN 1
+                        ELSE 0
+                      END AS is_current_month
                 ) m
                 LEFT JOIN user_monthly_tracker umt
                   ON umt.user_id = u.user_id
@@ -1287,7 +1314,8 @@ def view_daily_trackers():
                   AND (%s IS NULL OR u.team_id = %s)
             """
 
-            summary_params = [month_year] * 6 + user_ids + [team_id, team_id]
+            # month_year x7 (mon, yyyymm, 3x cutoff branches, is_current_month) + users + team filter
+            summary_params = [month_year] * 7 + user_ids + [team_id, team_id]
             cursor.execute(summary_query, tuple(summary_params))
             month_summary = cursor.fetchall()
 

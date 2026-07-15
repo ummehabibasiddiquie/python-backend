@@ -230,10 +230,10 @@ def fetch_data():
                     CASE
                         WHEN MAX(tq.assigned_hours) = 4.5 THEN 0.5
                         WHEN MAX(tq.assigned_hours) > 0 THEN 1
-                        ELSE 0
+                        ELSE 1
                     END AS day_value
                 FROM task_work_tracker twt
-                INNER JOIN temp_qc tq
+                LEFT JOIN temp_qc tq
                     ON tq.user_id = twt.user_id
                     AND DATE(tq.date) = DATE(CAST(twt.date_time AS DATETIME))
                 WHERE DATE(twt.date_time) BETWEEN %s AND %s
@@ -249,6 +249,19 @@ def fetch_data():
         days_worked_map = {
             r["user_id"]: float(r["days_worked"]) for r in cursor.fetchall()
         }
+
+        # Tracker dates on report_date (to know if report day was already counted)
+        cursor.execute(
+            f"""
+            SELECT DISTINCT user_id
+            FROM task_work_tracker
+            WHERE DATE(date_time) = %s
+              AND user_id IN ({in_ph})
+              AND is_active = 1
+            """,
+            [report_date] + user_ids,
+        )
+        users_with_report_day = {r["user_id"] for r in cursor.fetchall()}
 
         print(f"DEBUG - Days worked summary:")
         for uid, days in days_worked_map.items():
@@ -371,6 +384,10 @@ def fetch_data():
             pending = monthly_goal - mtd
 
             days_worked = days_worked_map.get(uid, 0)
+            # Remaining days must exclude the report day (today). If that day has no
+            # tracker/QC yet it would otherwise still sit in the remaining denominator.
+            if uid not in users_with_report_day:
+                days_worked = days_worked + 1
             remaining_days = max(0, working_days - days_worked)
 
             print(f"DEBUG - User: {u['user_name']}, Team: {u['team_name']}")
