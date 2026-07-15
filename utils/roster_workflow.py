@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import date, time
+from datetime import date, time, timedelta
 from typing import Any
 
 from utils.roster_helpers import (
@@ -300,6 +300,36 @@ def find_matching_pending_leave_requests(
     return cursor.fetchall() or []
 
 
+def find_active_leave_overlapping_dates(
+    cursor,
+    *,
+    roster_month_id: int,
+    start_date: str,
+    end_date: str,
+) -> dict | None:
+    """Find an active leave that exactly matches or overlaps the given date range."""
+    start = (start_date or "")[:10]
+    end = (end_date or "")[:10]
+    if not start or not end:
+        return None
+    # Prefer exact match first (same start/end)
+    cursor.execute(
+        """
+        SELECT *
+        FROM roster_leave
+        WHERE roster_month_id=%s AND is_active=1
+          AND DATE(start_date)=DATE(%s) AND DATE(end_date)=DATE(%s)
+        ORDER BY leave_id DESC
+        LIMIT 1
+        """,
+        (int(roster_month_id), start, end),
+    )
+    row = cursor.fetchone()
+    if row:
+        return row
+    return None
+
+
 def create_or_update_leave_request(
     cursor,
     *,
@@ -311,13 +341,29 @@ def create_or_update_leave_request(
 ) -> tuple[int, bool]:
     """
     Upsert a pending leave change request.
+    If LEAVE_ADD targets dates that already have an active leave, convert to LEAVE_UPDATE
+    so fields like affect_target can be corrected on the existing leave.
     Returns (request_id, created_new).
     """
+    payload = dict(change_payload or {})
+    effective_type = change_type
+
+    if effective_type == "LEAVE_ADD" and not payload.get("leave_id"):
+        existing = find_active_leave_overlapping_dates(
+            cursor,
+            roster_month_id=roster_month_id,
+            start_date=str(payload.get("start_date") or ""),
+            end_date=str(payload.get("end_date") or ""),
+        )
+        if existing:
+            effective_type = "LEAVE_UPDATE"
+            payload["leave_id"] = int(existing["leave_id"])
+
     matches = find_matching_pending_leave_requests(
         cursor,
         roster_month_id=roster_month_id,
-        change_type=change_type,
-        change_payload=change_payload,
+        change_type=effective_type,
+        change_payload=payload,
     )
 
     if matches:
@@ -326,10 +372,16 @@ def create_or_update_leave_request(
         cursor.execute(
             """
             UPDATE roster_change_request
-            SET change_payload=%s, submitted_by=%s, submitted_date=%s
+            SET change_type=%s, change_payload=%s, submitted_by=%s, submitted_date=%s
             WHERE request_id=%s
             """,
-            (json.dumps(change_payload), int(submitted_by), now, keep_id),
+            (
+                effective_type,
+                json.dumps(payload),
+                int(submitted_by),
+                now,
+                keep_id,
+            ),
         )
         for dup in matches[1:]:
             cursor.execute(
@@ -345,13 +397,35 @@ def create_or_update_leave_request(
             )
         return keep_id, False
 
+    # Also merge any pending LEAVE_ADD for same dates when converting to UPDATE
+    if effective_type == "LEAVE_UPDATE":
+        add_matches = find_matching_pending_leave_requests(
+            cursor,
+            roster_month_id=roster_month_id,
+            change_type="LEAVE_ADD",
+            change_payload=payload,
+        )
+        if add_matches:
+            keep_id = int(add_matches[0]["request_id"])
+            now = now_str()
+            cursor.execute(
+                """
+                UPDATE roster_change_request
+                SET change_type='LEAVE_UPDATE', change_payload=%s,
+                    submitted_by=%s, submitted_date=%s
+                WHERE request_id=%s
+                """,
+                (json.dumps(payload), int(submitted_by), now, keep_id),
+            )
+            return keep_id, False
+
     return (
         create_change_request(
             cursor,
             roster_month_id=roster_month_id,
             user_id=user_id,
-            change_type=change_type,
-            change_payload=change_payload,
+            change_type=effective_type,
+            change_payload=payload,
             submitted_by=submitted_by,
             batch_id=None,
         ),
@@ -525,6 +599,9 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
     if not day:
         raise ValueError("Roster day not found")
 
+    old_day_type = (day.get("day_type") or "").strip()
+    old_leave_id = day.get("leave_id")
+
     day_type = payload.get("day_type", day.get("day_type"))
     working_type = payload.get("working_type", day.get("working_type"))
     shift = payload.get("shift", day.get("shift", "DAY"))
@@ -550,12 +627,17 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
     if day_type == "Working" and shift == "DAY" and not shift_start:
         shift_start, shift_end = day_shift_times(roster_month.get("employee_role_name", "agent"))
 
+    # Leaving Leave → clear leave marker so metrics / re-apply don't restore Leave
+    clear_leave = old_day_type == "Leave" and day_type != "Leave"
+
     now = now_str()
     cursor.execute(
         """
         UPDATE roster_day
         SET day_type=%s, shift=%s, shift_start=%s, shift_end=%s,
-            working_type=%s, working_hours=%s, updated_date=%s
+            working_type=%s, working_hours=%s,
+            leave_id=CASE WHEN %s THEN NULL ELSE leave_id END,
+            updated_date=%s
         WHERE roster_day_id=%s
         """,
         (
@@ -565,8 +647,152 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
             shift_end.strftime("%H:%M:%S") if shift_end else None,
             working_type,
             working_hours,
+            1 if clear_leave else 0,
             now,
             int(day["roster_day_id"]),
+        ),
+    )
+
+    if clear_leave:
+        _remove_date_from_leave_coverage(
+            cursor,
+            roster_month_id,
+            roster_date,
+            leave_id=int(old_leave_id) if old_leave_id else None,
+        )
+
+
+def _remove_date_from_leave_coverage(
+    cursor,
+    roster_month_id: int,
+    roster_date: date,
+    leave_id: int | None = None,
+) -> None:
+    """
+    When a Leave day is changed back to Working/WeekOff, remove that date from
+    the underlying roster_leave so refresh_metrics cannot re-apply Leave.
+    """
+    leave = None
+    if leave_id:
+        cursor.execute(
+            """
+            SELECT * FROM roster_leave
+            WHERE leave_id=%s AND roster_month_id=%s AND is_active=1
+            LIMIT 1
+            """,
+            (int(leave_id), int(roster_month_id)),
+        )
+        leave = cursor.fetchone()
+    if not leave:
+        cursor.execute(
+            """
+            SELECT * FROM roster_leave
+            WHERE roster_month_id=%s AND is_active=1
+              AND DATE(start_date) <= DATE(%s)
+              AND DATE(end_date) >= DATE(%s)
+            ORDER BY leave_id DESC
+            LIMIT 1
+            """,
+            (int(roster_month_id), roster_date.isoformat(), roster_date.isoformat()),
+        )
+        leave = cursor.fetchone()
+    if not leave:
+        return
+
+    start = parse_date(leave.get("start_date"))
+    end = parse_date(leave.get("end_date"))
+    if not start or not end:
+        return
+
+    now = now_str()
+    lid = int(leave["leave_id"])
+
+    # Single-day leave covering this date → deactivate
+    if start == end == roster_date or (start <= roster_date <= end and start == end):
+        cursor.execute(
+            """
+            UPDATE roster_leave SET is_active=0, updated_date=%s
+            WHERE leave_id=%s
+            """,
+            (now, lid),
+        )
+        return
+
+    if not (start <= roster_date <= end):
+        return
+
+    # Shrink from start
+    if roster_date == start:
+        new_start = roster_date + timedelta(days=1)
+        cursor.execute(
+            """
+            UPDATE roster_leave SET start_date=%s, updated_date=%s
+            WHERE leave_id=%s
+            """,
+            (new_start.isoformat(), now, lid),
+        )
+        return
+
+    # Shrink from end
+    if roster_date == end:
+        new_end = roster_date - timedelta(days=1)
+        cursor.execute(
+            """
+            UPDATE roster_leave SET end_date=%s, updated_date=%s
+            WHERE leave_id=%s
+            """,
+            (new_end.isoformat(), now, lid),
+        )
+        return
+
+    # Middle of a multi-day leave → shrink original to left side, insert right side
+    left_end = roster_date - timedelta(days=1)
+    right_start = roster_date + timedelta(days=1)
+    cursor.execute(
+        """
+        UPDATE roster_leave SET end_date=%s, updated_date=%s
+        WHERE leave_id=%s
+        """,
+        (left_end.isoformat(), now, lid),
+    )
+    cursor.execute(
+        """
+        INSERT INTO roster_leave (
+            roster_month_id, leave_type, start_date, end_date, reason,
+            is_rostered, affect_target, is_half_day, is_active,
+            created_by, created_date, updated_date
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s)
+        """,
+        (
+            int(roster_month_id),
+            leave.get("leave_type") or "",
+            right_start.isoformat(),
+            end.isoformat(),
+            leave.get("reason"),
+            int(leave.get("is_rostered") or 1),
+            int(leave.get("affect_target") or 0),
+            int(leave.get("is_half_day") or 0),
+            leave.get("created_by"),
+            now,
+            now,
+        ),
+    )
+    new_leave_id = int(cursor.lastrowid)
+    # Re-link days on the right segment to the new leave row
+    cursor.execute(
+        """
+        UPDATE roster_day
+        SET leave_id=%s, updated_date=%s
+        WHERE roster_month_id=%s AND is_active=1 AND leave_id=%s
+          AND DATE(roster_date) BETWEEN DATE(%s) AND DATE(%s)
+        """,
+        (
+            new_leave_id,
+            now,
+            int(roster_month_id),
+            lid,
+            right_start.isoformat(),
+            end.isoformat(),
         ),
     )
 
