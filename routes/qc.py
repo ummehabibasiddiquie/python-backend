@@ -71,7 +71,8 @@ def assign_daily_hours():
                 u.user_tenure,
                 rd.day_type,
                 rd.working_type,
-                rd.roster_day_id
+                rd.roster_day_id,
+                COALESCE(rl.is_half_day, 0) AS is_half_day
             FROM tfs_user u
             JOIN user_role ur ON u.role_id = ur.role_id
             LEFT JOIN roster_month rm
@@ -82,6 +83,9 @@ def assign_daily_hours():
                 ON rd.roster_month_id = rm.roster_month_id
                AND rd.is_active = 1
                AND DATE(rd.roster_date) = %s
+            LEFT JOIN roster_leave rl
+                ON rl.leave_id = rd.leave_id
+               AND rl.is_active = 1
             WHERE LOWER(TRIM(ur.role_name)) = 'agent'
               AND u.is_active = 1
               AND u.is_delete = 1
@@ -104,16 +108,18 @@ def assign_daily_hours():
         data_to_insert = []
         summary = {"full": 0, "half": 0, "zero": 0}
         for row in agent_rows:
+            is_half_leave = bool(int(row.get("is_half_day") or 0))
             hours = assigned_hours_for_roster_day(
                 row.get("user_tenure"),
                 day_type=row.get("day_type"),
                 working_type=row.get("working_type"),
                 has_roster_day=row.get("roster_day_id") is not None,
+                is_half_leave=is_half_leave,
             )
             data_to_insert.append((int(row["user_id"]), hours, today_str, now_str))
             if hours <= 0:
                 summary["zero"] += 1
-            elif (row.get("working_type") or "Full") == "Half":
+            elif (row.get("working_type") or "Full") == "Half" or is_half_leave:
                 summary["half"] += 1
             else:
                 summary["full"] += 1

@@ -54,19 +54,26 @@ def assigned_hours_for_roster_day(
     day_type: str | None = None,
     working_type: str | None = None,
     has_roster_day: bool = False,
+    is_half_leave: bool = False,
 ) -> float:
     """
     Morning cron / QC assign-hours rules (roster + tenure):
       Full Working + tenure >= 1 → 9
       Full Working + tenure < 1  → 9 * tenure
-      Half Working + tenure >= 1 → 4.5
-      Half Working + tenure < 1  → 4.5 * tenure
-      WeekOff / Leave / Holiday  → 0
-      No roster day for date     → full-day tenure hours (same as Full Working)
+      Half Working / half-day leave + tenure >= 1 → 4.5
+      Half Working / half-day leave + tenure < 1  → 4.5 * tenure
+      Full Leave / WeekOff / Holiday → 0
+      No roster day for date → full-day tenure hours (same as Full Working)
     """
     factor = tenure_cap(user_tenure)
     dt = (day_type or "").strip()
     wt = (working_type or "Full").strip()
+
+    if has_roster_day and dt == "Leave":
+        # Half-day leave: employee still works the other half
+        if is_half_leave or wt == "Half":
+            return round(HALF_DAY_HOURS * factor, 2)
+        return 0.0
 
     if has_roster_day and dt and dt != "Working":
         return 0.0

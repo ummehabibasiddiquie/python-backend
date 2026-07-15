@@ -90,6 +90,10 @@ def apply_active_leaves_to_days(days: list[dict], leaves: list[dict] | None) -> 
                 row["leave_id"] = leave_id
                 row["leave_is_half_day"] = is_half
                 row["leave_affect_target"] = affect_target
+                row["leave_type"] = leave.get("leave_type") or row.get("leave_type")
+                if is_half:
+                    row["working_type"] = "Half"
+                    row["is_half_day"] = True
 
     if not indexed:
         return [dict(d) for d in days]

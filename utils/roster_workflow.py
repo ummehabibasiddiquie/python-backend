@@ -918,8 +918,10 @@ def apply_leave_delete(cursor, roster_month: dict, payload: dict) -> None:
 def _clear_leave_from_days(cursor, roster_month_id: int, leave_id: int) -> None:
     cursor.execute(
         """
-        SELECT rd.roster_day_id, rd.roster_date, rd.holiday_id
+        SELECT rd.roster_day_id, rd.roster_date, rd.holiday_id,
+               rd.working_type, rd.working_hours, rl.is_half_day
         FROM roster_day rd
+        LEFT JOIN roster_leave rl ON rl.leave_id = rd.leave_id
         WHERE rd.roster_month_id=%s AND rd.leave_id=%s AND rd.is_active=1
         """,
         (roster_month_id, int(leave_id)),
@@ -936,13 +938,31 @@ def _clear_leave_from_days(cursor, roster_month_id: int, leave_id: int) -> None:
             new_type = "WeekOff"
         else:
             new_type = "Working"
+
+        # Restore full day when the leave was half-day (working_type was flipped to Half)
+        was_half_leave = bool(int(row.get("is_half_day") or 0))
+        working_type = row.get("working_type") or "Full"
+        working_hours = row.get("working_hours")
+        if was_half_leave and (working_type or "").strip() == "Half":
+            working_type = "Full"
+            try:
+                working_hours = round(float(working_hours or HALF_DAY_HOURS) * 2, 2)
+            except (TypeError, ValueError):
+                working_hours = FULL_DAY_HOURS
+
         cursor.execute(
             """
             UPDATE roster_day
-            SET day_type=%s, leave_id=NULL, updated_date=%s
+            SET day_type=%s, leave_id=NULL, working_type=%s, working_hours=%s, updated_date=%s
             WHERE roster_day_id=%s
             """,
-            (new_type, now, int(row["roster_day_id"])),
+            (
+                new_type,
+                working_type,
+                working_hours,
+                now,
+                int(row["roster_day_id"]),
+            ),
         )
 
 
@@ -952,20 +972,42 @@ def _apply_leave_to_days(cursor, roster_month_id: int, leave_id: int, payload: d
     if not start or not end:
         raise ValueError("Invalid leave dates")
 
+    is_half = bool(int(payload.get("is_half_day") or 0))
     now = now_str()
     for d in iter_dates_inclusive(start, end):
         date_str = d.isoformat()
-        cursor.execute(
-            """
-            UPDATE roster_day
-            SET day_type='Leave', leave_id=%s, updated_date=%s
-            WHERE roster_month_id=%s
-              AND DATE(roster_date)=DATE(%s)
-              AND is_active=1
-              AND day_type IN ('Working', 'Leave')
-            """,
-            (int(leave_id), now, int(roster_month_id), date_str),
-        )
+        if is_half:
+            # Mark Leave + Half so UI / assign-hours treat it as half day, not full leave
+            cursor.execute(
+                """
+                UPDATE roster_day
+                SET day_type='Leave',
+                    leave_id=%s,
+                    working_type='Half',
+                    working_hours=CASE
+                        WHEN working_type='Half' THEN working_hours
+                        ELSE ROUND(COALESCE(working_hours, %s) / 2, 2)
+                    END,
+                    updated_date=%s
+                WHERE roster_month_id=%s
+                  AND DATE(roster_date)=DATE(%s)
+                  AND is_active=1
+                  AND day_type IN ('Working', 'Leave')
+                """,
+                (int(leave_id), FULL_DAY_HOURS, now, int(roster_month_id), date_str),
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE roster_day
+                SET day_type='Leave', leave_id=%s, updated_date=%s
+                WHERE roster_month_id=%s
+                  AND DATE(roster_date)=DATE(%s)
+                  AND is_active=1
+                  AND day_type IN ('Working', 'Leave')
+                """,
+                (int(leave_id), now, int(roster_month_id), date_str),
+            )
 
 
 def apply_extra_hours_update(cursor, roster_month: dict, payload: dict) -> None:
@@ -1015,6 +1057,7 @@ def refresh_roster_month_metrics(cursor, roster_month_id: int) -> dict:
             {
                 "start_date": leave.get("start_date"),
                 "end_date": leave.get("end_date"),
+                "is_half_day": leave.get("is_half_day") or 0,
             },
         )
     days = get_roster_days(cursor, roster_month_id)
