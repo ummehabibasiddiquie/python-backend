@@ -661,35 +661,96 @@ def deactivate_roster_month(cursor, roster_month_id: int) -> None:
     )
 
 
-def cancel_pending_requests_for_month(cursor, month_year: str, performed_by: int) -> int:
+def deactivate_active_rosters_for_month(cursor, month_year: str) -> list[int]:
+    """Bulk soft-deactivate every active roster for a month. Returns deactivated ids."""
     cursor.execute(
         """
-        SELECT rcr.request_id, rcr.roster_month_id
-        FROM roster_change_request rcr
+        SELECT roster_month_id
+        FROM roster_month
+        WHERE month_year=%s AND is_active=1
+        """,
+        (str(month_year).strip(),),
+    )
+    ids = [int(r["roster_month_id"]) for r in (cursor.fetchall() or [])]
+    if not ids:
+        return []
+
+    now = now_str()
+    placeholders = ",".join(["%s"] * len(ids))
+    cursor.execute(
+        f"""
+        UPDATE roster_month
+        SET is_active=0, updated_date=%s
+        WHERE roster_month_id IN ({placeholders})
+        """,
+        tuple([now, *ids]),
+    )
+    cursor.execute(
+        f"""
+        UPDATE roster_day
+        SET is_active=0, updated_date=%s
+        WHERE roster_month_id IN ({placeholders}) AND is_active=1
+        """,
+        tuple([now, *ids]),
+    )
+    cursor.execute(
+        f"""
+        UPDATE roster_leave
+        SET is_active=0, updated_date=%s
+        WHERE roster_month_id IN ({placeholders}) AND is_active=1
+        """,
+        tuple([now, *ids]),
+    )
+    return ids
+
+
+def cancel_pending_requests_for_month(cursor, month_year: str, performed_by: int) -> int:
+    now = now_str()
+    cursor.execute(
+        """
+        UPDATE roster_change_request rcr
         JOIN roster_month rm ON rm.roster_month_id = rcr.roster_month_id
+        SET rcr.status='Cancelled due to Regeneration',
+            rcr.reviewed_by=%s,
+            rcr.reviewed_date=%s
         WHERE rm.month_year=%s
           AND rcr.status='Pending'
           AND rcr.is_active=1
         """,
-        (month_year,),
+        (int(performed_by), now, str(month_year).strip()),
     )
-    rows = cursor.fetchall() or []
-    if not rows:
-        return 0
+    return int(cursor.rowcount or 0)
 
-    now = now_str()
-    for row in rows:
-        cursor.execute(
-            """
-            UPDATE roster_change_request
-            SET status='Cancelled due to Regeneration',
-                reviewed_by=%s,
-                reviewed_date=%s
-            WHERE request_id=%s
-            """,
-            (int(performed_by), now, int(row["request_id"])),
+
+def load_tracker_baselines_map(
+    cursor, user_ids: list[int], month_year: str
+) -> dict[int, dict]:
+    """Batch-load UMT baselines for many users (1 query)."""
+    if not user_ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(user_ids))
+    cursor.execute(
+        f"""
+        SELECT user_id, monthly_target, working_days, extra_assigned_hours
+        FROM user_monthly_tracker
+        WHERE month_year=%s AND is_active=1 AND user_id IN ({placeholders})
+        """,
+        tuple([str(month_year).strip(), *[int(u) for u in user_ids]]),
+    )
+    out: dict[int, dict] = {}
+    for row in cursor.fetchall() or []:
+        uid = int(row["user_id"])
+        daily = derive_daily_full_hours_from_tracker(
+            row.get("monthly_target"), row.get("working_days")
         )
-    return len(rows)
+        out[uid] = {
+            "daily_full_hours": daily,
+            "extra_assigned_hours": float(row.get("extra_assigned_hours") or 0),
+            "monthly_target": float(row.get("monthly_target") or 0),
+            "working_days": float(row.get("working_days") or 0),
+            "from_tracker": True,
+        }
+    return out
 
 
 def insert_roster_for_employee(
@@ -700,13 +761,18 @@ def insert_roster_for_employee(
     month_end: date,
     holidays: dict[date, dict],
     created_by: int,
+    *,
+    tracker_baseline: dict | None = None,
+    write_audit: bool = True,
 ) -> dict:
     roster_start, roster_end, skip_reason = resolve_roster_period(employee, month_start, month_end)
     if skip_reason:
         return {"user_id": employee["user_id"], "status": "skipped", "reason": skip_reason}
 
-    tracker = load_user_monthly_tracker_baseline(
-        cursor, int(employee["user_id"]), month_year
+    tracker = (
+        tracker_baseline
+        if tracker_baseline is not None
+        else load_user_monthly_tracker_baseline(cursor, int(employee["user_id"]), month_year)
     )
     daily_full_hours = tracker["daily_full_hours"]
     extra_assigned = tracker["extra_assigned_hours"]
@@ -746,15 +812,9 @@ def insert_roster_for_employee(
     )
     roster_month_id = cursor.lastrowid
 
+    day_rows = []
     for day in days:
-        cursor.execute(
-            """
-            INSERT INTO roster_day (
-                roster_month_id, roster_date, day_type, shift,
-                shift_start, shift_end, working_type, working_hours,
-                holiday_id, leave_id, is_active, created_date, updated_date
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s)
-            """,
+        day_rows.append(
             (
                 roster_month_id,
                 day["roster_date"].isoformat(),
@@ -768,27 +828,39 @@ def insert_roster_for_employee(
                 day.get("leave_id"),
                 now,
                 now,
-            ),
+            )
+        )
+    if day_rows:
+        cursor.executemany(
+            """
+            INSERT INTO roster_day (
+                roster_month_id, roster_date, day_type, shift,
+                shift_start, shift_end, working_type, working_hours,
+                holiday_id, leave_id, is_active, created_date, updated_date
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s)
+            """,
+            day_rows,
         )
 
-    write_audit_log(
-        cursor,
-        roster_month_id=roster_month_id,
-        user_id=int(employee["user_id"]),
-        action="ROSTER_GENERATED",
-        entity_type="roster_month",
-        entity_id=roster_month_id,
-        old_value=None,
-        new_value={
-            "month_year": month_year,
-            "roster_start_date": roster_start.isoformat(),
-            "roster_end_date": roster_end.isoformat(),
-            "baseline_target_days": baseline_target_days,
-            **metrics,
-        },
-        performed_by=created_by,
-        notes="Default roster generated",
-    )
+    if write_audit:
+        write_audit_log(
+            cursor,
+            roster_month_id=roster_month_id,
+            user_id=int(employee["user_id"]),
+            action="ROSTER_GENERATED",
+            entity_type="roster_month",
+            entity_id=roster_month_id,
+            old_value=None,
+            new_value={
+                "month_year": month_year,
+                "roster_start_date": roster_start.isoformat(),
+                "roster_end_date": roster_end.isoformat(),
+                "baseline_target_days": baseline_target_days,
+                **metrics,
+            },
+            performed_by=created_by,
+            notes="Default roster generated",
+        )
 
     return {
         "user_id": employee["user_id"],
@@ -799,7 +871,6 @@ def insert_roster_for_employee(
         "roster_end_date": roster_end.isoformat(),
         **metrics,
     }
-
 
 def enrich_roster_day_for_response(day: dict, holiday_lookup: dict[int, dict] | None = None) -> dict:
     """

@@ -11,6 +11,7 @@ from utils.response import api_response
 from utils.roster_helpers import (
     cancel_pending_requests_for_month,
     can_manage_roster_employees,
+    deactivate_active_rosters_for_month,
     deactivate_roster_month,
     employee_already_has_roster,
     enrich_roster_day_for_response,
@@ -22,6 +23,8 @@ from utils.roster_helpers import (
     is_self_read_only_roster_role,
     is_super_admin,
     load_active_holidays,
+    load_tracker_baselines_map,
+    FULL_DAY_HOURS,
     month_calendar_has_lock,
     month_date_range,
     month_year_label,
@@ -322,36 +325,39 @@ def reset_regenerate_roster():
         holidays = load_active_holidays(cursor, target_year)
         month_start, month_end = month_date_range(target_year, target_month)
 
-        cursor.execute(
-            """
-            SELECT roster_month_id, user_id
-            FROM roster_month
-            WHERE month_year=%s AND is_active=1
-            """,
-            (target_month_year,),
-        )
-        existing_months = cursor.fetchall() or []
-        for row in existing_months:
+        deactivated_ids = deactivate_active_rosters_for_month(cursor, target_month_year)
+        if deactivated_ids:
             write_audit_log(
                 cursor,
-                roster_month_id=int(row["roster_month_id"]),
-                user_id=int(row["user_id"]),
+                roster_month_id=None,
+                user_id=None,
                 action="ROSTER_DEACTIVATED_FOR_REGENERATION",
                 entity_type="roster_month",
-                entity_id=int(row["roster_month_id"]),
-                old_value={"month_year": target_month_year, "is_active": 1},
+                entity_id=None,
+                old_value={"month_year": target_month_year, "count": len(deactivated_ids)},
                 new_value={"is_active": 0},
                 performed_by=logged_in_user_id,
-                notes="Deactivated due to month reset and regenerate",
+                notes="Bulk deactivated due to month reset and regenerate",
             )
-            deactivate_roster_month(cursor, int(row["roster_month_id"]))
 
         cancelled_count = cancel_pending_requests_for_month(
             cursor, target_month_year, logged_in_user_id
         )
 
-        created = []
-        skipped = []
+        tracker_map = load_tracker_baselines_map(
+            cursor,
+            [int(e["user_id"]) for e in employees],
+            target_month_year,
+        )
+
+        default_tracker = {
+            "daily_full_hours": FULL_DAY_HOURS,
+            "extra_assigned_hours": 0.0,
+            "from_tracker": False,
+        }
+        created_count = 0
+        skipped_count = 0
+        skip_reasons: dict[str, int] = {}
         for employee in employees:
             result = insert_roster_for_employee(
                 cursor,
@@ -361,11 +367,15 @@ def reset_regenerate_roster():
                 month_end,
                 holidays,
                 logged_in_user_id,
+                tracker_baseline=tracker_map.get(int(employee["user_id"]), default_tracker),
+                write_audit=False,
             )
             if result.get("status") == "created":
-                created.append(result)
+                created_count += 1
             else:
-                skipped.append(result)
+                skipped_count += 1
+                reason = result.get("reason") or "skipped"
+                skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
 
         write_audit_log(
             cursor,
@@ -376,9 +386,11 @@ def reset_regenerate_roster():
             entity_id=None,
             old_value={"month_year": target_month_year},
             new_value={
-                "created_count": len(created),
-                "skipped_count": len(skipped),
+                "created_count": created_count,
+                "skipped_count": skipped_count,
                 "cancelled_pending_requests": cancelled_count,
+                "deactivated_count": len(deactivated_ids),
+                "skip_reasons": skip_reasons,
             },
             performed_by=logged_in_user_id,
             notes="Super Admin reset and regenerated roster month",
@@ -391,10 +403,10 @@ def reset_regenerate_roster():
             {
                 "month_year": target_month_year,
                 "cancelled_pending_requests": cancelled_count,
-                "created_count": len(created),
-                "skipped_count": len(skipped),
-                "created": created,
-                "skipped": skipped,
+                "deactivated_count": len(deactivated_ids),
+                "created_count": created_count,
+                "skipped_count": skipped_count,
+                "skip_reasons": skip_reasons,
             },
         )
     except Exception as e:
