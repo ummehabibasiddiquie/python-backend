@@ -85,6 +85,66 @@ class RosterPhase2MetricsTest(unittest.TestCase):
         self.assertEqual(metrics["target_working_days"], 1.5)
         self.assertEqual(metrics["monthly_target_hours"], 13.5)
 
+    def test_half_day_leave_affect_target_yes_nets_half_day(self):
+        """Half leave + affect target: calendar −1, target −0.5 / hours −4.5."""
+        days = [
+            self._working_day(date(2026, 3, 2)),
+            self._leave_day(date(2026, 3, 3)),
+            self._working_day(date(2026, 3, 4)),
+        ]
+        leaves = [
+            {
+                "is_active": 1,
+                "affect_target": 1,
+                "is_half_day": 1,
+                "start_date": date(2026, 3, 3),
+                "end_date": date(2026, 3, 3),
+            }
+        ]
+        metrics = recalculate_metrics_from_days_and_leaves(days, leaves)
+        self.assertEqual(metrics["calendar_working_days"], 2.0)
+        self.assertEqual(metrics["target_working_days"], 2.5)
+        self.assertEqual(metrics["monthly_target_hours"], 22.5)
+
+    def test_mixed_full_and_half_affect_target_yes(self):
+        """23 baseline − 4 full − 0.5 half = 18.5 days / 166.5 hours."""
+        days = [self._working_day(date(2026, 7, d)) for d in range(1, 24)]  # 23 working stubs
+        # overlay 4 full leave + 1 half leave
+        leave_dates_full = [date(2026, 7, 1), date(2026, 7, 2), date(2026, 7, 3), date(2026, 7, 4)]
+        half_date = date(2026, 7, 5)
+        for i, d in enumerate(days):
+            rd = d["roster_date"]
+            if rd in leave_dates_full or rd == half_date:
+                days[i] = self._leave_day(rd, leave_id=1 if rd != half_date else 2)
+
+        leaves = [
+            {
+                "is_active": 1,
+                "affect_target": 1,
+                "is_half_day": 0,
+                "start_date": date(2026, 7, 1),
+                "end_date": date(2026, 7, 3),
+            },
+            {
+                "is_active": 1,
+                "affect_target": 1,
+                "is_half_day": 0,
+                "start_date": date(2026, 7, 4),
+                "end_date": date(2026, 7, 4),
+            },
+            {
+                "is_active": 1,
+                "affect_target": 1,
+                "is_half_day": 1,
+                "start_date": half_date,
+                "end_date": half_date,
+            },
+        ]
+        metrics = recalculate_metrics_from_days_and_leaves(days, leaves)
+        self.assertEqual(metrics["calendar_working_days"], 18.0)
+        self.assertEqual(metrics["target_working_days"], 18.5)
+        self.assertEqual(metrics["monthly_target_hours"], 166.5)
+
 
 if __name__ == "__main__":
     unittest.main()

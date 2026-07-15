@@ -218,12 +218,9 @@ def add_tracker():
     task_id = int(form["task_id"])
     user_id = int(form["user_id"])
     production = float(form["production"])
-    tenure_target = float(form["tenure_target"])
     shift = form.get("shift", "DAY").upper()
     now_str = form.get("date")
     print(now_str)
-
-    billable_hours = production / tenure_target if tenure_target else 0
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -247,10 +244,21 @@ def add_tracker():
         proj_row = cursor.fetchone() or {}
         project_code = proj_row.get("project_code") or "PROJECT"
 
-        # --- get user_name
-        cursor.execute("SELECT user_name FROM tfs_user WHERE user_id=%s", (user_id,))
+        # --- get user_name + tenure (if tenure < 1 → use 1)
+        cursor.execute(
+            "SELECT user_name, user_tenure FROM tfs_user WHERE user_id=%s",
+            (user_id,),
+        )
         usr_row = cursor.fetchone() or {}
         user_name = usr_row.get("user_name") or "USER"
+        try:
+            user_tenure = float(usr_row.get("user_tenure") or 1)
+        except (TypeError, ValueError):
+            user_tenure = 1.0
+        if user_tenure < 1:
+            user_tenure = 1.0
+        tenure_target = round(float(actual_target or 0) * user_tenure, 2)
+        billable_hours = production / tenure_target if tenure_target else 0
 
         # ✅ file upload to Cloudinary
         tracker_file = None
@@ -368,9 +376,10 @@ def update_tracker():
 
         # compute targets only if base_target is explicitly provided
         # NOTE: The base_target field in API contains tenure_target value
+        # Tenure min=1 clamp applies only at ADD time — update keeps submitted / raw tenure math
         if "base_target" in form:
             tenure_target = float(form.get("base_target"))  # API sends tenure_target as base_target
-            user_tenure = float(user_row["user_tenure"])
+            user_tenure = float(user_row["user_tenure"]) if user_row.get("user_tenure") is not None else 0
             base_target = tenure_target / user_tenure if user_tenure else 0
             actual_target = round(base_target, 2)
         else:

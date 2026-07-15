@@ -87,10 +87,14 @@ def recalculate_metrics_from_days_and_leaves(
 
   Leave rules (approved):
     - Leave dates are reflected on days as day_type=Leave (not Working).
-    - calendar_working_days counts only Working days.
-    - Leaves with affect_target=No add credit back to target metrics only.
-    - Leaves with affect_target=Yes are already excluded via day_type=Leave.
-    - Night shift does not affect target hours (only working_type drives hours).
+    - calendar_working_days counts only Working days (half-day leave still removes
+      the calendar day entirely, same as full leave).
+    - Leaves with affect_target=No credit the leave back to target metrics
+      (full leave → +1 day / full hours; half leave → +0.5 day / half hours).
+    - Leaves with affect_target=Yes:
+        full leave → no credit (net −1 day / full hours)
+        half leave → credit half day back (net −0.5 day / half hours), because the
+        day was fully removed from the calendar but only half should hit the target.
     """
     leaves = leaves or []
     full_day_hours = infer_full_day_hours_from_days(days)
@@ -109,8 +113,6 @@ def recalculate_metrics_from_days_and_leaves(
     for leave in leaves:
         if not int(leave.get("is_active", 1)):
             continue
-        if int(leave.get("affect_target", 0)):
-            continue
 
         start = parse_date(leave.get("start_date"))
         end = parse_date(leave.get("end_date"))
@@ -118,8 +120,20 @@ def recalculate_metrics_from_days_and_leaves(
             continue
 
         is_half = bool(int(leave.get("is_half_day", 0)))
-        hrs = leave_hours_credit(is_half, full_day_hours)
-        day_equiv = leave_day_credit(is_half)
+        affect_target = bool(int(leave.get("affect_target", 0)))
+
+        # Full leave + affect target: no credit (already excluded via day_type=Leave)
+        if affect_target and not is_half:
+            continue
+
+        # Half leave + affect target: credit half day so net target impact is −0.5
+        # Affect target No: credit full or half based on leave type
+        if affect_target and is_half:
+            hrs = leave_hours_credit(True, full_day_hours)
+            day_equiv = 0.5
+        else:
+            hrs = leave_hours_credit(is_half, full_day_hours)
+            day_equiv = leave_day_credit(is_half)
 
         for d in iter_dates_inclusive(start, end):
             matching = [x for x in days if parse_date(x.get("roster_date")) == d]

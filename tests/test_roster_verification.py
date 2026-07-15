@@ -122,7 +122,7 @@ class RosterScenarioVerification(unittest.TestCase):
         self.assertEqual(metrics["calendar_working_days"], 2.0)
         self.assertEqual(metrics["monthly_target_hours"], FULL_DAY_HOURS + HALF_DAY_HOURS)
 
-    def test_tracker_daily_hours_used_on_generation(self):
+    def test_tracker_daily_hours_helper(self):
         self.assertEqual(derive_daily_full_hours_from_tracker(180, 20), 9.0)
         self.assertEqual(derive_daily_full_hours_from_tracker(160, 20), 8.0)
         self.assertEqual(derive_daily_full_hours_from_tracker(None, 20), FULL_DAY_HOURS)
@@ -130,6 +130,19 @@ class RosterScenarioVerification(unittest.TestCase):
         day = build_default_day(date(2026, 3, 2), "agent", {}, daily_full_hours=8.0)
         self.assertEqual(day["working_hours"], 8.0)
         self.assertEqual(working_hours_for_day(day), 8.0)
+
+    def test_daily_hours_for_tenure(self):
+        from utils.roster_helpers import daily_hours_for_tenure
+
+        self.assertEqual(daily_hours_for_tenure(0.5), 4.5)
+        self.assertEqual(daily_hours_for_tenure(0.75), 6.75)
+        self.assertEqual(daily_hours_for_tenure(1), 9.0)
+        self.assertEqual(daily_hours_for_tenure(1.5), 9.0)
+        self.assertEqual(daily_hours_for_tenure(None), 9.0)
+
+        day = build_default_day(date(2026, 3, 2), "agent", {}, daily_full_hours=4.5)
+        self.assertEqual(day["working_hours"], 4.5)
+        self.assertEqual(working_hours_for_day(day), 4.5)
 
     def test_mid_month_join_proration(self):
         employee = {

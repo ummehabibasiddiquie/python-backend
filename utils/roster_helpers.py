@@ -16,6 +16,25 @@ from utils.json_utils import dumps_json_safe
 FULL_DAY_HOURS = 9.0
 HALF_DAY_HOURS = 4.5
 
+
+def daily_hours_for_tenure(user_tenure) -> float:
+    """
+    Full working-day hours for roster target math.
+    tenure < 1  → 9 * tenure  (0.5 → 4.5, 0.75 → 6.75)
+    tenure >= 1 → 9           (never more than 9, even if tenure > 1)
+    Missing/invalid tenure → treat as 1 (full 9 hours).
+    """
+    try:
+        tenure = float(user_tenure)
+    except (TypeError, ValueError):
+        tenure = 1.0
+    if tenure < 0:
+        tenure = 0.0
+    if tenure > 1:
+        tenure = 1.0
+    return round(FULL_DAY_HOURS * tenure, 2)
+
+
 AGENT_DAY_SHIFT_START = time(9, 0)
 AGENT_DAY_SHIFT_END = time(18, 30)
 QA_DAY_SHIFT_START = time(10, 0)
@@ -271,6 +290,7 @@ def get_eligible_employees(
             u.role_id,
             LOWER(TRIM(r.role_name)) AS role_name,
             u.joining_date,
+            u.user_tenure,
             u.deactivated_at,
             u.is_active,
             u.team_id,
@@ -774,7 +794,8 @@ def insert_roster_for_employee(
         if tracker_baseline is not None
         else load_user_monthly_tracker_baseline(cursor, int(employee["user_id"]), month_year)
     )
-    daily_full_hours = tracker["daily_full_hours"]
+    # Target hours: 1 working day = 9 * min(tenure, 1)
+    daily_full_hours = daily_hours_for_tenure(employee.get("user_tenure"))
     extra_assigned = tracker["extra_assigned_hours"]
 
     days = generate_roster_days_for_employee(
@@ -862,6 +883,23 @@ def insert_roster_for_employee(
             notes="Default roster generated",
         )
 
+    # Push target hours + working days into user_monthly_tracker on generate/reset
+    sync_to_user_monthly_tracker(
+        cursor,
+        {
+            "roster_month_id": roster_month_id,
+            "user_id": int(employee["user_id"]),
+            "month_year": month_year,
+            "monthly_target_hours": metrics["monthly_target_hours"],
+            "target_working_days": metrics["target_working_days"],
+            "extra_assigned_hours": extra_assigned,
+        },
+        "Synced from roster generate/reset",
+        created_by,
+        approval_status=None,
+        action="ROSTER_GENERATED_SYNCED_TO_UMT",
+    )
+
     return {
         "user_id": employee["user_id"],
         "user_name": employee.get("user_name"),
@@ -871,6 +909,95 @@ def insert_roster_for_employee(
         "roster_end_date": roster_end.isoformat(),
         **metrics,
     }
+
+def sync_to_user_monthly_tracker(
+    cursor,
+    roster_month: dict,
+    reviewer_comment: str,
+    performed_by: int,
+    *,
+    approval_status: str | None = "Approved",
+    action: str = "ROSTER_SYNCED_TO_PRODUCTION",
+) -> dict:
+    """
+    Upsert user_monthly_tracker from roster metrics.
+    Used on generate/reset and again when a change cycle is approved.
+    Rejected changes never call this (calendar + UMT stay as last approved/generated).
+    """
+    user_id = int(roster_month["user_id"])
+    month_year = roster_month["month_year"]
+    monthly_target = str(roster_month["monthly_target_hours"])
+    working_days = str(roster_month["target_working_days"])
+    extra = float(roster_month.get("extra_assigned_hours") or 0)
+    now = now_str()
+
+    cursor.execute(
+        """
+        SELECT user_monthly_tracker_id, monthly_target, working_days, extra_assigned_hours
+        FROM user_monthly_tracker
+        WHERE user_id=%s AND month_year=%s AND is_active=1
+        LIMIT 1
+        """,
+        (user_id, month_year),
+    )
+    existing = cursor.fetchone()
+    old_value = dict(existing) if existing else None
+
+    if existing:
+        cursor.execute(
+            """
+            UPDATE user_monthly_tracker
+            SET monthly_target=%s, working_days=%s, extra_assigned_hours=%s
+            WHERE user_monthly_tracker_id=%s
+            """,
+            (monthly_target, working_days, extra, int(existing["user_monthly_tracker_id"])),
+        )
+        tracker_id = int(existing["user_monthly_tracker_id"])
+    else:
+        cursor.execute(
+            """
+            INSERT INTO user_monthly_tracker (
+                user_id, month_year, monthly_target, extra_assigned_hours,
+                working_days, is_active, created_date
+            ) VALUES (%s,%s,%s,%s,%s,1,%s)
+            """,
+            (user_id, month_year, monthly_target, extra, working_days, now),
+        )
+        tracker_id = int(cursor.lastrowid)
+
+    roster_month_id = roster_month.get("roster_month_id")
+    if roster_month_id:
+        cursor.execute(
+            """
+            UPDATE roster_month
+            SET production_synced_at=%s, updated_date=%s
+            WHERE roster_month_id=%s
+            """,
+            (now, now, int(roster_month_id)),
+        )
+
+    new_value = {
+        "user_monthly_tracker_id": tracker_id,
+        "monthly_target": monthly_target,
+        "working_days": working_days,
+        "extra_assigned_hours": extra,
+    }
+    if roster_month_id:
+        write_audit_log(
+            cursor,
+            roster_month_id=int(roster_month_id),
+            user_id=user_id,
+            action=action,
+            entity_type="user_monthly_tracker",
+            entity_id=tracker_id,
+            old_value=old_value,
+            new_value=new_value,
+            performed_by=int(performed_by),
+            approval_status=approval_status,
+            notes=reviewer_comment,
+        )
+    return new_value
+
 
 def enrich_roster_day_for_response(day: dict, holiday_lookup: dict[int, dict] | None = None) -> dict:
     """

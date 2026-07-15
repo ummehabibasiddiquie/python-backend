@@ -19,6 +19,7 @@ from utils.roster_helpers import (
     now_str,
     parse_date,
     parse_month_year,
+    sync_to_user_monthly_tracker,
     write_audit_log,
 )
 from utils.json_utils import dumps_json_safe
@@ -778,79 +779,6 @@ def refresh_roster_month_metrics(cursor, roster_month_id: int) -> dict:
         ),
     )
     return metrics
-
-
-def sync_to_user_monthly_tracker(cursor, roster_month: dict, reviewer_comment: str, performed_by: int) -> dict:
-    user_id = int(roster_month["user_id"])
-    month_year = roster_month["month_year"]
-    monthly_target = str(roster_month["monthly_target_hours"])
-    working_days = str(roster_month["target_working_days"])
-    extra = float(roster_month.get("extra_assigned_hours") or 0)
-    now = now_str()
-
-    cursor.execute(
-        """
-        SELECT user_monthly_tracker_id, monthly_target, working_days, extra_assigned_hours
-        FROM user_monthly_tracker
-        WHERE user_id=%s AND month_year=%s AND is_active=1
-        LIMIT 1
-        """,
-        (user_id, month_year),
-    )
-    existing = cursor.fetchone()
-    old_value = dict(existing) if existing else None
-
-    if existing:
-        cursor.execute(
-            """
-            UPDATE user_monthly_tracker
-            SET monthly_target=%s, working_days=%s, extra_assigned_hours=%s
-            WHERE user_monthly_tracker_id=%s
-            """,
-            (monthly_target, working_days, extra, int(existing["user_monthly_tracker_id"])),
-        )
-        tracker_id = int(existing["user_monthly_tracker_id"])
-    else:
-        cursor.execute(
-            """
-            INSERT INTO user_monthly_tracker (
-                user_id, month_year, monthly_target, extra_assigned_hours,
-                working_days, is_active, created_date
-            ) VALUES (%s,%s,%s,%s,%s,1,%s)
-            """,
-            (user_id, month_year, monthly_target, extra, working_days, now),
-        )
-        tracker_id = int(cursor.lastrowid)
-
-    cursor.execute(
-        """
-        UPDATE roster_month
-        SET production_synced_at=%s, updated_date=%s
-        WHERE roster_month_id=%s
-        """,
-        (now, now, int(roster_month["roster_month_id"])),
-    )
-
-    new_value = {
-        "user_monthly_tracker_id": tracker_id,
-        "monthly_target": monthly_target,
-        "working_days": working_days,
-        "extra_assigned_hours": extra,
-    }
-    write_audit_log(
-        cursor,
-        roster_month_id=int(roster_month["roster_month_id"]),
-        user_id=user_id,
-        action="ROSTER_SYNCED_TO_PRODUCTION",
-        entity_type="user_monthly_tracker",
-        entity_id=tracker_id,
-        old_value=old_value,
-        new_value=new_value,
-        performed_by=int(performed_by),
-        approval_status="Approved",
-        notes=reviewer_comment,
-    )
-    return new_value
 
 
 def save_version_snapshot(
