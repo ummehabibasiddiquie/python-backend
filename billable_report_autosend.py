@@ -417,12 +417,13 @@ def fetch_data():
             roster_info = roster_day_map.get(uid) or {}
             if is_team_agent(u):
                 assigned = 0
+            elif uid in assigned_map_qc:
+                # Source of truth: temp_qc (written by assign_daily_hours)
+                assigned = assigned_map_qc.get(uid, 0)
             elif roster_info.get("assigned_hours") is not None:
                 assigned = roster_info["assigned_hours"]
-            elif uid in daily_map and uid in assigned_map_qc:
-                assigned = assigned_map_qc.get(uid, 0)
             else:
-                # Tenure-based full day when no roster / QC row yet
+                # Tenure-based full day when no temp_qc / roster row yet
                 try:
                     tenure = float(u.get("user_tenure") or 1)
                 except (TypeError, ValueError):

@@ -1094,24 +1094,26 @@ def view_daily_trackers():
                     AS cumulative_billable_hours_till_day,
 
                 -- QC score from temp_qc / qc_records.
-                -- Assigned hours: derive from roster day_type + working_type + tenure
-                -- (do NOT prefer raw working_hours — it can stay at full-day after Half is selected)
+                -- Assigned hours: source of truth is temp_qc (written by assign_daily_hours cron).
+                -- Fallback to roster Working/Half + tenure only when no temp_qc row yet.
                 COALESCE(tqc.qc_score, qr.qc_score) AS qc_score,
-                CASE
-                  WHEN rd.day_type = 'Leave' AND (
-                        rd.working_type = 'Half'
-                     OR COALESCE(rl.is_half_day, 0) = 1
-                  ) THEN
-                    ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
-                  WHEN rd.day_type IN ('Leave', 'WeekOff', 'Holiday') THEN 0
-                  WHEN rd.working_type = 'Half' THEN
-                    ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
-                  WHEN rd.roster_day_id IS NOT NULL THEN
-                    ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
-                  WHEN tqc.assigned_hours IS NOT NULL THEN tqc.assigned_hours
-                  ELSE
-                    ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
-                END AS assigned_hours,
+                COALESCE(
+                    tqc.assigned_hours,
+                    CASE
+                      WHEN rd.day_type = 'Leave' AND (
+                            rd.working_type = 'Half'
+                         OR COALESCE(rl.is_half_day, 0) = 1
+                      ) THEN
+                        ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                      WHEN rd.day_type IN ('Leave', 'WeekOff', 'Holiday') THEN 0
+                      WHEN rd.working_type = 'Half' THEN
+                        ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                      WHEN rd.roster_day_id IS NOT NULL THEN
+                        ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                      ELSE
+                        ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                    END
+                ) AS assigned_hours,
                 COALESCE(rd.working_type, 'Full') AS working_type,
 
                 umt.user_monthly_tracker_id,
