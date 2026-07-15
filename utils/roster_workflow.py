@@ -627,8 +627,26 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
     if day_type == "Working" and shift == "DAY" and not shift_start:
         shift_start, shift_end = day_shift_times(roster_month.get("employee_role_name", "agent"))
 
-    # Leaving Leave → clear leave marker so metrics / re-apply don't restore Leave
-    clear_leave = old_day_type == "Leave" and day_type != "Leave"
+    # Restoring Working/WeekOff must also drop leave coverage. Otherwise
+    # refresh_roster_month_metrics / list API re-apply Leave from roster_leave
+    # and calendar + target look unchanged after approve.
+    day_type_norm = (day_type or "").strip()
+    clear_leave = day_type_norm in ("Working", "WeekOff", "Holiday") and (
+        old_day_type == "Leave" or bool(old_leave_id)
+    )
+    # Also clear if any active leave still covers this date (DB day may already be Working)
+    if day_type_norm in ("Working", "WeekOff", "Holiday") and not clear_leave:
+        cursor.execute(
+            """
+            SELECT leave_id FROM roster_leave
+            WHERE roster_month_id=%s AND is_active=1
+              AND DATE(start_date) <= DATE(%s)
+              AND DATE(end_date) >= DATE(%s)
+            LIMIT 1
+            """,
+            (roster_month_id, roster_date.isoformat(), roster_date.isoformat()),
+        )
+        clear_leave = cursor.fetchone() is not None
 
     now = now_str()
     cursor.execute(
@@ -636,18 +654,18 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
         UPDATE roster_day
         SET day_type=%s, shift=%s, shift_start=%s, shift_end=%s,
             working_type=%s, working_hours=%s,
-            leave_id=CASE WHEN %s THEN NULL ELSE leave_id END,
+            leave_id=%s,
             updated_date=%s
         WHERE roster_day_id=%s
         """,
         (
-            day_type,
+            day_type_norm or day_type,
             shift,
             shift_start.strftime("%H:%M:%S") if shift_start else None,
             shift_end.strftime("%H:%M:%S") if shift_end else None,
             working_type,
             working_hours,
-            1 if clear_leave else 0,
+            None if clear_leave else old_leave_id,
             now,
             int(day["roster_day_id"]),
         ),
@@ -662,53 +680,25 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
         )
 
 
-def _remove_date_from_leave_coverage(
+def _remove_date_from_one_leave(
     cursor,
     roster_month_id: int,
     roster_date: date,
-    leave_id: int | None = None,
+    leave: dict,
 ) -> None:
-    """
-    When a Leave day is changed back to Working/WeekOff, remove that date from
-    the underlying roster_leave so refresh_metrics cannot re-apply Leave.
-    """
-    leave = None
-    if leave_id:
-        cursor.execute(
-            """
-            SELECT * FROM roster_leave
-            WHERE leave_id=%s AND roster_month_id=%s AND is_active=1
-            LIMIT 1
-            """,
-            (int(leave_id), int(roster_month_id)),
-        )
-        leave = cursor.fetchone()
-    if not leave:
-        cursor.execute(
-            """
-            SELECT * FROM roster_leave
-            WHERE roster_month_id=%s AND is_active=1
-              AND DATE(start_date) <= DATE(%s)
-              AND DATE(end_date) >= DATE(%s)
-            ORDER BY leave_id DESC
-            LIMIT 1
-            """,
-            (int(roster_month_id), roster_date.isoformat(), roster_date.isoformat()),
-        )
-        leave = cursor.fetchone()
-    if not leave:
-        return
-
+    """Shrink / split / deactivate a single leave so roster_date is no longer covered."""
     start = parse_date(leave.get("start_date"))
     end = parse_date(leave.get("end_date"))
     if not start or not end:
+        return
+    if not (start <= roster_date <= end):
         return
 
     now = now_str()
     lid = int(leave["leave_id"])
 
     # Single-day leave covering this date → deactivate
-    if start == end == roster_date or (start <= roster_date <= end and start == end):
+    if start == end:
         cursor.execute(
             """
             UPDATE roster_leave SET is_active=0, updated_date=%s
@@ -716,9 +706,6 @@ def _remove_date_from_leave_coverage(
             """,
             (now, lid),
         )
-        return
-
-    if not (start <= roster_date <= end):
         return
 
     # Shrink from start
@@ -778,7 +765,6 @@ def _remove_date_from_leave_coverage(
         ),
     )
     new_leave_id = int(cursor.lastrowid)
-    # Re-link days on the right segment to the new leave row
     cursor.execute(
         """
         UPDATE roster_day
@@ -795,6 +781,53 @@ def _remove_date_from_leave_coverage(
             end.isoformat(),
         ),
     )
+
+
+def _remove_date_from_leave_coverage(
+    cursor,
+    roster_month_id: int,
+    roster_date: date,
+    leave_id: int | None = None,
+) -> None:
+    """
+    When a Leave day is changed back to Working/WeekOff, remove that date from
+    every overlapping roster_leave so refresh_metrics cannot re-apply Leave.
+    """
+    leaves: list[dict] = []
+    seen_ids: set[int] = set()
+
+    if leave_id:
+        cursor.execute(
+            """
+            SELECT * FROM roster_leave
+            WHERE leave_id=%s AND roster_month_id=%s AND is_active=1
+            LIMIT 1
+            """,
+            (int(leave_id), int(roster_month_id)),
+        )
+        row = cursor.fetchone()
+        if row:
+            leaves.append(row)
+            seen_ids.add(int(row["leave_id"]))
+
+    cursor.execute(
+        """
+        SELECT * FROM roster_leave
+        WHERE roster_month_id=%s AND is_active=1
+          AND DATE(start_date) <= DATE(%s)
+          AND DATE(end_date) >= DATE(%s)
+        ORDER BY leave_id ASC
+        """,
+        (int(roster_month_id), roster_date.isoformat(), roster_date.isoformat()),
+    )
+    for row in cursor.fetchall() or []:
+        lid = int(row["leave_id"])
+        if lid not in seen_ids:
+            leaves.append(row)
+            seen_ids.add(lid)
+
+    for leave in leaves:
+        _remove_date_from_one_leave(cursor, roster_month_id, roster_date, leave)
 
 
 def apply_weekoff_swap(cursor, roster_month: dict, payload: dict) -> None:

@@ -50,6 +50,9 @@ def now_str() -> str:
 def parse_date(value: str | date | None) -> date | None:
     if value is None:
         return None
+    # datetime is a subclass of date — normalize to date first
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
     s = str(value).strip()
