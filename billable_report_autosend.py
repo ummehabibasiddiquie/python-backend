@@ -39,10 +39,18 @@ CC_RECIPIENTS = [
 
 LOG_FILE = Path(__file__).resolve().parent / "daily_tracker_report.log"
 
+_handlers = [logging.StreamHandler()]
+try:
+    _handlers.insert(0, logging.FileHandler(LOG_FILE))
+except OSError:
+    # Vercel / read-only FS — stdout only
+    pass
+
 logging.basicConfig(
-    filename=LOG_FILE,
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=_handlers,
+    force=True,
 )
 
 def is_team_agent(u):
@@ -75,7 +83,7 @@ def fetch_data():
         report_date = today - timedelta(days=1)
 
         # TEST DATE
-        # report_date = datetime.strptime("2026-06-30", "%Y-%m-%d").date()
+        report_date = datetime.strptime("2026-07-14", "%Y-%m-%d").date()
         
         report_month = report_date.strftime("%b%Y").upper()
 
@@ -664,25 +672,43 @@ def send_email(report_date, html_body):
 
 
 # -------------------------------
-# MAIN
+# MAIN (CLI + Vercel /qc/send-billable-report)
 # -------------------------------
+def run_billable_report():
+    """Build yesterday's report and email it. Returns a result dict."""
+    report_date, data = fetch_data()
+    if not data:
+        logging.info("No data found")
+        return {
+            "ok": True,
+            "sent": False,
+            "report_date": report_date.isoformat() if report_date else None,
+            "message": "No data found",
+        }
+
+    html = generate_html(report_date, data)
+    send_email(report_date, html)
+    logging.info("Report sent successfully")
+    return {
+        "ok": True,
+        "sent": True,
+        "report_date": report_date.isoformat(),
+        "recipients": list(RECIPIENTS),
+        "message": "Report sent successfully",
+    }
+
+
 if __name__ == "__main__":
 
     try:
-
-        report_date, data = fetch_data()
-
-        if not data:
-            logging.info("No data found")
-            exit()
-
-        html = generate_html(report_date, data)
-
-        send_email(report_date, html)
-
-        logging.info("Report sent successfully")
+        result = run_billable_report()
+        if not result.get("sent"):
+            print(result.get("message") or "No data found")
+            raise SystemExit(0)
+        print(result.get("message"))
 
     except Exception as e:
         print("Error:", str(e))
 
         logging.exception(f"Report failed: {str(e)}")
+        raise SystemExit(1)

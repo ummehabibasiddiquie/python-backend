@@ -154,6 +154,33 @@ def assign_daily_hours():
 
 
 # ---------------------------
+# BILLABLE REPORT EMAIL (cron + manual)
+# ---------------------------
+@qc_bp.route("/send-billable-report", methods=["GET", "POST"])
+def send_billable_report():
+    """
+    Emails yesterday's delivered billable hours report (manual only — no cron).
+    GET or POST /qc/send-billable-report
+    Optional: Authorization: Bearer <CRON_SECRET>
+    """
+    import os
+
+    cron_secret = (os.getenv("CRON_SECRET") or "").strip()
+    if cron_secret:
+        auth = (request.headers.get("Authorization") or "").strip()
+        if auth != f"Bearer {cron_secret}":
+            return response(False, "Unauthorized", None, 401)
+
+    try:
+        from billable_report_autosend import run_billable_report
+
+        result = run_billable_report()
+        return response(True, result.get("message") or "OK", result, 200)
+    except Exception as e:
+        return response(False, f"Billable report failed: {str(e)}", None, 500)
+
+
+# ---------------------------
 # UPSERT (EXISTING)
 # ---------------------------
 @qc_bp.route("/temp-qc", methods=["POST"])
