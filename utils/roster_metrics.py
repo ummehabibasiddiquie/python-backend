@@ -48,6 +48,20 @@ def leave_day_credit(is_half_day: bool) -> float:
     return 0.5 if is_half_day else 1.0
 
 
+def _index_leaves_by_date(leaves: list[dict] | None) -> dict[date, dict]:
+    by_date: dict[date, dict] = {}
+    for leave in leaves or []:
+        if not int(leave.get("is_active", 1)):
+            continue
+        start = parse_date(leave.get("start_date"))
+        end = parse_date(leave.get("end_date"))
+        if not start or not end:
+            continue
+        for d in iter_dates_inclusive(start, end):
+            by_date[d] = leave
+    return by_date
+
+
 def apply_active_leaves_to_days(days: list[dict], leaves: list[dict] | None) -> list[dict]:
     """Merge approved leave records onto working days for metrics and calendar display."""
     if not leaves:
@@ -67,11 +81,15 @@ def apply_active_leaves_to_days(days: list[dict], leaves: list[dict] | None) -> 
         if not start or not end:
             continue
         leave_id = leave.get("leave_id")
+        is_half = bool(int(leave.get("is_half_day", 0)))
+        affect_target = bool(int(leave.get("affect_target", 0)))
         for d in iter_dates_inclusive(start, end):
             row = indexed.get(d)
-            if row and row.get("day_type") == "Working":
+            if row and row.get("day_type") in ("Working", "Leave"):
                 row["day_type"] = "Leave"
                 row["leave_id"] = leave_id
+                row["leave_is_half_day"] = is_half
+                row["leave_affect_target"] = affect_target
 
     if not indexed:
         return [dict(d) for d in days]
@@ -85,33 +103,45 @@ def recalculate_metrics_from_days_and_leaves(
     """
     Compute calendar_working_days, target_working_days, monthly_target_hours.
 
-  Leave rules (approved):
-    - Leave dates are reflected on days as day_type=Leave (not Working).
-    - calendar_working_days counts only Working days (half-day leave still removes
-      the calendar day entirely, same as full leave).
-    - Leaves with affect_target=No credit the leave back to target metrics
-      (full leave → +1 day / full hours; half leave → +0.5 day / half hours).
-    - Leaves with affect_target=Yes:
-        full leave → no credit (net −1 day / full hours)
-        half leave → credit half day back (net −0.5 day / half hours), because the
-        day was fully removed from the calendar but only half should hit the target.
+    Leave rules (approved):
+    - Full leave removes the day from calendar/base hours.
+    - Half-day leave counts as 0.5 working day + half hours (employee worked half).
+    - affect_target=No credits the leave back onto target (full → +1 / full hours;
+      half → +0.5 / half hours so the other half is restored and target is unchanged).
+    - affect_target=Yes keeps the reduction (full → −1; half → −0.5).
     """
     leaves = leaves or []
     full_day_hours = infer_full_day_hours_from_days(days)
+    leave_by_date = _index_leaves_by_date(leaves)
 
     calendar_working_days = 0.0
     base_target_hours = 0.0
 
     for day in days:
+        d = parse_date(day.get("roster_date"))
+        leave = leave_by_date.get(d) if d else None
+        is_half_leave = bool(leave and int(leave.get("is_half_day", 0)))
+
         if is_calendar_working_day(day):
-            calendar_working_days += 1.0
+            working_type = (day.get("working_type") or "Full").strip()
+            if working_type == "Half":
+                calendar_working_days += 0.5
+            else:
+                calendar_working_days += 1.0
             base_target_hours += working_hours_for_day(day)
+        elif day.get("day_type") == "Leave" and is_half_leave:
+            # Half-day leave: still worked half the day
+            calendar_working_days += 0.5
+            base_target_hours += leave_hours_credit(True, full_day_hours)
 
     target_hour_credit = 0.0
     target_day_credit = 0.0
 
     for leave in leaves:
         if not int(leave.get("is_active", 1)):
+            continue
+        # Only credit when leave should NOT reduce target
+        if int(leave.get("affect_target", 0)):
             continue
 
         start = parse_date(leave.get("start_date"))
@@ -120,20 +150,10 @@ def recalculate_metrics_from_days_and_leaves(
             continue
 
         is_half = bool(int(leave.get("is_half_day", 0)))
-        affect_target = bool(int(leave.get("affect_target", 0)))
-
-        # Full leave + affect target: no credit (already excluded via day_type=Leave)
-        if affect_target and not is_half:
-            continue
-
-        # Half leave + affect target: credit half day so net target impact is −0.5
-        # Affect target No: credit full or half based on leave type
-        if affect_target and is_half:
-            hrs = leave_hours_credit(True, full_day_hours)
-            day_equiv = 0.5
-        else:
-            hrs = leave_hours_credit(is_half, full_day_hours)
-            day_equiv = leave_day_credit(is_half)
+        # Full leave was fully removed → credit full day back
+        # Half leave already counted 0.5 → credit remaining 0.5 so target stays full
+        hrs = leave_hours_credit(is_half, full_day_hours)
+        day_equiv = leave_day_credit(is_half)
 
         for d in iter_dates_inclusive(start, end):
             matching = [x for x in days if parse_date(x.get("roster_date")) == d]
@@ -141,8 +161,8 @@ def recalculate_metrics_from_days_and_leaves(
                 target_hour_credit += hrs
                 target_day_credit += day_equiv
 
-    monthly_target_hours = base_target_hours + target_hour_credit
-    target_working_days = calendar_working_days + target_day_credit
+    monthly_target_hours = round(base_target_hours + target_hour_credit, 2)
+    target_working_days = round(calendar_working_days + target_day_credit, 2)
 
     return {
         "calendar_working_days": calendar_working_days,
