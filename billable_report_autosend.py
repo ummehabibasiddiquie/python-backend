@@ -96,6 +96,7 @@ def fetch_data():
                 COALESCE(umt.monthly_target,0) AS monthly_target,
                 COALESCE(umt.extra_assigned_hours,0) AS extra_assigned_hours,
                 COALESCE(umt.working_days,0) AS working_days,
+                u.user_tenure,
                 u.is_active,
                 u.deactivated_at,
                 CASE
@@ -228,14 +229,18 @@ def fetch_data():
                     twt.user_id,
                     DATE(CAST(twt.date_time AS DATETIME)) AS work_date,
                     CASE
-                        WHEN MAX(tq.assigned_hours) = 4.5 THEN 0.5
-                        WHEN MAX(tq.assigned_hours) > 0 THEN 1
+                        WHEN MAX(rd.working_type) = 'Half' THEN 0.5
                         ELSE 1
                     END AS day_value
                 FROM task_work_tracker twt
-                LEFT JOIN temp_qc tq
-                    ON tq.user_id = twt.user_id
-                    AND DATE(tq.date) = DATE(CAST(twt.date_time AS DATETIME))
+                LEFT JOIN roster_month rm
+                    ON rm.user_id = twt.user_id
+                   AND rm.is_active = 1
+                   AND UPPER(rm.month_year) = UPPER(%s)
+                LEFT JOIN roster_day rd
+                    ON rd.roster_month_id = rm.roster_month_id
+                   AND rd.is_active = 1
+                   AND DATE(rd.roster_date) = DATE(CAST(twt.date_time AS DATETIME))
                 WHERE DATE(twt.date_time) BETWEEN %s AND %s
                 AND twt.user_id IN ({in_ph})
                 AND twt.is_active = 1
@@ -243,11 +248,46 @@ def fetch_data():
             ) t
             GROUP BY user_id
             """,
-            [month_start, report_date] + user_ids,
+            [report_month, month_start, report_date] + user_ids,
         )
 
         days_worked_map = {
             r["user_id"]: float(r["days_worked"]) for r in cursor.fetchall()
+        }
+
+        # Roster day weight for report_date (Half → 0.5, else 1) for remaining-days math
+        cursor.execute(
+            f"""
+            SELECT
+                rm.user_id,
+                CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END AS day_weight,
+                COALESCE(
+                    NULLIF(rd.working_hours, 0),
+                    CASE
+                        WHEN rd.working_type = 'Half' THEN
+                            ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1) / 2, 2)
+                        ELSE
+                            ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                    END
+                ) AS assigned_hours
+            FROM roster_month rm
+            JOIN tfs_user u ON u.user_id = rm.user_id
+            LEFT JOIN roster_day rd
+                ON rd.roster_month_id = rm.roster_month_id
+               AND rd.is_active = 1
+               AND DATE(rd.roster_date) = %s
+            WHERE rm.is_active = 1
+              AND UPPER(rm.month_year) = UPPER(%s)
+              AND rm.user_id IN ({in_ph})
+            """,
+            [report_date, report_month] + user_ids,
+        )
+        roster_day_map = {
+            r["user_id"]: {
+                "day_weight": float(r["day_weight"] or 1),
+                "assigned_hours": float(r["assigned_hours"]) if r.get("assigned_hours") is not None else None,
+            }
+            for r in cursor.fetchall()
         }
 
         # Tracker dates on report_date (to know if report day was already counted)
@@ -336,7 +376,7 @@ def fetch_data():
             }
                 
         # -------------------------
-        # ASSIGNED HOURS (REPORT DATE)
+        # ASSIGNED HOURS (REPORT DATE) — roster / tenure first; temp_qc only as legacy fallback
         # -------------------------
 
         cursor.execute(
@@ -349,7 +389,7 @@ def fetch_data():
             [report_date] + user_ids,
         )
 
-        assigned_map = {
+        assigned_map_qc = {
             r["user_id"]: float(r["assigned_hours"] or 0)
             for r in cursor.fetchall()
         }
@@ -373,8 +413,25 @@ def fetch_data():
                 qc_date = qc_date.strftime("%Y-%m-%d")
 
             avg_qc = avg_qc_map.get(uid)
-            
-            assigned = 0 if is_team_agent(u) else (assigned_map.get(uid, 0) if uid in daily_map else 0)
+
+            roster_info = roster_day_map.get(uid) or {}
+            if is_team_agent(u):
+                assigned = 0
+            elif roster_info.get("assigned_hours") is not None:
+                assigned = roster_info["assigned_hours"]
+            elif uid in daily_map and uid in assigned_map_qc:
+                assigned = assigned_map_qc.get(uid, 0)
+            else:
+                # Tenure-based full day when no roster / QC row yet
+                try:
+                    tenure = float(u.get("user_tenure") or 1)
+                except (TypeError, ValueError):
+                    tenure = 1.0
+                if tenure < 0:
+                    tenure = 0.0
+                if tenure > 1:
+                    tenure = 1.0
+                assigned = round(9.0 * tenure, 2) if uid in daily_map else 0
 
             monthly_target = float(u["monthly_target"])
             extra = float(u["extra_assigned_hours"])
@@ -384,10 +441,9 @@ def fetch_data():
             pending = monthly_goal - mtd
 
             days_worked = days_worked_map.get(uid, 0)
-            # Remaining days must exclude the report day (today). If that day has no
-            # tracker/QC yet it would otherwise still sit in the remaining denominator.
+            # Remaining days must exclude the report day (Half → 0.5 from roster).
             if uid not in users_with_report_day:
-                days_worked = days_worked + 1
+                days_worked = days_worked + float(roster_info.get("day_weight") or 1)
             remaining_days = max(0, working_days - days_worked)
 
             print(f"DEBUG - User: {u['user_name']}, Team: {u['team_name']}")
