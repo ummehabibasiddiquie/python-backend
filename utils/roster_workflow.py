@@ -15,6 +15,8 @@ from utils.roster_helpers import (
     HALF_DAY_HOURS,
     day_shift_times,
     get_eligible_employees,
+    half_day_hours_from_roster_day,
+    implied_full_day_hours,
     is_admin_or_super_admin,
     now_str,
     parse_date,
@@ -609,14 +611,10 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
     current_hours = float(day.get("working_hours") or FULL_DAY_HOURS)
     old_working_type = (day.get("working_type") or "Full").strip()
     if working_type == "Half":
-        # Always derive half from the day's full-day hours (ignore stale form hours)
-        if old_working_type == "Full":
-            working_hours = round(current_hours / 2, 2)
-        else:
-            working_hours = float(payload.get("working_hours") or current_hours)
+        working_hours = half_day_hours_from_roster_day(old_working_type, current_hours)
     elif working_type == "Full":
         if old_working_type == "Half":
-            working_hours = round(current_hours * 2, 2)
+            working_hours = implied_full_day_hours(old_working_type, current_hours)
         else:
             working_hours = float(payload.get("working_hours") or current_hours)
     else:
@@ -978,24 +976,35 @@ def _apply_leave_to_days(cursor, roster_month_id: int, leave_id: int, payload: d
     for d in iter_dates_inclusive(start, end):
         date_str = d.isoformat()
         if is_half:
-            # Mark Leave + Half so UI / assign-hours treat it as half day, not full leave
+            cursor.execute(
+                """
+                SELECT roster_day_id, working_type, working_hours
+                FROM roster_day
+                WHERE roster_month_id=%s
+                  AND DATE(roster_date)=DATE(%s)
+                  AND is_active=1
+                  AND day_type IN ('Working', 'Leave')
+                LIMIT 1
+                """,
+                (int(roster_month_id), date_str),
+            )
+            day_row = cursor.fetchone()
+            if not day_row:
+                continue
+            half_hours = half_day_hours_from_roster_day(
+                day_row.get("working_type"), day_row.get("working_hours")
+            )
             cursor.execute(
                 """
                 UPDATE roster_day
                 SET day_type='Leave',
                     leave_id=%s,
                     working_type='Half',
-                    working_hours=CASE
-                        WHEN working_type='Half' THEN working_hours
-                        ELSE ROUND(COALESCE(working_hours, %s) / 2, 2)
-                    END,
+                    working_hours=%s,
                     updated_date=%s
-                WHERE roster_month_id=%s
-                  AND DATE(roster_date)=DATE(%s)
-                  AND is_active=1
-                  AND day_type IN ('Working', 'Leave')
+                WHERE roster_day_id=%s
                 """,
-                (int(leave_id), FULL_DAY_HOURS, now, int(roster_month_id), date_str),
+                (int(leave_id), half_hours, now, int(day_row["roster_day_id"])),
             )
         else:
             cursor.execute(

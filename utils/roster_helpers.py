@@ -48,6 +48,29 @@ def tenure_cap(user_tenure) -> float:
     return tenure
 
 
+def implied_full_day_hours(working_type, working_hours) -> float:
+    """Infer full-day hours from a roster_day working_type + working_hours."""
+    try:
+        wh = float(working_hours if working_hours is not None else FULL_DAY_HOURS)
+    except (TypeError, ValueError):
+        wh = FULL_DAY_HOURS
+    wt = (working_type or "Full").strip()
+    # Already stored as half (e.g. 4.5 / 3.375) → double to recover full
+    if wt == "Half" and wh <= FULL_DAY_HOURS * 0.6:
+        return round(wh * 2, 2)
+    return round(wh, 2)
+
+
+def half_day_hours_from_roster_day(working_type, working_hours) -> float:
+    """
+    Half of that day's full hours.
+    Same number for both:
+      - Working type Half
+      - Half-day leave (employee still works the other half)
+    """
+    return round(implied_full_day_hours(working_type, working_hours) / 2, 2)
+
+
 def assigned_hours_for_roster_day(
     user_tenure,
     *,

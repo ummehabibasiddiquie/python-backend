@@ -16,6 +16,7 @@ from utils.roster_helpers import (
     HALF_DAY_HOURS,
     is_calendar_working_day,
     parse_date,
+    half_day_hours_from_roster_day,
     working_hours_for_day,
 )
 
@@ -92,8 +93,13 @@ def apply_active_leaves_to_days(days: list[dict], leaves: list[dict] | None) -> 
                 row["leave_affect_target"] = affect_target
                 row["leave_type"] = leave.get("leave_type") or row.get("leave_type")
                 if is_half:
+                    orig_wt = row.get("working_type") or "Full"
+                    wh = row.get("working_hours")
                     row["working_type"] = "Half"
+                    row["working_hours"] = half_day_hours_from_roster_day(orig_wt, wh)
                     row["is_half_day"] = True
+                    # Display as half working + leave type (same feel as Half Working day)
+                    row["display_as_half_working"] = True
 
     if not indexed:
         return [dict(d) for d in days]
