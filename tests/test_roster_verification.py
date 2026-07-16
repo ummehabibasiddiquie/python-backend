@@ -107,7 +107,7 @@ class RosterScenarioVerification(unittest.TestCase):
             }
         ]
         metrics = compute_roster_metrics(days)
-        self.assertEqual(metrics["calendar_working_days"], 1.0)
+        self.assertEqual(metrics["calendar_working_days"], 0.5)
         self.assertEqual(metrics["monthly_target_hours"], HALF_DAY_HOURS)
         self.assertEqual(working_hours_for_day(days[0]), HALF_DAY_HOURS)
 
@@ -119,7 +119,7 @@ class RosterScenarioVerification(unittest.TestCase):
             {"day_type": "Holiday", "working_type": "Full", "working_hours": 9.0},
         ]
         metrics = compute_roster_metrics(days)
-        self.assertEqual(metrics["calendar_working_days"], 2.0)
+        self.assertEqual(metrics["calendar_working_days"], 1.5)
         self.assertEqual(metrics["monthly_target_hours"], FULL_DAY_HOURS + HALF_DAY_HOURS)
 
     def test_tracker_daily_hours_helper(self):

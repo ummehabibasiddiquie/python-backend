@@ -1141,9 +1141,13 @@ def roster_recalculate_preview():
 
         days = get_roster_days(cursor, int(roster_month_id))
         leaves = get_roster_leaves(cursor, int(roster_month_id))
-        from utils.roster_metrics import recalculate_metrics_from_days_and_leaves
+        from utils.roster_metrics import (
+            apply_active_leaves_to_days,
+            recalculate_metrics_from_days_and_leaves,
+        )
 
-        metrics = recalculate_metrics_from_days_and_leaves(days, leaves)
+        days_for_metrics = apply_active_leaves_to_days(days, leaves)
+        metrics = recalculate_metrics_from_days_and_leaves(days_for_metrics, leaves)
         return api_response(200, "Metrics preview calculated", metrics)
     except Exception as e:
         return api_response(500, f"Recalculate failed: {str(e)}")

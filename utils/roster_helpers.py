@@ -445,18 +445,16 @@ def working_hours_for_day(day: dict) -> float:
     """
     Canonical hours for a roster day — used by all business calculations.
     Uses stored working_hours from roster_day (sourced from user_monthly_tracker at generation).
+    Half days always resolve to half of that day's full hours (handles stale Full+9h rows).
     """
     if day.get("day_type") != "Working":
         return 0.0
     working_type = (day.get("working_type") or "Full").strip()
     stored = day.get("working_hours")
     if working_type == "Half":
-        if stored is not None and stored != "":
-            return float(stored)
-        full_ref = float(day.get("_full_day_hours") or FULL_DAY_HOURS)
-        return round(full_ref / 2, 2)
+        return half_day_hours_from_roster_day(working_type, stored)
     if working_type == "Full":
-        return float(stored if stored is not None and stored != "" else FULL_DAY_HOURS)
+        return implied_full_day_hours(working_type, stored)
     return float(stored or FULL_DAY_HOURS)
 
 
@@ -627,7 +625,8 @@ def compute_roster_metrics(days: list[dict]) -> dict:
     for day in days:
         if is_calendar_working_day(day):
             hours = working_hours_for_day(day)
-            calendar_working_days += 1.0
+            working_type = (day.get("working_type") or "Full").strip()
+            calendar_working_days += 0.5 if working_type == "Half" else 1.0
             monthly_target_hours += hours
 
     return {

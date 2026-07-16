@@ -14,6 +14,7 @@ from typing import Any
 from utils.roster_helpers import (
     FULL_DAY_HOURS,
     HALF_DAY_HOURS,
+    implied_full_day_hours,
     is_calendar_working_day,
     parse_date,
     half_day_hours_from_roster_day,
@@ -38,10 +39,10 @@ def infer_full_day_hours_from_days(days: list[dict]) -> float:
     """Derive per-day full hours from roster working days (set from user_monthly_tracker)."""
     for day in days:
         if day.get("day_type") == "Working" and (day.get("working_type") or "Full") == "Full":
-            return float(day.get("working_hours") or FULL_DAY_HOURS)
+            return implied_full_day_hours(day.get("working_type"), day.get("working_hours"))
     for day in days:
         if day.get("day_type") == "Working" and (day.get("working_type") or "") == "Half":
-            return float(day.get("working_hours") or HALF_DAY_HOURS) * 2
+            return implied_full_day_hours(day.get("working_type"), day.get("working_hours"))
     return FULL_DAY_HOURS
 
 

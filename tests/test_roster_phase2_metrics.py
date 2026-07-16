@@ -145,6 +145,23 @@ class RosterPhase2MetricsTest(unittest.TestCase):
         self.assertEqual(metrics["target_working_days"], 18.5)
         self.assertEqual(metrics["monthly_target_hours"], 166.5)
 
+    def test_half_working_stale_full_hours_reduces_target(self):
+        """Half Working with working_hours still 9 must count 4.5h not 9h."""
+        days = [
+            self._working_day(date(2026, 7, 1)),
+            {
+                "roster_date": date(2026, 7, 2),
+                "day_type": "Working",
+                "working_type": "Half",
+                "working_hours": 9.0,
+            },
+            self._working_day(date(2026, 7, 3)),
+        ]
+        metrics = recalculate_metrics_from_days_and_leaves(days, [])
+        self.assertEqual(metrics["calendar_working_days"], 2.5)
+        self.assertEqual(metrics["target_working_days"], 2.5)
+        self.assertEqual(metrics["monthly_target_hours"], 22.5)
+
 
 if __name__ == "__main__":
     unittest.main()
