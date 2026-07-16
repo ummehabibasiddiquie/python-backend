@@ -24,6 +24,7 @@ from utils.roster_helpers import (
     write_audit_log,
     now_str,
 )
+from utils.roster_leave_email import notify_agent_leave_decision
 from utils.roster_workflow import (
     EDITABLE_STATUSES,
     SUBMITTABLE_STATUSES,
@@ -658,6 +659,9 @@ def roster_approve_request():
             )
 
         conn.commit()
+        notify_agent_leave_decision(
+            cursor, req, status="Approved", reviewer_comment=reviewer_comment
+        )
         return api_response(
             200,
             "Change request approved",
@@ -732,6 +736,9 @@ def roster_reject_request():
             _process_batch_completion(cursor, batch_id, reviewer_comment, logged_in_user_id)
 
         conn.commit()
+        notify_agent_leave_decision(
+            cursor, req, status="Rejected", reviewer_comment=reviewer_comment
+        )
         return api_response(200, "Change request rejected", {"request_id": int(request_id)})
     except Exception as e:
         conn.rollback()
