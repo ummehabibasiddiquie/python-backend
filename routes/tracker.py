@@ -78,6 +78,41 @@ def can_access_task_eod_report(role_context: dict) -> bool:
     return True
 
 
+def normalize_eod_column_name(name) -> str:
+    """
+    Normalize Excel/CSV headers so visually identical names merge correctly.
+    Agents often paste headers with non-breaking spaces (\\xa0) from Word/Sheets;
+    those must match regular spaces used by other agents' files.
+    """
+    import unicodedata
+
+    if name is None:
+        return ""
+    text = unicodedata.normalize("NFKC", str(name))
+    text = "".join(" " if unicodedata.category(ch) == "Zs" else ch for ch in text)
+    return " ".join(text.split())
+
+
+def normalize_eod_dataframe_columns(df):
+    """Rename dataframe columns with normalize_eod_column_name; merge any duplicates."""
+    import pandas as pd
+
+    df = df.copy()
+    df.columns = [normalize_eod_column_name(c) for c in df.columns]
+    if not df.columns.duplicated().any():
+        return df
+
+    # Same logical header appeared twice (e.g. NBSP + normal space variants).
+    merged = pd.DataFrame(index=df.index)
+    for col in dict.fromkeys(df.columns):
+        same = df.loc[:, df.columns == col]
+        if same.shape[1] == 1:
+            merged[col] = same.iloc[:, 0]
+        else:
+            merged[col] = same.bfill(axis=1).iloc[:, 0]
+    return merged
+
+
 def cleaned_csv_col(col_sql: str) -> str:
     return f"REPLACE(REPLACE(REPLACE({col_sql}, '[', ''), ']', ''), ' ', '')"
 
@@ -1749,6 +1784,9 @@ def generate_eod_report():
                         df = pd.read_excel(io.BytesIO(file_bytes))
                     except:
                         df = pd.read_csv(io.BytesIO(file_bytes))
+
+                # Normalize headers so NBSP / unicode spaces match across agent files
+                df = normalize_eod_dataframe_columns(df)
                 
                 # Add metadata columns
                 df['user_id'] = tracker['user_id']
@@ -1788,11 +1826,15 @@ def generate_eod_report():
         
         # Merge all dataframes
         merged_df = pd.concat(all_dataframes, ignore_index=True)
+        # Safety: normalize again in case any frame was added without normalization
+        merged_df = normalize_eod_dataframe_columns(merged_df)
         
         # Deduplicate based on important_columns
         if important_columns:
+            # Normalize important_columns the same way as file headers
+            normalized_important = [normalize_eod_column_name(c) for c in important_columns]
             # Filter to only include columns that exist in the dataframe
-            existing_important_cols = [col for col in important_columns if col in merged_df.columns]
+            existing_important_cols = [col for col in normalized_important if col in merged_df.columns]
             
             if existing_important_cols:
                 # Drop duplicates based on important columns, keeping the first occurrence
