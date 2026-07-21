@@ -207,12 +207,12 @@ def update_task():
     task_id = form.get("task_id")
     if not task_id:
         return api_response(400, "task_id is required")
-
+    
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     new_file_saved = None
-    old_file_to_delete = None
+    old_file_to_delete = None   
 
     try:
         conn.start_transaction()
