@@ -166,21 +166,20 @@ def build_tracker_filename(
     date_source_dt=None,
 ) -> str:
     """
-    Keep your exact format:
-    projectcode_taskname_username_date_time
-    time format: hours with AM/PM (as you had)
+    Format: projectcode_taskname_username_date_time.ext
+    time format: hours-minutes-seconds with AM/PM (avoids same-hour overwrites)
+    Example: PROJ_Task_User_23-Jul-2026_04-13-22PM.xlsx
     """
     if "." not in (original_filename or ""):
         raise ValueError("Uploaded file has no extension")
 
     ext = original_filename.rsplit(".", 1)[1].lower().strip()
     now = datetime.now()
-    # Keep existing naming format unchanged.
     # During updates, allow the tracker datetime to drive the date/time parts
     # while keeping the same formatting.
     source_dt = date_source_dt or now
-    date_part = source_dt.strftime("%d-%b-%Y")   # 05-Feb-2026
-    time_part = source_dt.strftime("%I%p")       # 10AM (kept exactly)
+    date_part = source_dt.strftime("%d-%b-%Y")       # 05-Feb-2026
+    time_part = source_dt.strftime("%I-%M-%S%p")     # 04-13-22PM
     return (
         f"{_clean_part(project_code)}_"
         f"{_clean_part(task_name)}_"
