@@ -1219,14 +1219,20 @@ def roster_lock_month():
 
 @roster_bp.route("/unlock", methods=["POST"])
 def roster_unlock_month():
+    """
+    Unlock roster month(s).
+    - Prefer month_year: unlocks ALL Locked calendars for that month (mirrors /lock).
+    - Or roster_month_id: unlocks a single employee roster.
+    """
     data = request.get_json(silent=True) or {}
     logged_in_user_id, err = _require_logged_in_user(data)
     if err:
         return err
 
+    month_year = (data.get("month_year") or "").strip()
     roster_month_id = data.get("roster_month_id")
-    if not roster_month_id:
-        return api_response(400, "roster_month_id is required")
+    if not month_year and not roster_month_id:
+        return api_response(400, "month_year or roster_month_id is required")
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1235,6 +1241,51 @@ def roster_unlock_month():
         if not is_admin_or_super_admin(ctx.get("user_role_name", "")):
             return api_response(403, "Only Admin or Super Admin can unlock roster months")
 
+        # Month-wide unlock (same scope as Lock)
+        if month_year:
+            cursor.execute(
+                """
+                SELECT roster_month_id, user_id, approved_by, last_approved_by
+                FROM roster_month
+                WHERE month_year=%s AND is_active=1 AND status='Locked'
+                """,
+                (month_year,),
+            )
+            rows = cursor.fetchall() or []
+            if not rows:
+                return api_response(400, f"No locked rosters found for {month_year}")
+
+            unlocked = 0
+            for row in rows:
+                rid = int(row["roster_month_id"])
+                if unlock_roster_month_record(cursor, rid):
+                    unlocked += 1
+                    restored = (
+                        "Approved"
+                        if row.get("approved_by") or row.get("last_approved_by")
+                        else "Draft"
+                    )
+                    write_audit_log(
+                        cursor,
+                        roster_month_id=rid,
+                        user_id=int(row["user_id"]),
+                        action="ROSTER_UNLOCKED",
+                        entity_type="roster_month",
+                        entity_id=rid,
+                        old_value={"status": "Locked"},
+                        new_value={"status": restored},
+                        performed_by=logged_in_user_id,
+                        notes=f"Month unlock for {month_year}",
+                    )
+
+            conn.commit()
+            return api_response(
+                200,
+                f"Unlocked {unlocked} roster calendar(s) for {month_year}",
+                {"unlocked_count": unlocked, "month_year": month_year},
+            )
+
+        # Single-roster unlock (legacy)
         roster_month = get_roster_month(cursor, int(roster_month_id))
         if not roster_month:
             return api_response(404, "Roster month not found")
@@ -1242,7 +1293,11 @@ def roster_unlock_month():
         if not unlock_roster_month_record(cursor, int(roster_month_id)):
             return api_response(400, "Roster month not found or not locked")
 
-        restored = "Approved" if roster_month.get("approved_by") or roster_month.get("last_approved_by") else "Draft"
+        restored = (
+            "Approved"
+            if roster_month.get("approved_by") or roster_month.get("last_approved_by")
+            else "Draft"
+        )
         write_audit_log(
             cursor,
             roster_month_id=int(roster_month_id),
