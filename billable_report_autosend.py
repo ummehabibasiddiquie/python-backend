@@ -10,6 +10,14 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
 from collections import defaultdict
+import sys
+
+# Ensure backend-api root is on path when run as a standalone script
+_BACKEND_ROOT = Path(__file__).resolve().parent
+if str(_BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_ROOT))
+
+from utils.roster_helpers import roster_day_status_label
 
 
 # -------------------------------
@@ -19,9 +27,7 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 RECIPIENTS = [
     "ummehabiba.siddiquie@transformsolution.net",
-    # "mohsin.pathan@transformsolution.net",
     # "dharmesh.jotania@transformsolution.net",
-    # "venkateshwaran.iyer@transformsolution.net",
     # "yahya.irani@transformsolution.net",
     # "amit.mandviwala@transformsolution.net",
     # "sriman.narayan@transformsolution.net",
@@ -83,7 +89,7 @@ def fetch_data():
         report_date = today - timedelta(days=1)
 
         # TEST DATE
-        report_date = datetime.strptime("2026-07-14", "%Y-%m-%d").date()
+        # report_date = datetime.strptime("2026-07-14", "%Y-%m-%d").date()
         
         report_month = report_date.strftime("%b%Y").upper()
 
@@ -268,14 +274,30 @@ def fetch_data():
             f"""
             SELECT
                 rm.user_id,
-                CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END AS day_weight,
+                rd.day_type,
+                COALESCE(rd.working_type, 'Full') AS working_type,
+                COALESCE(rl.is_half_day, 0) AS is_half_day,
+                CASE
+                    WHEN rd.day_type IN ('WeekOff', 'Holiday', 'PreJoin') THEN 0
+                    WHEN rd.day_type = 'Leave' AND NOT (
+                        rd.working_type = 'Half' OR COALESCE(rl.is_half_day, 0) = 1
+                    ) THEN 0
+                    WHEN rd.working_type = 'Half' OR COALESCE(rl.is_half_day, 0) = 1 THEN 0.5
+                    ELSE 1
+                END AS day_weight,
                 COALESCE(
                     NULLIF(rd.working_hours, 0),
                     CASE
+                        WHEN rd.day_type = 'Leave' AND (
+                            rd.working_type = 'Half' OR COALESCE(rl.is_half_day, 0) = 1
+                        ) THEN
+                            ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                        WHEN rd.day_type IN ('Leave', 'WeekOff', 'Holiday', 'PreJoin') THEN 0
                         WHEN rd.working_type = 'Half' THEN
-                            ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1) / 2, 2)
-                        ELSE
+                            ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                        WHEN rd.roster_day_id IS NOT NULL THEN
                             ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                        ELSE NULL
                     END
                 ) AS assigned_hours
             FROM roster_month rm
@@ -284,6 +306,9 @@ def fetch_data():
                 ON rd.roster_month_id = rm.roster_month_id
                AND rd.is_active = 1
                AND DATE(rd.roster_date) = %s
+            LEFT JOIN roster_leave rl
+                ON rl.leave_id = rd.leave_id
+               AND rl.is_active = 1
             WHERE rm.is_active = 1
               AND UPPER(rm.month_year) = UPPER(%s)
               AND rm.user_id IN ({in_ph})
@@ -292,8 +317,13 @@ def fetch_data():
         )
         roster_day_map = {
             r["user_id"]: {
-                "day_weight": float(r["day_weight"] or 1),
+                "day_weight": float(r["day_weight"] if r.get("day_weight") is not None else 1),
                 "assigned_hours": float(r["assigned_hours"]) if r.get("assigned_hours") is not None else None,
+                "roster_status": roster_day_status_label(
+                    r.get("day_type"),
+                    r.get("working_type"),
+                    r.get("is_half_day"),
+                ),
             }
             for r in cursor.fetchall()
         }
@@ -481,6 +511,7 @@ def fetch_data():
                     "monthly_goal": monthly_goal,
                     "pending_goal": pending,
                     "daily_required_hours": daily_required,
+                    "roster_status": roster_info.get("roster_status") or "—",
                 }
             )
 
@@ -520,6 +551,7 @@ def generate_html(report_date, data_rows):
     <tr style="background:#FFD966;font-weight:bold">
         <th rowspan="2">Team Member</th>
         <th rowspan="2">Status</th>
+        <th rowspan="2">Day Status</th>
         <th colspan="4">Daily Report</th>
         <th colspan="4">MTD Report</th>
     </tr>
@@ -578,10 +610,12 @@ def generate_html(report_date, data_rows):
             goal = u["monthly_goal"]
             pending = u["pending_goal"]
 
+            day_status = u.get("roster_status") or "—"
             html += f"""
             <tr>
             <td>{u['user_name']}</td>
             <td align="center">{u.get('exit_status', 'Active')}</td>
+            <td align="center">{day_status}</td>
             <td align="right">{"" if is_team_agent(u) else f"{assigned:.2f}"}</td>
             <td align="right">{worked:.2f}</td>
             <td align="right">{f"{u['qc_score']:.2f}" if u.get('qc_score') is not None else ""}</td>
@@ -613,6 +647,7 @@ def generate_html(report_date, data_rows):
         <tr style="font-weight:bold;background:#C9DAF8">
         <td>Team {team} Total</td>
         <td></td>
+        <td></td>
         <td align="right">{team_assigned:.2f}</td>
         <td align="right">{team_worked:.2f}</td>
         <td></td>
@@ -627,6 +662,7 @@ def generate_html(report_date, data_rows):
     html += f"""
         <tr style="font-weight:bold;background:#A4C2F4">
         <td>Grand Total</td>
+        <td></td>
         <td></td>
         <td align="right">{grand_assigned:.2f}</td>
         <td align="right">{grand_worked:.2f}</td>

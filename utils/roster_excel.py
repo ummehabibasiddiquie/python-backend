@@ -159,6 +159,33 @@ def format_day_header(d: date) -> str:
     return f"{DAY_NAME_ABBR[d.weekday()]} ({d.strftime('%d-%m-%Y')})"
 
 
+def _coerce_time(value: Any) -> time | None:
+    """Normalize DB/API time values (time, datetime, timedelta, str) to datetime.time."""
+    if value is None:
+        return None
+    if isinstance(value, time) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.time()
+    # mysql-connector returns TIME columns as timedelta
+    if isinstance(value, timedelta):
+        total = int(value.total_seconds()) % (24 * 3600)
+        if total < 0:
+            total += 24 * 3600
+        hours, rem = divmod(total, 3600)
+        minutes, seconds = divmod(rem, 60)
+        return time(hours, minutes, seconds)
+    s = str(value).strip()
+    if not s or s.lower() in ("none", "null", "nat"):
+        return None
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(s[: len(fmt) + 2], fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
 def _time_close(a: time | None, b: time, tol_minutes: int = 15) -> bool:
     if a is None:
         return False
@@ -194,21 +221,13 @@ def day_to_excel_label(day: dict | None, role_name: str | None = None) -> str:
     if shift == "NIGHT":
         return LABEL_NIGHT
 
-    start = day.get("shift_start")
-    if isinstance(start, datetime):
-        start = start.time()
-    elif isinstance(start, str) and start:
-        try:
-            start = datetime.strptime(start[:8], "%H:%M:%S").time()
-        except ValueError:
-            try:
-                start = datetime.strptime(start[:5], "%H:%M").time()
-            except ValueError:
-                start = None
+    start = _coerce_time(day.get("shift_start"))
 
-    if _time_close(start, QA_DAY_SHIFT_START) or (role_name or "").strip().lower() == "qa":
-        if _time_close(start, AGENT_DAY_SHIFT_START):
-            return LABEL_AGENT_DAY
+    if _time_close(start, AGENT_DAY_SHIFT_START):
+        return LABEL_AGENT_DAY
+    if _time_close(start, QA_DAY_SHIFT_START):
+        return LABEL_QA_DAY
+    if (role_name or "").strip().lower() == "qa":
         return LABEL_QA_DAY
     return LABEL_AGENT_DAY
 
@@ -436,6 +455,15 @@ def _add_week_sheet(
         for col_idx, d in enumerate(days, start=2):
             day = day_lookup.get((uid, d.isoformat()))
             label = day_to_excel_label(day, role)
+            # Defaults when roster has no value yet:
+            # Sat/Sun → Week Off; Mon–Fri → role day shift
+            if not label:
+                if d.weekday() >= 5:
+                    label = LABEL_WEEK_OFF
+                elif (role or "").strip().lower() == "qa":
+                    label = LABEL_QA_DAY
+                else:
+                    label = LABEL_AGENT_DAY
             cell = ws.cell(row_idx, col_idx, label or "")
             cell.border = thin
             cell.alignment = Alignment(horizontal="center")

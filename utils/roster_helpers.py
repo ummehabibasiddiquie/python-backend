@@ -390,6 +390,73 @@ def get_eligible_employees(
     return cursor.fetchall() or []
 
 
+def get_excel_roster_employees(
+    cursor,
+    logged_in_user_id: int,
+    role_name: str,
+    roster_year: int,
+    roster_month: int,
+    team_id=None,
+) -> list[dict]:
+    """
+    Active users of all roles in the manager's scope (for weekly Excel templates).
+    Unlike get_eligible_employees, this is not limited to Agent/QA.
+    """
+    month_start, _ = month_date_range(roster_year, roster_month)
+    scope_sql, scope_params = _employee_scope_sql(role_name, logged_in_user_id)
+
+    team_sql = ""
+    team_params: list[Any] = []
+    if (role_name or "").strip().lower() == "assistant manager":
+        cursor.execute(
+            """
+            SELECT team_id
+            FROM tfs_user
+            WHERE user_id=%s AND is_active=1 AND is_delete=1
+            LIMIT 1
+            """,
+            (int(logged_in_user_id),),
+        )
+        am_row = cursor.fetchone() or {}
+        am_team_id = am_row.get("team_id")
+        if am_team_id:
+            team_sql = " AND u.team_id = %s"
+            team_params = [int(am_team_id)]
+        else:
+            return []
+    elif team_id not in (None, "", "all"):
+        team_sql = " AND u.team_id = %s"
+        team_params = [int(team_id)]
+
+    query = f"""
+        SELECT
+            u.user_id,
+            u.user_name,
+            u.role_id,
+            LOWER(TRIM(r.role_name)) AS role_name,
+            u.joining_date,
+            u.user_tenure,
+            u.deactivated_at,
+            u.is_active,
+            u.team_id,
+            t.team_name
+        FROM tfs_user u
+        JOIN user_role r ON r.role_id = u.role_id
+        LEFT JOIN team t ON t.team_id = u.team_id
+        WHERE u.is_delete = 1
+          AND u.is_active = 1
+          AND (u.deactivated_at IS NULL OR DATE(u.deactivated_at) >= %s)
+          {scope_sql}
+          {team_sql}
+        ORDER BY u.user_name ASC
+    """
+    params: list[Any] = [month_start.isoformat()]
+    params.extend(scope_params)
+    params.extend(team_params)
+    cursor.execute(query, tuple(params))
+    return cursor.fetchall() or []
+
+
 def employee_already_has_roster(cursor, user_id: int, month_year: str) -> bool:
     cursor.execute(
         """
@@ -423,6 +490,33 @@ def load_active_holidays(cursor, year: int) -> dict[date, dict]:
 
 def is_default_week_off(d: date) -> bool:
     return d.weekday() >= 5  # Saturday=5, Sunday=6
+
+
+def roster_day_status_label(
+    day_type: str | None,
+    working_type: str | None = None,
+    is_half_day: bool | int | None = False,
+) -> str:
+    """Human-readable roster status for billable reports."""
+    dt = (day_type or "").strip()
+    wt = (working_type or "Full").strip()
+    half = bool(int(is_half_day or 0)) if not isinstance(is_half_day, bool) else is_half_day
+
+    if dt == "WeekOff":
+        return "Week Off"
+    if dt == "Holiday":
+        return "Holiday"
+    if dt == "PreJoin":
+        return "Pre Join"
+    if dt == "Leave":
+        if half or wt == "Half":
+            return "Half Day Leave"
+        return "Leave"
+    if dt == "Working":
+        if wt == "Half":
+            return "Half Day"
+        return "Working"
+    return "—"
 
 
 def count_weekdays_in_range(start: date, end: date) -> int:

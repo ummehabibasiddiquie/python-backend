@@ -1150,6 +1150,21 @@ def view_daily_trackers():
                     END
                 ) AS assigned_hours,
                 COALESCE(rd.working_type, 'Full') AS working_type,
+                COALESCE(rd.day_type, '') AS day_type,
+                COALESCE(rl.is_half_day, 0) AS is_half_day,
+                CASE
+                  WHEN rd.day_type = 'WeekOff' THEN 'Week Off'
+                  WHEN rd.day_type = 'Holiday' THEN 'Holiday'
+                  WHEN rd.day_type = 'PreJoin' THEN 'Pre Join'
+                  WHEN rd.day_type = 'Leave' AND (
+                        rd.working_type = 'Half'
+                     OR COALESCE(rl.is_half_day, 0) = 1
+                  ) THEN 'Half Day Leave'
+                  WHEN rd.day_type = 'Leave' THEN 'Leave'
+                  WHEN rd.day_type = 'Working' AND rd.working_type = 'Half' THEN 'Half Day'
+                  WHEN rd.day_type = 'Working' THEN 'Working'
+                  ELSE '—'
+                END AS roster_status,
 
                 umt.user_monthly_tracker_id,
                 COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0) AS monthly_target,
@@ -1239,6 +1254,20 @@ def view_daily_trackers():
         final_params = list(params) + [month_year] + list(params) + [month_year, month_year]
         cursor.execute(query, tuple(final_params))
         rows = cursor.fetchall()
+
+        from utils.roster_helpers import roster_day_status_label
+
+        for r in rows:
+            if r.get("work_date") is not None:
+                wd = r["work_date"]
+                r["work_date"] = wd.strftime("%Y-%m-%d") if hasattr(wd, "strftime") else str(wd)[:10]
+            status = (r.get("roster_status") or "").strip()
+            if not status or status == "—":
+                r["roster_status"] = roster_day_status_label(
+                    r.get("day_type"),
+                    r.get("working_type"),
+                    r.get("is_half_day"),
+                )
 
         # -------- month_summary
         user_ids = sorted({r.get("user_id") for r in rows if r.get("user_id") is not None})

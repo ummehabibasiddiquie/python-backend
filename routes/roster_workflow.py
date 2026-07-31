@@ -32,6 +32,7 @@ from utils.roster_helpers import (
     month_calendar_lock_message,
     can_manage_roster_employees,
     get_eligible_employees,
+    get_excel_roster_employees,
     get_role_context,
     is_admin_or_super_admin,
     is_self_read_only_roster_role,
@@ -605,6 +606,62 @@ def _process_batch_completion(cursor, batch_id: str, reviewer_comment: str, logg
     return finalized
 
 
+def _approve_single_request(
+    cursor,
+    *,
+    req: dict,
+    logged_in_user_id: int,
+    reviewer_comment: str | None,
+) -> str | None:
+    """
+    Apply + mark one pending submitted request as Approved.
+    Returns batch_id (if any) for later batch completion.
+    """
+    if req.get("status") != "Pending":
+        raise ValueError(f"Request {req.get('request_id')} is not pending (status={req.get('status')})")
+    if not req.get("batch_id"):
+        raise ValueError(f"Request {req.get('request_id')} has not been submitted for approval yet")
+
+    roster_month = get_roster_month(cursor, int(req["roster_month_id"]))
+    if not roster_month:
+        raise ValueError(f"Roster month not found for request {req.get('request_id')}")
+
+    request_id = int(req["request_id"])
+    batch_id = req.get("batch_id")
+    now = now_str()
+
+    apply_change_request(cursor, roster_month, req, logged_in_user_id)
+    cancel_duplicate_pending_leave_requests(
+        cursor, approved_request=req, reviewed_by=logged_in_user_id
+    )
+    refresh_roster_month_metrics(cursor, int(req["roster_month_id"]))
+
+    cursor.execute(
+        """
+        UPDATE roster_change_request
+        SET status='Approved', reviewer_comment=%s, rejection_reason=NULL,
+            reviewed_by=%s, reviewed_date=%s, applied_at=%s
+        WHERE request_id=%s
+        """,
+        (reviewer_comment, logged_in_user_id, now, now, request_id),
+    )
+
+    write_audit_log(
+        cursor,
+        roster_month_id=int(req["roster_month_id"]),
+        user_id=int(req["user_id"]),
+        action="CHANGE_REQUEST_APPROVED",
+        entity_type="roster_change_request",
+        entity_id=request_id,
+        old_value={"status": "Pending"},
+        new_value={"status": "Approved", "reviewer_comment": reviewer_comment},
+        performed_by=logged_in_user_id,
+        approval_status="Approved",
+        notes=reviewer_comment,
+    )
+    return batch_id
+
+
 @roster_bp.route("/requests/approve", methods=["POST"])
 def roster_approve_request():
     data = request.get_json(silent=True) or {}
@@ -628,46 +685,12 @@ def roster_approve_request():
         req = _load_request(cursor, int(request_id))
         if not req:
             return api_response(404, "Change request not found")
-        if req.get("status") != "Pending":
-            return api_response(400, f"Request is not pending (status={req.get('status')})")
-        if not req.get("batch_id"):
-            return api_response(400, "This change has not been submitted for approval yet")
 
-        roster_month = get_roster_month(cursor, int(req["roster_month_id"]))
-        if not roster_month:
-            return api_response(404, "Roster month not found")
-
-        batch_id = req.get("batch_id")
-        now = now_str()
-
-        apply_change_request(cursor, roster_month, req, logged_in_user_id)
-        cancel_duplicate_pending_leave_requests(
-            cursor, approved_request=req, reviewed_by=logged_in_user_id
-        )
-        refresh_roster_month_metrics(cursor, int(req["roster_month_id"]))
-
-        cursor.execute(
-            """
-            UPDATE roster_change_request
-            SET status='Approved', reviewer_comment=%s, rejection_reason=NULL,
-                reviewed_by=%s, reviewed_date=%s, applied_at=%s
-            WHERE request_id=%s
-            """,
-            (reviewer_comment, logged_in_user_id, now, now, int(request_id)),
-        )
-
-        write_audit_log(
+        batch_id = _approve_single_request(
             cursor,
-            roster_month_id=int(req["roster_month_id"]),
-            user_id=int(req["user_id"]),
-            action="CHANGE_REQUEST_APPROVED",
-            entity_type="roster_change_request",
-            entity_id=int(request_id),
-            old_value={"status": "Pending"},
-            new_value={"status": "Approved", "reviewer_comment": reviewer_comment},
-            performed_by=logged_in_user_id,
-            approval_status="Approved",
-            notes=reviewer_comment,
+            req=req,
+            logged_in_user_id=logged_in_user_id,
+            reviewer_comment=reviewer_comment,
         )
 
         finalized = []
@@ -685,9 +708,125 @@ def roster_approve_request():
             "Change request approved",
             {"request_id": int(request_id), "finalized_cycles": finalized},
         )
+    except ValueError as e:
+        conn.rollback()
+        return api_response(400, str(e))
     except Exception as e:
         conn.rollback()
         return api_response(500, f"Approve failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@roster_bp.route("/requests/approve_bulk", methods=["POST"])
+def roster_approve_bulk():
+    """
+    Admin/Super Admin bulk approve.
+    Body:
+      - request_ids: [..]  approve selected
+      - OR approve_all: true + month_year  approve every pending submitted request for the month
+    Optional: reviewer_comment
+    """
+    data = request.get_json(silent=True) or {}
+    logged_in_user_id, err = _require_logged_in_user(data)
+    if err:
+        return err
+
+    reviewer_comment = (data.get("reviewer_comment") or "").strip() or None
+    approve_all = bool(data.get("approve_all", False))
+    month_year = (data.get("month_year") or "").strip()
+    raw_ids = data.get("request_ids") or []
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, logged_in_user_id)
+        role_name = ctx.get("user_role_name", "")
+        if not can_approve_reject(role_name):
+            return api_response(403, "Only Admin or Super Admin can approve requests")
+
+        request_ids: list[int] = []
+        if approve_all:
+            if not month_year:
+                return api_response(400, "month_year is required for approve_all")
+            cursor.execute(
+                """
+                SELECT rcr.request_id
+                FROM roster_change_request rcr
+                JOIN roster_month rm ON rm.roster_month_id = rcr.roster_month_id
+                WHERE rcr.is_active=1
+                  AND rcr.status='Pending'
+                  AND rcr.batch_id IS NOT NULL AND rcr.batch_id != ''
+                  AND rm.month_year=%s
+                ORDER BY rcr.request_id ASC
+                """,
+                (month_year,),
+            )
+            request_ids = [int(r["request_id"]) for r in (cursor.fetchall() or [])]
+        else:
+            try:
+                request_ids = [int(x) for x in raw_ids]
+            except (TypeError, ValueError):
+                return api_response(400, "request_ids must be a list of integers")
+            request_ids = list(dict.fromkeys(request_ids))
+
+        if not request_ids:
+            return api_response(400, "No pending requests to approve")
+
+        approved = 0
+        failed: list[dict] = []
+        batch_ids: set[str] = set()
+        approved_reqs: list[dict] = []
+
+        for rid in request_ids:
+            try:
+                req = _load_request(cursor, int(rid))
+                if not req:
+                    failed.append({"request_id": rid, "reason": "Not found"})
+                    continue
+                batch_id = _approve_single_request(
+                    cursor,
+                    req=req,
+                    logged_in_user_id=logged_in_user_id,
+                    reviewer_comment=reviewer_comment,
+                )
+                if batch_id:
+                    batch_ids.add(batch_id)
+                approved_reqs.append(req)
+                approved += 1
+            except Exception as row_err:
+                failed.append({"request_id": rid, "reason": str(row_err)})
+
+        finalized = []
+        for batch_id in batch_ids:
+            finalized.extend(
+                _process_batch_completion(
+                    cursor, batch_id, reviewer_comment, logged_in_user_id
+                )
+            )
+
+        conn.commit()
+        for req in approved_reqs:
+            try:
+                notify_agent_leave_decision(
+                    cursor, req, status="Approved", reviewer_comment=reviewer_comment
+                )
+            except Exception:
+                pass
+
+        return api_response(
+            200,
+            f"Approved {approved} request(s)",
+            {
+                "approved": approved,
+                "failed": failed,
+                "finalized_cycles": finalized,
+            },
+        )
+    except Exception as e:
+        conn.rollback()
+        return api_response(500, f"Bulk approve failed: {str(e)}")
     finally:
         cursor.close()
         conn.close()
@@ -1269,10 +1408,9 @@ def _build_excel_preview(
     employees_by_id: dict[int, dict] = {}
     for my in month_years:
         year, month = parse_month_year(my)
-        emps = get_eligible_employees(cursor, logged_in_user_id, role_name, year, month)
-        if team_id not in (None, "", "all"):
-            tid = str(team_id)
-            emps = [e for e in emps if str(e.get("team_id") or "") == tid]
+        emps = get_excel_roster_employees(
+            cursor, logged_in_user_id, role_name, year, month, team_id=team_id
+        )
         for e in emps:
             employees_by_id[int(e["user_id"])] = e
 
@@ -1337,13 +1475,15 @@ def _build_excel_preview(
 
             roster_month = resolve_roster_month_for_date(roster_by_um, uid, d)
             if not roster_month:
-                errors.append(
+                skipped.append(
                     {
                         "row": row["row"],
                         "sheet": row.get("sheet"),
-                        "name": row["name"],
+                        "user_id": uid,
+                        "user_name": emp.get("user_name"),
                         "date": date_iso,
-                        "reason": f"No roster generated for {month_year_label(d.year, d.month)}",
+                        "label": change.get("label"),
+                        "reason": f"No roster generated for {month_year_label(d.year, d.month)} — skipped",
                     }
                 )
                 continue
@@ -1375,13 +1515,15 @@ def _build_excel_preview(
 
             current_day = day_lookup.get((uid, date_iso))
             if not current_day:
-                errors.append(
+                skipped.append(
                     {
                         "row": row["row"],
                         "sheet": row.get("sheet"),
-                        "name": row["name"],
+                        "user_id": uid,
+                        "user_name": emp.get("user_name"),
                         "date": date_iso,
-                        "reason": "Roster day not found",
+                        "label": change.get("label"),
+                        "reason": "Roster day not found — skipped",
                     }
                 )
                 continue
@@ -1563,10 +1705,9 @@ def roster_excel_template():
         employees_by_id: dict[int, dict] = {}
         for my in month_years:
             year, month = parse_month_year(my)
-            emps = get_eligible_employees(cursor, logged_in_user_id, role_name, year, month)
-            if team_id not in (None, "", "all"):
-                tid = str(team_id)
-                emps = [e for e in emps if str(e.get("team_id") or "") == tid]
+            emps = get_excel_roster_employees(
+                cursor, logged_in_user_id, role_name, year, month, team_id=team_id
+            )
             for e in emps:
                 employees_by_id[int(e["user_id"])] = e
 
