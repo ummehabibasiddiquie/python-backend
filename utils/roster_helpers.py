@@ -813,6 +813,27 @@ def write_audit_log(
     )
 
 
+def _bulk_insert_roster_days(cursor, day_rows: list[tuple], chunk_size: int = 200) -> None:
+    """Multi-row INSERT is much faster than mysql.connector executemany for many days."""
+    if not day_rows:
+        return
+    cols = """
+        INSERT INTO roster_day (
+            roster_month_id, roster_date, day_type, shift,
+            shift_start, shift_end, working_type, working_hours,
+            holiday_id, leave_id, is_active, created_date, updated_date
+        ) VALUES
+    """
+    row_ph = "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s)"
+    for i in range(0, len(day_rows), chunk_size):
+        chunk = day_rows[i : i + chunk_size]
+        placeholders = ",".join([row_ph] * len(chunk))
+        flat: list[Any] = []
+        for row in chunk:
+            flat.extend(row)
+        cursor.execute(cols + placeholders, tuple(flat))
+
+
 def deactivate_roster_month(cursor, roster_month_id: int) -> None:
     """
     Soft-deactivate a roster month and all related child records.
@@ -970,7 +991,7 @@ def load_tracker_baselines_map(
     placeholders = ",".join(["%s"] * len(user_ids))
     cursor.execute(
         f"""
-        SELECT user_id, monthly_target, working_days, extra_assigned_hours
+        SELECT user_monthly_tracker_id, user_id, monthly_target, working_days, extra_assigned_hours
         FROM user_monthly_tracker
         WHERE month_year=%s AND is_active=1 AND user_id IN ({placeholders})
         """,
@@ -983,6 +1004,7 @@ def load_tracker_baselines_map(
             row.get("monthly_target"), row.get("working_days")
         )
         out[uid] = {
+            "user_monthly_tracker_id": int(row["user_monthly_tracker_id"]),
             "daily_full_hours": daily,
             "extra_assigned_hours": float(row.get("extra_assigned_hours") or 0),
             "monthly_target": float(row.get("monthly_target") or 0),
@@ -1071,16 +1093,7 @@ def insert_roster_for_employee(
             )
         )
     if day_rows:
-        cursor.executemany(
-            """
-            INSERT INTO roster_day (
-                roster_month_id, roster_date, day_type, shift,
-                shift_start, shift_end, working_type, working_hours,
-                holiday_id, leave_id, is_active, created_date, updated_date
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s)
-            """,
-            day_rows,
-        )
+        _bulk_insert_roster_days(cursor, day_rows)
 
     if write_audit:
         write_audit_log(
@@ -1103,20 +1116,24 @@ def insert_roster_for_employee(
         )
 
     # Push target hours + working days into user_monthly_tracker on generate/reset
+    sync_payload = {
+        "roster_month_id": roster_month_id,
+        "user_id": int(employee["user_id"]),
+        "month_year": month_year,
+        "monthly_target_hours": metrics["monthly_target_hours"],
+        "target_working_days": metrics["target_working_days"],
+        "extra_assigned_hours": extra_assigned,
+    }
+    if tracker.get("from_tracker") and tracker.get("user_monthly_tracker_id"):
+        sync_payload["existing_tracker_id"] = int(tracker["user_monthly_tracker_id"])
     sync_to_user_monthly_tracker(
         cursor,
-        {
-            "roster_month_id": roster_month_id,
-            "user_id": int(employee["user_id"]),
-            "month_year": month_year,
-            "monthly_target_hours": metrics["monthly_target_hours"],
-            "target_working_days": metrics["target_working_days"],
-            "extra_assigned_hours": extra_assigned,
-        },
+        sync_payload,
         "Synced from roster generate/reset",
         created_by,
         approval_status=None,
         action="ROSTER_GENERATED_SYNCED_TO_UMT",
+        write_audit=write_audit,
     )
 
     return {
@@ -1137,6 +1154,7 @@ def sync_to_user_monthly_tracker(
     *,
     approval_status: str | None = "Approved",
     action: str = "ROSTER_SYNCED_TO_PRODUCTION",
+    write_audit: bool = True,
 ) -> dict:
     """
     Upsert user_monthly_tracker from roster metrics.
@@ -1150,39 +1168,52 @@ def sync_to_user_monthly_tracker(
     extra = float(roster_month.get("extra_assigned_hours") or 0)
     now = now_str()
 
-    cursor.execute(
-        """
-        SELECT user_monthly_tracker_id, monthly_target, working_days, extra_assigned_hours
-        FROM user_monthly_tracker
-        WHERE user_id=%s AND month_year=%s AND is_active=1
-        LIMIT 1
-        """,
-        (user_id, month_year),
-    )
-    existing = cursor.fetchone()
-    old_value = dict(existing) if existing else None
-
-    if existing:
+    existing_id = roster_month.get("existing_tracker_id")
+    if existing_id:
         cursor.execute(
             """
             UPDATE user_monthly_tracker
             SET monthly_target=%s, working_days=%s, extra_assigned_hours=%s
             WHERE user_monthly_tracker_id=%s
             """,
-            (monthly_target, working_days, extra, int(existing["user_monthly_tracker_id"])),
+            (monthly_target, working_days, extra, int(existing_id)),
         )
-        tracker_id = int(existing["user_monthly_tracker_id"])
+        tracker_id = int(existing_id)
+        old_value = None
     else:
         cursor.execute(
             """
-            INSERT INTO user_monthly_tracker (
-                user_id, month_year, monthly_target, extra_assigned_hours,
-                working_days, is_active, created_date
-            ) VALUES (%s,%s,%s,%s,%s,1,%s)
+            SELECT user_monthly_tracker_id, monthly_target, working_days, extra_assigned_hours
+            FROM user_monthly_tracker
+            WHERE user_id=%s AND month_year=%s AND is_active=1
+            LIMIT 1
             """,
-            (user_id, month_year, monthly_target, extra, working_days, now),
+            (user_id, month_year),
         )
-        tracker_id = int(cursor.lastrowid)
+        existing = cursor.fetchone()
+        old_value = dict(existing) if existing else None
+
+        if existing:
+            cursor.execute(
+                """
+                UPDATE user_monthly_tracker
+                SET monthly_target=%s, working_days=%s, extra_assigned_hours=%s
+                WHERE user_monthly_tracker_id=%s
+                """,
+                (monthly_target, working_days, extra, int(existing["user_monthly_tracker_id"])),
+            )
+            tracker_id = int(existing["user_monthly_tracker_id"])
+        else:
+            cursor.execute(
+                """
+                INSERT INTO user_monthly_tracker (
+                    user_id, month_year, monthly_target, extra_assigned_hours,
+                    working_days, is_active, created_date
+                ) VALUES (%s,%s,%s,%s,%s,1,%s)
+                """,
+                (user_id, month_year, monthly_target, extra, working_days, now),
+            )
+            tracker_id = int(cursor.lastrowid)
 
     roster_month_id = roster_month.get("roster_month_id")
     if roster_month_id:
@@ -1201,7 +1232,7 @@ def sync_to_user_monthly_tracker(
         "working_days": working_days,
         "extra_assigned_hours": extra,
     }
-    if roster_month_id:
+    if write_audit and roster_month_id:
         write_audit_log(
             cursor,
             roster_month_id=int(roster_month_id),

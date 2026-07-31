@@ -1425,6 +1425,39 @@ def _build_excel_preview(
     skipped: list[dict] = []
     errors: list[dict] = []
 
+    # Cache lock lookups — otherwise every cell hits the DB (all-weeks = thousands of queries)
+    month_lock_cache: dict[str, str] = {}
+    editable_cache: dict[int, tuple[bool, str]] = {}
+
+    def _month_editable(roster_month: dict) -> tuple[bool, str]:
+        rid = int(roster_month["roster_month_id"])
+        cached = editable_cache.get(rid)
+        if cached is not None:
+            return cached
+        month_year = (roster_month.get("month_year") or "").strip()
+        if month_year:
+            if month_year not in month_lock_cache:
+                month_lock_cache[month_year] = month_calendar_lock_message(cursor, month_year) or ""
+            lock_msg = month_lock_cache[month_year]
+            if lock_msg:
+                editable_cache[rid] = (False, lock_msg)
+                return editable_cache[rid]
+        if is_month_locked(roster_month.get("status", "")):
+            locker = (roster_month.get("locked_by_name") or "").strip() or "an administrator"
+            editable_cache[rid] = (
+                False,
+                f"This roster is locked by {locker} and cannot be changed",
+            )
+            return editable_cache[rid]
+        if not can_create_change_requests(roster_month.get("status", "")):
+            editable_cache[rid] = (
+                False,
+                f"Changes not allowed in status {roster_month.get('status')}",
+            )
+            return editable_cache[rid]
+        editable_cache[rid] = (True, "")
+        return editable_cache[rid]
+
     for row in parsed["rows"]:
         emp, err = match_employee_name(row["name"], name_index)
         if err or not emp:
@@ -1488,7 +1521,7 @@ def _build_excel_preview(
                 )
                 continue
 
-            ok, msg = _validate_month_editable(cursor, roster_month)
+            ok, msg = _month_editable(roster_month)
             if not ok:
                 errors.append(
                     {
