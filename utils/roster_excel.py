@@ -725,7 +725,13 @@ def match_employee_name(
         return matches[0], None
     if len(matches) > 1:
         return None, f"Ambiguous name '{name}' matches multiple employees"
-    # Partial contains match as fallback
+
+    # Short keys like team agents "A" / "B" must be exact only — partial
+    # matching would hit every name containing that letter.
+    if len(key) <= 2:
+        return None, f"No matching employee for '{name}'"
+
+    # Partial contains match as fallback (longer names only)
     partial = []
     for k, emps in employees_by_norm.items():
         if key and (key in k or k in key):

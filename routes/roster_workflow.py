@@ -1461,12 +1461,14 @@ def _build_excel_preview(
     for row in parsed["rows"]:
         emp, err = match_employee_name(row["name"], name_index)
         if err or not emp:
-            errors.append(
+            # Out-of-scope / other-team / unknown names must not block apply
+            # for the employees that did match.
+            skipped.append(
                 {
                     "row": row["row"],
                     "sheet": row.get("sheet"),
                     "name": row["name"],
-                    "reason": err or "Unmatched",
+                    "reason": f"{err or 'Unmatched'} — skipped",
                 }
             )
             continue
@@ -1523,25 +1525,30 @@ def _build_excel_preview(
 
             ok, msg = _month_editable(roster_month)
             if not ok:
-                errors.append(
+                # Locked / not editable — skip these cells; don't block the rest
+                skipped.append(
                     {
                         "row": row["row"],
                         "sheet": row.get("sheet"),
-                        "name": row["name"],
+                        "user_id": uid,
+                        "user_name": emp.get("user_name"),
                         "date": date_iso,
-                        "reason": msg,
+                        "label": change.get("label"),
+                        "reason": f"{msg} — skipped",
                     }
                 )
                 continue
 
             if roster_month.get("status") == "Pending Approval":
-                errors.append(
+                skipped.append(
                     {
                         "row": row["row"],
                         "sheet": row.get("sheet"),
-                        "name": row["name"],
+                        "user_id": uid,
+                        "user_name": emp.get("user_name"),
                         "date": date_iso,
-                        "reason": "Roster is Pending Approval — withdraw first",
+                        "label": change.get("label"),
+                        "reason": "Roster is Pending Approval — skipped (withdraw first)",
                     }
                 )
                 continue
