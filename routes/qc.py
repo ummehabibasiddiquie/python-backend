@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
-from datetime import datetime
 from config import get_db_connection
+from utils.time_ist import now_ist
 
 qc_bp = Blueprint("qc", __name__)
 
@@ -44,7 +44,7 @@ def assign_daily_hours():
         if auth != f"Bearer {cron_secret}":
             return response(False, "Unauthorized", None, 401)
 
-    now = datetime.now()
+    now = now_ist()
 
     # Developer fix: Set specific date if needed
     # Uncomment and change the date below to assign hours for a specific date

@@ -4,6 +4,7 @@ from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
 from utils.roster_helpers import sync_tracker_extra_hours_to_roster
+from utils.time_ist import now_str
 from datetime import datetime, timedelta
 
 user_monthly_tracker_bp = Blueprint("user_monthly_tracker", __name__)
@@ -11,10 +12,6 @@ user_monthly_tracker_bp = Blueprint("user_monthly_tracker", __name__)
 # task_work_tracker.date_time is TEXT like "YYYY-MM-DD HH:MM:SS"
 TRACKER_DT = "CAST(twt.date_time AS DATETIME)"
 TRACKER_YEAR_MONTH = f"(YEAR({TRACKER_DT})*100 + MONTH({TRACKER_DT}))"
-
-
-def now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def month_year_to_yyyymm_sql(month_year_col: str) -> str:

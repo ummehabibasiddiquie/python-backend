@@ -26,6 +26,7 @@ from utils.roster_helpers import (
     load_active_holidays,
     load_tracker_baselines_map,
     FULL_DAY_HOURS,
+    format_ist_display,
     month_calendar_has_lock,
     month_date_range,
     month_year_label,
@@ -709,6 +710,8 @@ def list_rosters():
 
         for row in rows:
             row["access_mode"] = "read_only" if read_only else "manage"
+            if row.get("locked_date"):
+                row["locked_date_display"] = format_ist_display(row["locked_date"])
             for key in ("roster_start_date", "roster_end_date", "locked_date"):
                 if row.get(key):
                     row[key] = row[key].isoformat()
@@ -751,6 +754,9 @@ def list_rosters():
                     "locked_by_name": lock_info.get("locked_by_name") if lock_info else None,
                     "locked_date": lock_info.get("locked_date").isoformat()
                     if lock_info and lock_info.get("locked_date")
+                    else None,
+                    "locked_date_display": format_ist_display(lock_info.get("locked_date"))
+                    if lock_info
                     else None,
                 }
                 if lock_info

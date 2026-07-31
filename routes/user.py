@@ -5,6 +5,7 @@ from config import get_db_connection, UPLOAD_SUBDIRS, BASE_UPLOAD_URL, UPLOAD_FO
 from utils.security import decrypt_password, encrypt_password, safe_decrypt_password
 from utils.validators import validate_request
 from utils.json_utils import to_db_json
+from utils.time_ist import now_ist, now_str as ist_now_str
 from datetime import datetime,timedelta
 import json
 import os
@@ -104,7 +105,7 @@ def build_profile_pic_filename(user_name: str, original_filename: str) -> str:
 
     ext = original_filename.rsplit(".", 1)[1].lower().strip()
 
-    now = datetime.now()
+    now = now_ist()
     date_part = now.strftime("%d-%b-%Y")  # 05-Feb-2026
     time_part = now.strftime("%I%p")      # 10AM / 09PM
 
@@ -218,7 +219,7 @@ def list_users():
         if month_start:
             current_date = month_start
         else:
-            current_date = datetime.now()
+            current_date = now_ist()
             
         params.append(current_date)
 
@@ -402,7 +403,7 @@ def update_user():
             else:
                 user_fields["joining_date"] = None
         
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = ist_now_str()
         
         if new_is_active is not None:
             user_fields["is_active"] = new_is_active

@@ -612,17 +612,23 @@ def _approve_single_request(
     req: dict,
     logged_in_user_id: int,
     reviewer_comment: str | None,
+    roster_month: dict | None = None,
+    refresh_metrics: bool = True,
 ) -> str | None:
     """
     Apply + mark one pending submitted request as Approved.
     Returns batch_id (if any) for later batch completion.
+
+    For bulk approve, pass refresh_metrics=False and refresh each
+    touched roster_month once after the loop.
     """
     if req.get("status") != "Pending":
         raise ValueError(f"Request {req.get('request_id')} is not pending (status={req.get('status')})")
     if not req.get("batch_id"):
         raise ValueError(f"Request {req.get('request_id')} has not been submitted for approval yet")
 
-    roster_month = get_roster_month(cursor, int(req["roster_month_id"]))
+    if roster_month is None:
+        roster_month = get_roster_month(cursor, int(req["roster_month_id"]))
     if not roster_month:
         raise ValueError(f"Roster month not found for request {req.get('request_id')}")
 
@@ -634,7 +640,8 @@ def _approve_single_request(
     cancel_duplicate_pending_leave_requests(
         cursor, approved_request=req, reviewed_by=logged_in_user_id
     )
-    refresh_roster_month_metrics(cursor, int(req["roster_month_id"]))
+    if refresh_metrics:
+        refresh_roster_month_metrics(cursor, int(req["roster_month_id"]))
 
     cursor.execute(
         """
@@ -660,6 +667,91 @@ def _approve_single_request(
         notes=reviewer_comment,
     )
     return batch_id
+
+
+def _load_requests_by_ids(cursor, request_ids: list[int]) -> dict[int, dict]:
+    """Prefetch many change requests in one query."""
+    if not request_ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(request_ids))
+    cursor.execute(
+        f"""
+        SELECT *
+        FROM roster_change_request
+        WHERE is_active=1 AND request_id IN ({placeholders})
+        """,
+        tuple(int(x) for x in request_ids),
+    )
+    out: dict[int, dict] = {}
+    for row in cursor.fetchall() or []:
+        if isinstance(row.get("change_payload"), str):
+            try:
+                row["change_payload"] = json.loads(row["change_payload"])
+            except Exception:
+                pass
+        out[int(row["request_id"])] = row
+    return out
+
+
+def _load_roster_months_by_ids(cursor, roster_month_ids: list[int]) -> dict[int, dict]:
+    if not roster_month_ids:
+        return {}
+    unique = list(dict.fromkeys(int(x) for x in roster_month_ids))
+    placeholders = ",".join(["%s"] * len(unique))
+    cursor.execute(
+        f"""
+        SELECT *
+        FROM roster_month
+        WHERE roster_month_id IN ({placeholders})
+        """,
+        tuple(unique),
+    )
+    return {int(r["roster_month_id"]): r for r in (cursor.fetchall() or [])}
+
+
+def _notify_leave_decisions_background(
+    approved_reqs: list[dict],
+    *,
+    status: str,
+    reviewer_comment: str | None,
+) -> None:
+    """Send leave emails off the request thread so bulk approve returns quickly."""
+    leave_reqs = [
+        r
+        for r in approved_reqs
+        if (r.get("change_type") or "").strip()
+        in ("LEAVE_ADD", "LEAVE_UPDATE", "LEAVE_DELETE")
+    ]
+    if not leave_reqs:
+        return
+
+    import threading
+
+    def _run():
+        conn = None
+        cursor = None
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+            for req in leave_reqs:
+                try:
+                    notify_agent_leave_decision(
+                        cursor,
+                        req,
+                        status=status,
+                        reviewer_comment=reviewer_comment,
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        finally:
+            if cursor is not None:
+                cursor.close()
+            if conn is not None:
+                conn.close()
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 @roster_bp.route("/requests/approve", methods=["POST"])
@@ -774,29 +866,49 @@ def roster_approve_bulk():
         if not request_ids:
             return api_response(400, "No pending requests to approve")
 
+        reqs_by_id = _load_requests_by_ids(cursor, request_ids)
+        month_ids = [
+            int(r["roster_month_id"])
+            for r in reqs_by_id.values()
+            if r.get("roster_month_id") is not None
+        ]
+        months_by_id = _load_roster_months_by_ids(cursor, month_ids)
+
         approved = 0
         failed: list[dict] = []
         batch_ids: set[str] = set()
         approved_reqs: list[dict] = []
+        touched_month_ids: set[int] = set()
 
         for rid in request_ids:
             try:
-                req = _load_request(cursor, int(rid))
+                req = reqs_by_id.get(int(rid))
                 if not req:
                     failed.append({"request_id": rid, "reason": "Not found"})
                     continue
+                mid = int(req["roster_month_id"])
                 batch_id = _approve_single_request(
                     cursor,
                     req=req,
                     logged_in_user_id=logged_in_user_id,
                     reviewer_comment=reviewer_comment,
+                    roster_month=months_by_id.get(mid),
+                    refresh_metrics=False,
                 )
                 if batch_id:
                     batch_ids.add(batch_id)
                 approved_reqs.append(req)
+                touched_month_ids.add(mid)
                 approved += 1
             except Exception as row_err:
                 failed.append({"request_id": rid, "reason": str(row_err)})
+
+        # One metrics refresh per touched roster month (not per request)
+        for mid in touched_month_ids:
+            try:
+                refresh_roster_month_metrics(cursor, mid)
+            except Exception:
+                pass
 
         finalized = []
         for batch_id in batch_ids:
@@ -807,13 +919,12 @@ def roster_approve_bulk():
             )
 
         conn.commit()
-        for req in approved_reqs:
-            try:
-                notify_agent_leave_decision(
-                    cursor, req, status="Approved", reviewer_comment=reviewer_comment
-                )
-            except Exception:
-                pass
+        # Emails must not block the API response
+        _notify_leave_decisions_background(
+            approved_reqs,
+            status="Approved",
+            reviewer_comment=reviewer_comment,
+        )
 
         return api_response(
             200,

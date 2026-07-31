@@ -5,6 +5,7 @@ from utils.response import api_response
 from config import get_db_connection
 from utils.cloudinary_utils import upload_to_cloudinary, delete_from_cloudinary, FOLDER_TASK
 from utils.file_utils import is_allowed_file
+from utils.time_ist import now_ist, now_str as ist_now_str
 from datetime import datetime
 import json
 import os
@@ -37,7 +38,7 @@ def build_task_filename(project_id: str, task_name: str, original_filename: str)
         raise ValueError("Uploaded file has no extension")
 
     ext = original_filename.rsplit(".", 1)[1].lower().strip()
-    now = datetime.now()
+    now = now_ist()
     date_part = now.strftime("%d-%b-%Y")
     time_part = now.strftime("%I%p")  # 10AM
 
@@ -142,7 +143,7 @@ def add_task():
         except Exception as e:
             return api_response(400, f"File handling failed: {str(e)}")
 
-    now_str = datetime.now().strftime(DATE_FORMAT)
+    now_str = ist_now_str()
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -295,7 +296,7 @@ def update_task():
             conn.rollback()
             return api_response(400, "No valid fields provided for update")
 
-        updated_str = datetime.now().strftime(DATE_FORMAT)
+        updated_str = ist_now_str()
 
         set_clause = ", ".join(f"{k}=%s" for k in update_values.keys())
         params = list(update_values.values()) + [updated_str, task_id]
@@ -345,7 +346,7 @@ def delete_task():
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    updated_str = datetime.now().strftime(DATE_FORMAT)
+    updated_str = ist_now_str()
 
     try:
         conn.start_transaction()

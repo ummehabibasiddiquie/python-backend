@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import calendar
 import json
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from utils.json_utils import dumps_json_safe
+from utils.time_ist import IST, now_str
 
 FULL_DAY_HOURS = 9.0
 HALF_DAY_HOURS = 4.5
@@ -113,8 +114,31 @@ QA_DAY_SHIFT_END = time(19, 30)
 MONTH_ABBR = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
 
-def now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def format_ist_display(value) -> str | None:
+    """Format a DB datetime/string as '31 Jul 2026, 04:01 pm' without UTC shifting."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value.replace(tzinfo=None)
+    else:
+        s = str(value).strip().replace("T", " ")
+        if not s:
+            return None
+        s = s.split("+")[0].split("Z")[0].strip()
+        dt = None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M"):
+            try:
+                dt = datetime.strptime(s[:26], fmt)
+                break
+            except ValueError:
+                continue
+        if dt is None:
+            return str(value)
+    # 04:01 pm style (en-IN-like), strip leading zero on day
+    text = dt.strftime("%d %b %Y, %I:%M %p")
+    if text.startswith("0"):
+        text = text[1:]
+    return text.replace("AM", "am").replace("PM", "pm")
 
 
 def parse_date(value: str | date | None) -> date | None:
