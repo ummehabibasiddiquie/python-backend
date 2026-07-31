@@ -3,12 +3,28 @@
 
 from __future__ import annotations
 
+import io
 import json
+from datetime import date, datetime
 
-from flask import request
+from flask import request, send_file
 
 from config import get_db_connection
 from utils.response import api_response
+from utils.roster_excel import (
+    build_month_workbook,
+    build_template_workbook,
+    day_to_excel_label,
+    excel_label_to_change,
+    is_noop_change,
+    match_employee_name,
+    monday_of_week,
+    month_years_for_dates,
+    parse_roster_excel,
+    resolve_roster_month_for_date,
+    week_dates,
+    weeks_in_month,
+)
 from utils.roster_helpers import (
     can_lock_roster_month,
     roster_lock_not_before_message,
@@ -19,6 +35,8 @@ from utils.roster_helpers import (
     get_role_context,
     is_admin_or_super_admin,
     is_self_read_only_roster_role,
+    month_year_label,
+    parse_date,
     parse_month_year,
     require_logged_in_user,
     write_audit_log,
@@ -1151,6 +1169,657 @@ def roster_recalculate_preview():
         return api_response(200, "Metrics preview calculated", metrics)
     except Exception as e:
         return api_response(500, f"Recalculate failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _parse_week_start(value) -> date | None:
+    d = parse_date(value)
+    if d is None and value:
+        try:
+            raw = str(value).strip()[:10]
+            d = datetime.strptime(raw, "%Y-%m-%d").date()
+        except Exception:
+            d = None
+    if d is None:
+        return None
+    return monday_of_week(d)
+
+
+def _employees_name_index(employees: list[dict]) -> dict[str, list[dict]]:
+    index: dict[str, list[dict]] = {}
+    for emp in employees:
+        name = (emp.get("user_name") or "").strip()
+        if not name:
+            continue
+        key = "".join(ch for ch in name.lower() if ch.isalnum())
+        index.setdefault(key, []).append(emp)
+    return index
+
+
+def _load_roster_months_for_users(
+    cursor,
+    user_ids: list[int],
+    month_years: list[str],
+) -> dict[tuple[int, str], dict]:
+    if not user_ids or not month_years:
+        return {}
+    placeholders_u = ",".join(["%s"] * len(user_ids))
+    placeholders_m = ",".join(["%s"] * len(month_years))
+    cursor.execute(
+        f"""
+        SELECT rm.*, u.user_name, LOWER(TRIM(r.role_name)) AS employee_role_name,
+               locker.user_name AS locked_by_name
+        FROM roster_month rm
+        JOIN tfs_user u ON u.user_id = rm.user_id
+        JOIN user_role r ON r.role_id = u.role_id
+        LEFT JOIN tfs_user locker ON locker.user_id = rm.locked_by
+        WHERE rm.is_active=1
+          AND rm.user_id IN ({placeholders_u})
+          AND rm.month_year IN ({placeholders_m})
+        """,
+        tuple([*user_ids, *month_years]),
+    )
+    out: dict[tuple[int, str], dict] = {}
+    for row in cursor.fetchall() or []:
+        out[(int(row["user_id"]), row["month_year"])] = row
+    return out
+
+
+def _load_days_lookup(cursor, roster_month_ids: list[int]) -> dict[tuple[int, str], dict]:
+    """(user_id, date_iso) -> day row (includes user_id via join)."""
+    if not roster_month_ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(roster_month_ids))
+    cursor.execute(
+        f"""
+        SELECT rd.*, rm.user_id
+        FROM roster_day rd
+        JOIN roster_month rm ON rm.roster_month_id = rd.roster_month_id
+        WHERE rd.is_active=1 AND rm.is_active=1
+          AND rd.roster_month_id IN ({placeholders})
+        """,
+        tuple(roster_month_ids),
+    )
+    lookup: dict[tuple[int, str], dict] = {}
+    for row in cursor.fetchall() or []:
+        d = parse_date(row.get("roster_date"))
+        if not d:
+            continue
+        lookup[(int(row["user_id"]), d.isoformat())] = row
+    return lookup
+
+
+def _build_excel_preview(
+    cursor,
+    *,
+    logged_in_user_id: int,
+    role_name: str,
+    file_bytes: bytes,
+    team_id=None,
+) -> dict:
+    parsed = parse_roster_excel(file_bytes)
+    dates = parsed["dates"]
+    if not dates:
+        raise ValueError("No date columns found in Excel")
+
+    month_years = month_years_for_dates(dates)
+    # Eligible employees across all months touched by the week
+    employees_by_id: dict[int, dict] = {}
+    for my in month_years:
+        year, month = parse_month_year(my)
+        emps = get_eligible_employees(cursor, logged_in_user_id, role_name, year, month)
+        if team_id not in (None, "", "all"):
+            tid = str(team_id)
+            emps = [e for e in emps if str(e.get("team_id") or "") == tid]
+        for e in emps:
+            employees_by_id[int(e["user_id"])] = e
+
+    employees = list(employees_by_id.values())
+    name_index = _employees_name_index(employees)
+    user_ids = list(employees_by_id.keys())
+    roster_by_um = _load_roster_months_for_users(cursor, user_ids, month_years)
+    roster_ids = [int(r["roster_month_id"]) for r in roster_by_um.values()]
+    day_lookup = _load_days_lookup(cursor, roster_ids)
+
+    changes: list[dict] = []
+    skipped: list[dict] = []
+    errors: list[dict] = []
+
+    for row in parsed["rows"]:
+        emp, err = match_employee_name(row["name"], name_index)
+        if err or not emp:
+            errors.append(
+                {
+                    "row": row["row"],
+                    "sheet": row.get("sheet"),
+                    "name": row["name"],
+                    "reason": err or "Unmatched",
+                }
+            )
+            continue
+
+        uid = int(emp["user_id"])
+        role = emp.get("role_name")
+
+        for date_iso, label in row["cells"].items():
+            d = parse_date(date_iso)
+            if not d:
+                errors.append(
+                    {
+                        "row": row["row"],
+                        "sheet": row.get("sheet"),
+                        "name": row["name"],
+                        "date": date_iso,
+                        "reason": "Invalid date",
+                    }
+                )
+                continue
+
+            try:
+                change = excel_label_to_change(label, d, role_name=role)
+            except ValueError as ve:
+                errors.append(
+                    {
+                        "row": row["row"],
+                        "sheet": row.get("sheet"),
+                        "name": row["name"],
+                        "date": date_iso,
+                        "value": label,
+                        "reason": str(ve),
+                    }
+                )
+                continue
+
+            if not change:
+                continue
+
+            roster_month = resolve_roster_month_for_date(roster_by_um, uid, d)
+            if not roster_month:
+                errors.append(
+                    {
+                        "row": row["row"],
+                        "sheet": row.get("sheet"),
+                        "name": row["name"],
+                        "date": date_iso,
+                        "reason": f"No roster generated for {month_year_label(d.year, d.month)}",
+                    }
+                )
+                continue
+
+            ok, msg = _validate_month_editable(cursor, roster_month)
+            if not ok:
+                errors.append(
+                    {
+                        "row": row["row"],
+                        "sheet": row.get("sheet"),
+                        "name": row["name"],
+                        "date": date_iso,
+                        "reason": msg,
+                    }
+                )
+                continue
+
+            if roster_month.get("status") == "Pending Approval":
+                errors.append(
+                    {
+                        "row": row["row"],
+                        "sheet": row.get("sheet"),
+                        "name": row["name"],
+                        "date": date_iso,
+                        "reason": "Roster is Pending Approval — withdraw first",
+                    }
+                )
+                continue
+
+            current_day = day_lookup.get((uid, date_iso))
+            if not current_day:
+                errors.append(
+                    {
+                        "row": row["row"],
+                        "sheet": row.get("sheet"),
+                        "name": row["name"],
+                        "date": date_iso,
+                        "reason": "Roster day not found",
+                    }
+                )
+                continue
+
+            if is_noop_change(current_day, change):
+                skipped.append(
+                    {
+                        "row": row["row"],
+                        "user_id": uid,
+                        "user_name": emp.get("user_name"),
+                        "date": date_iso,
+                        "label": change.get("label"),
+                        "reason": "No change from current roster",
+                    }
+                )
+                continue
+
+            current_label = day_to_excel_label(current_day, role)
+            changes.append(
+                {
+                    "row": row["row"],
+                    "user_id": uid,
+                    "user_name": emp.get("user_name"),
+                    "roster_month_id": int(roster_month["roster_month_id"]),
+                    "month_year": roster_month.get("month_year"),
+                    "date": date_iso,
+                    "current_label": current_label,
+                    "new_label": change.get("label"),
+                    "change_type": change["change_type"],
+                    "change_payload": change["change_payload"],
+                }
+            )
+
+    return {
+        "week_start": dates[0].isoformat() if dates else None,
+        "week_end": dates[-1].isoformat() if dates else None,
+        "dates": [d.isoformat() for d in dates],
+        "sheets": parsed.get("sheets") or [],
+        "summary": {
+            "rows": len(parsed["rows"]),
+            "changes": len(changes),
+            "skipped": len(skipped),
+            "errors": len(errors),
+            "sheets": len(parsed.get("sheets") or []),
+        },
+        "changes": changes,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+@roster_bp.route("/excel/weeks", methods=["POST"])
+def roster_excel_weeks():
+    """List weeks that touch a month (for template week picker)."""
+    data = request.get_json(silent=True) or {}
+    logged_in_user_id, err = _require_logged_in_user(data)
+    if err:
+        return err
+
+    month_year = (data.get("month_year") or "").strip()
+    if not month_year:
+        return api_response(400, "month_year is required")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, logged_in_user_id)
+        role_name = ctx.get("user_role_name", "")
+        if not can_manage_roster_employees(role_name):
+            return api_response(403, "You do not have permission to manage rosters")
+        year, month = parse_month_year(month_year)
+        return api_response(200, "Weeks fetched", {"weeks": weeks_in_month(year, month)})
+    except ValueError as e:
+        return api_response(400, str(e))
+    except Exception as e:
+        return api_response(500, f"Failed to list weeks: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@roster_bp.route("/excel/template", methods=["POST"])
+def roster_excel_template():
+    """
+    Download roster Excel template with agent names, dates, dropdowns.
+
+    Options:
+      - week_start (YYYY-MM-DD): single week
+      - month_year + week_number: single week by Week 1 / Week 2 …
+      - month_year + all_weeks=true: full month (one sheet per week)
+    Optional: team_id, prefill (bool, default true)
+    """
+    data = request.get_json(silent=True) or {}
+    logged_in_user_id, err = _require_logged_in_user(data)
+    if err:
+        return err
+
+    team_id = data.get("team_id")
+    prefill = bool(data.get("prefill", True))
+    all_weeks = bool(data.get("all_weeks", False))
+    month_year = (data.get("month_year") or "").strip()
+    week_number = data.get("week_number")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, logged_in_user_id)
+        role_name = ctx.get("user_role_name", "")
+        if not can_manage_roster_employees(role_name):
+            return api_response(403, "You do not have permission to manage rosters")
+
+        weeks_meta: list[dict] = []
+        week_start = None
+
+        if all_weeks or week_number is not None:
+            if not month_year:
+                return api_response(400, "month_year is required for week_number / all_weeks")
+            year, month = parse_month_year(month_year)
+            weeks_meta = weeks_in_month(year, month)
+            if not weeks_meta:
+                return api_response(400, "No weeks found for this month")
+
+            if all_weeks:
+                pass
+            else:
+                try:
+                    wn = int(week_number)
+                except (TypeError, ValueError):
+                    return api_response(400, "week_number must be an integer (1, 2, 3, …)")
+                match = next((w for w in weeks_meta if int(w["week_number"]) == wn), None)
+                if not match:
+                    return api_response(400, f"Week {wn} not found for {month_year}")
+                week_start = _parse_week_start(match["week_start"])
+                weeks_meta = [match]
+        else:
+            week_start = _parse_week_start(data.get("week_start") or data.get("week_start_date"))
+            if not week_start:
+                return api_response(
+                    400,
+                    "Provide week_start, or month_year + week_number, or month_year + all_weeks",
+                )
+            # Resolve week number label from the month that owns most days
+            primary = week_start if week_start.day <= 28 else week_start
+            # Prefer month_year from request if given, else from week start
+            if month_year:
+                year, month = parse_month_year(month_year)
+            else:
+                year, month = primary.year, primary.month
+            weeks_meta = weeks_in_month(year, month)
+            match = next(
+                (w for w in weeks_meta if w["week_start"] == week_start.isoformat()),
+                None,
+            )
+            if match:
+                weeks_meta = [match]
+            else:
+                weeks_meta = [
+                    {
+                        "week_number": 1,
+                        "week_start": week_start.isoformat(),
+                        "week_end": week_dates(week_start)[-1].isoformat(),
+                        "label": f"Week ({week_start.isoformat()})",
+                    }
+                ]
+
+        # Collect dates across selected weeks for employee/roster lookup
+        all_days = []
+        for w in weeks_meta:
+            ws = _parse_week_start(w["week_start"])
+            if ws:
+                all_days.extend(week_dates(ws))
+        if not all_days and week_start:
+            all_days = week_dates(week_start)
+
+        month_years = month_years_for_dates(all_days)
+        if month_year and month_year not in month_years:
+            month_years.insert(0, month_year)
+
+        employees_by_id: dict[int, dict] = {}
+        for my in month_years:
+            year, month = parse_month_year(my)
+            emps = get_eligible_employees(cursor, logged_in_user_id, role_name, year, month)
+            if team_id not in (None, "", "all"):
+                tid = str(team_id)
+                emps = [e for e in emps if str(e.get("team_id") or "") == tid]
+            for e in emps:
+                employees_by_id[int(e["user_id"])] = e
+
+        employees = sorted(
+            employees_by_id.values(),
+            key=lambda e: (e.get("user_name") or "").lower(),
+        )
+        if not employees:
+            return api_response(400, "No eligible employees found for this week/team")
+
+        day_lookup: dict[tuple[int, str], dict] = {}
+        if prefill:
+            roster_by_um = _load_roster_months_for_users(
+                cursor, list(employees_by_id.keys()), month_years
+            )
+            day_lookup = _load_days_lookup(
+                cursor, [int(r["roster_month_id"]) for r in roster_by_um.values()]
+            )
+
+        if all_weeks:
+            file_bytes = build_month_workbook(
+                weeks=weeks_meta,
+                employees=employees,
+                day_lookup=day_lookup,
+                month_label=month_year,
+            )
+            filename = f"Roster_{month_year}_All_Weeks.xlsx"
+        else:
+            wn = int(weeks_meta[0].get("week_number") or 0) or None
+            ws = week_start or _parse_week_start(weeks_meta[0]["week_start"])
+            file_bytes = build_template_workbook(
+                week_start=ws,
+                employees=employees,
+                day_lookup=day_lookup,
+                week_number=wn,
+            )
+            week_tag = f"Week{wn}" if wn else ws.isoformat()
+            filename = f"Roster_{month_year or ''}_{week_tag}.xlsx".replace("__", "_")
+
+        return send_file(
+            io.BytesIO(file_bytes),
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    except ValueError as e:
+        return api_response(400, str(e))
+    except Exception as e:
+        return api_response(500, f"Template download failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@roster_bp.route("/excel/preview", methods=["POST"])
+def roster_excel_preview():
+    """Upload Excel and return change preview (no writes)."""
+    logged_in_user_id = request.form.get("logged_in_user_id")
+    if not logged_in_user_id:
+        return api_response(400, "logged_in_user_id is required")
+
+    uploaded = request.files.get("file") or request.files.get("roster_file")
+    if not uploaded or not uploaded.filename:
+        return api_response(400, "Excel file is required")
+
+    team_id = request.form.get("team_id")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, int(logged_in_user_id))
+        role_name = ctx.get("user_role_name", "")
+        if not can_manage_roster_employees(role_name):
+            return api_response(403, "You do not have permission to manage rosters")
+
+        file_bytes = uploaded.read()
+        preview = _build_excel_preview(
+            cursor,
+            logged_in_user_id=int(logged_in_user_id),
+            role_name=role_name,
+            file_bytes=file_bytes,
+            team_id=team_id,
+        )
+        return api_response(200, "Roster Excel preview ready", preview)
+    except ValueError as e:
+        return api_response(400, str(e))
+    except Exception as e:
+        return api_response(500, f"Excel preview failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@roster_bp.route("/excel/apply", methods=["POST"])
+def roster_excel_apply():
+    """
+    Apply confirmed Excel changes as pending change requests.
+    Body JSON: { changes: [ { roster_month_id, change_type, change_payload }, ... ] }
+    Or multipart with file (re-parse) + apply_all=1.
+    """
+    data = request.get_json(silent=True)
+    using_file = False
+    if data is None:
+        using_file = True
+        logged_in_user_id = request.form.get("logged_in_user_id")
+        if not logged_in_user_id:
+            return api_response(400, "logged_in_user_id is required")
+        logged_in_user_id = int(logged_in_user_id)
+        team_id = request.form.get("team_id")
+        uploaded = request.files.get("file") or request.files.get("roster_file")
+        if not uploaded or not uploaded.filename:
+            return api_response(400, "Excel file or changes payload is required")
+        file_bytes = uploaded.read()
+        data = {"logged_in_user_id": logged_in_user_id, "team_id": team_id}
+    else:
+        logged_in_user_id, err = _require_logged_in_user(data)
+        if err:
+            return err
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, int(logged_in_user_id))
+        role_name = ctx.get("user_role_name", "")
+        if not can_manage_roster_employees(role_name):
+            return api_response(403, "You do not have permission to manage rosters")
+
+        if using_file:
+            preview = _build_excel_preview(
+                cursor,
+                logged_in_user_id=int(logged_in_user_id),
+                role_name=role_name,
+                file_bytes=file_bytes,
+                team_id=data.get("team_id"),
+            )
+            if preview["errors"]:
+                return api_response(
+                    400,
+                    "Fix Excel errors before applying",
+                    {
+                        "summary": preview["summary"],
+                        "errors": preview["errors"],
+                    },
+                )
+            change_rows = preview["changes"]
+        else:
+            change_rows = data.get("changes") or []
+
+        if not change_rows:
+            return api_response(400, "No changes to apply")
+
+        created = 0
+        updated = 0
+        failed: list[dict] = []
+        request_ids: list[int] = []
+
+        for item in change_rows:
+            try:
+                roster_month_id = int(item["roster_month_id"])
+                change_type = (item.get("change_type") or "").strip()
+                change_payload = item.get("change_payload") or {}
+
+                roster_month = get_roster_month(cursor, roster_month_id)
+                if not roster_month:
+                    failed.append({"date": item.get("date"), "reason": "Roster month not found"})
+                    continue
+
+                scope_err = assert_manager_scope(
+                    cursor, int(logged_in_user_id), role_name, roster_month
+                )
+                if scope_err:
+                    failed.append(
+                        {
+                            "user_name": item.get("user_name"),
+                            "date": item.get("date"),
+                            "reason": scope_err,
+                        }
+                    )
+                    continue
+
+                ok, msg = _validate_month_editable(cursor, roster_month)
+                if not ok:
+                    failed.append(
+                        {
+                            "user_name": item.get("user_name"),
+                            "date": item.get("date"),
+                            "reason": msg,
+                        }
+                    )
+                    continue
+
+                if roster_month.get("status") == "Pending Approval":
+                    failed.append(
+                        {
+                            "user_name": item.get("user_name"),
+                            "date": item.get("date"),
+                            "reason": "Pending Approval — withdraw first",
+                        }
+                    )
+                    continue
+
+                if change_type in ("LEAVE_ADD", "LEAVE_UPDATE"):
+                    request_id, was_created = create_or_update_leave_request(
+                        cursor,
+                        roster_month_id=roster_month_id,
+                        user_id=int(roster_month["user_id"]),
+                        change_type=change_type,
+                        change_payload=change_payload,
+                        submitted_by=int(logged_in_user_id),
+                    )
+                    if was_created:
+                        created += 1
+                    else:
+                        updated += 1
+                    request_ids.append(int(request_id))
+                else:
+                    request_id = create_change_request(
+                        cursor,
+                        roster_month_id=roster_month_id,
+                        user_id=int(roster_month["user_id"]),
+                        change_type=change_type,
+                        change_payload=change_payload,
+                        submitted_by=int(logged_in_user_id),
+                        batch_id=None,
+                    )
+                    created += 1
+                    request_ids.append(int(request_id))
+            except Exception as row_err:
+                failed.append(
+                    {
+                        "user_name": item.get("user_name"),
+                        "date": item.get("date"),
+                        "reason": str(row_err),
+                    }
+                )
+
+        conn.commit()
+        return api_response(
+            200,
+            "Roster Excel changes applied as pending requests",
+            {
+                "created": created,
+                "updated": updated,
+                "failed": failed,
+                "request_ids": request_ids,
+            },
+        )
+    except ValueError as e:
+        conn.rollback()
+        return api_response(400, str(e))
+    except Exception as e:
+        conn.rollback()
+        return api_response(500, f"Excel apply failed: {str(e)}")
     finally:
         cursor.close()
         conn.close()
