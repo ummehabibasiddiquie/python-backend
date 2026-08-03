@@ -258,6 +258,37 @@ def _leave_request_key(change_type: str, payload: dict) -> tuple:
     return (change_type, start, end, leave_type)
 
 
+def _parse_payload(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _date_only(value) -> str:
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    # Handle ISO / MySQL datetime strings
+    s = s.replace("T", " ").split(" ")[0]
+    return s[:10]
+
+
+def _ranges_overlap(a_start: str, a_end: str, b_start: str, b_end: str) -> bool:
+    a_s, a_e = _date_only(a_start), _date_only(a_end)
+    b_s, b_e = _date_only(b_start), _date_only(b_end)
+    if not a_s or not a_e or not b_s or not b_e:
+        return False
+    return a_s <= b_e and b_s <= a_e
+
+
 def find_matching_pending_leave_requests(
     cursor,
     *,
@@ -265,41 +296,50 @@ def find_matching_pending_leave_requests(
     change_type: str,
     change_payload: dict,
 ) -> list[dict]:
-    start = (change_payload.get("start_date") or "")[:10]
-    end = (change_payload.get("end_date") or "")[:10]
-    if not start or not end:
-        return []
+    """
+    Find pending leave requests for this roster month that should be updated
+    instead of creating a duplicate.
 
-    if change_type == "LEAVE_UPDATE":
-        leave_id = change_payload.get("leave_id")
-        if not leave_id:
-            return []
-        cursor.execute(
-            """
-            SELECT request_id, batch_id, change_payload
-            FROM roster_change_request
-            WHERE roster_month_id=%s AND change_type='LEAVE_UPDATE'
-              AND status='Pending' AND is_active=1
-              AND JSON_UNQUOTE(JSON_EXTRACT(change_payload, '$.leave_id')) = %s
-            ORDER BY request_id DESC
-            """,
-            (int(roster_month_id), str(leave_id)),
-        )
-        return cursor.fetchall() or []
+    Matching rules:
+    - LEAVE_UPDATE with leave_id → same leave_id
+    - Otherwise → any pending LEAVE_ADD / LEAVE_UPDATE whose dates overlap
+      (covers Excel leave then panel edit for affect_target / leave_type)
+    """
+    start = _date_only(change_payload.get("start_date"))
+    end = _date_only(change_payload.get("end_date"))
+    leave_id = change_payload.get("leave_id")
 
     cursor.execute(
         """
-        SELECT request_id, batch_id, change_payload
+        SELECT request_id, batch_id, change_type, change_payload
         FROM roster_change_request
-        WHERE roster_month_id=%s AND change_type='LEAVE_ADD'
+        WHERE roster_month_id=%s
+          AND change_type IN ('LEAVE_ADD', 'LEAVE_UPDATE')
           AND status='Pending' AND is_active=1
-          AND JSON_UNQUOTE(JSON_EXTRACT(change_payload, '$.start_date')) = %s
-          AND JSON_UNQUOTE(JSON_EXTRACT(change_payload, '$.end_date')) = %s
         ORDER BY request_id DESC
         """,
-        (int(roster_month_id), start, end),
+        (int(roster_month_id),),
     )
-    return cursor.fetchall() or []
+    rows = cursor.fetchall() or []
+    matches: list[dict] = []
+
+    for row in rows:
+        payload = _parse_payload(row.get("change_payload"))
+        row_leave_id = payload.get("leave_id")
+        row_start = _date_only(payload.get("start_date"))
+        row_end = _date_only(payload.get("end_date"))
+
+        # Prefer exact leave_id match when updating an existing leave
+        if change_type == "LEAVE_UPDATE" and leave_id and row_leave_id is not None:
+            if str(row_leave_id) == str(leave_id):
+                matches.append(row)
+                continue
+
+        # Same / overlapping dates → treat as the same leave request
+        if start and end and _ranges_overlap(start, end, row_start, row_end):
+            matches.append(row)
+
+    return matches
 
 
 def find_active_leave_overlapping_dates(
@@ -345,9 +385,13 @@ def create_or_update_leave_request(
     Upsert a pending leave change request.
     If LEAVE_ADD targets dates that already have an active leave, convert to LEAVE_UPDATE
     so fields like affect_target can be corrected on the existing leave.
+    If a pending Excel/panel leave already covers the same dates, UPDATE that request
+    instead of inserting a second approval for the same day.
     Returns (request_id, created_new).
     """
     payload = dict(change_payload or {})
+    payload["start_date"] = _date_only(payload.get("start_date"))
+    payload["end_date"] = _date_only(payload.get("end_date"))
     effective_type = change_type
 
     if effective_type == "LEAVE_ADD" and not payload.get("leave_id"):
@@ -369,7 +413,19 @@ def create_or_update_leave_request(
     )
 
     if matches:
-        keep_id = int(matches[0]["request_id"])
+        keep = matches[0]
+        keep_id = int(keep["request_id"])
+        keep_payload = _parse_payload(keep.get("change_payload"))
+        # Preserve leave_id if the pending row already had one
+        if not payload.get("leave_id") and keep_payload.get("leave_id"):
+            payload["leave_id"] = keep_payload.get("leave_id")
+            effective_type = "LEAVE_UPDATE"
+        # Keep LEAVE_ADD if leave does not exist yet (typical Excel → panel edit)
+        if effective_type == "LEAVE_ADD" and payload.get("leave_id"):
+            effective_type = "LEAVE_UPDATE"
+        if keep.get("change_type") == "LEAVE_ADD" and not payload.get("leave_id"):
+            effective_type = "LEAVE_ADD"
+
         now = now_str()
         cursor.execute(
             """
@@ -397,29 +453,20 @@ def create_or_update_leave_request(
                 """,
                 (int(submitted_by), now, int(dup["request_id"])),
             )
-        return keep_id, False
-
-    # Also merge any pending LEAVE_ADD for same dates when converting to UPDATE
-    if effective_type == "LEAVE_UPDATE":
-        add_matches = find_matching_pending_leave_requests(
+        write_audit_log(
             cursor,
-            roster_month_id=roster_month_id,
-            change_type="LEAVE_ADD",
-            change_payload=payload,
+            roster_month_id=int(roster_month_id),
+            user_id=int(user_id),
+            action="CHANGE_REQUEST_UPDATED",
+            entity_type="roster_change_request",
+            entity_id=int(keep_id),
+            old_value={"change_type": keep.get("change_type"), "change_payload": keep_payload},
+            new_value={"change_type": effective_type, "change_payload": payload},
+            performed_by=int(submitted_by),
+            approval_status="Pending",
+            notes="Updated existing pending leave instead of creating a duplicate",
         )
-        if add_matches:
-            keep_id = int(add_matches[0]["request_id"])
-            now = now_str()
-            cursor.execute(
-                """
-                UPDATE roster_change_request
-                SET change_type='LEAVE_UPDATE', change_payload=%s,
-                    submitted_by=%s, submitted_date=%s
-                WHERE request_id=%s
-                """,
-                (json.dumps(payload), int(submitted_by), now, keep_id),
-            )
-            return keep_id, False
+        return keep_id, False
 
     return (
         create_change_request(
