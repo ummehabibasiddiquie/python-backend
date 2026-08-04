@@ -19,19 +19,19 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 RECIPIENTS = [
     "ummehabiba.siddiquie@transformsolution.net",
-    "dharmesh.jotania@transformsolution.net",
-    "yahya.irani@transformsolution.net",
-    "amit.mandviwala@transformsolution.net",
-    "sriman.narayan@transformsolution.net",
-    "shirin.gafoor@transformsolution.net",
-    "avinash.dwivedi@transformsolution.net",
-    "manas.pradhan@transformsolution.net",
-    "ishan.sharma@transformsolution.net"
+    # "dharmesh.jotania@transformsolution.net",
+    # "yahya.irani@transformsolution.net",
+    # "amit.mandviwala@transformsolution.net",
+    # "sriman.narayan@transformsolution.net",
+    # "shirin.gafoor@transformsolution.net",
+    # "avinash.dwivedi@transformsolution.net",
+    # "manas.pradhan@transformsolution.net",
+    # "ishan.sharma@transformsolution.net"
 ]
 
 CC_RECIPIENTS = [
-    "ashfaq@transformsolution.com",
-    "seema@transformsolution.com"
+    # "ashfaq@transformsolution.com",
+    # "seema@transformsolution.com"
 ]
 
 
@@ -73,7 +73,7 @@ def fetch_data():
         report_date = today - timedelta(days=1)
 
         # TEST DATE
-        # report_date = datetime.strptime("2026-06-30", "%Y-%m-%d").date()
+        report_date = datetime.strptime("2026-07-31", "%Y-%m-%d").date()
         
         report_month = report_date.strftime("%b%Y").upper()
 
