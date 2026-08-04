@@ -386,19 +386,23 @@ def delete_task():
 # ---------------- LIST TASKS (include absolute file URL) ---------------- #
 @task_bp.route("/list", methods=["POST"])
 def list_tasks():
+    data = request.get_json(silent=True) or {}
+    include_inactive = str(data.get("include_inactive") or "").strip().lower() in ("1", "true", "yes")
+
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     try:
+        where_sql = "" if include_inactive else "WHERE is_active=1"
         cursor.execute(
-            """
+            f"""
             SELECT task_id, project_id, task_team_id,
                    task_name, task_description, task_target,
                    qc_percentage,task_file, important_columns,
                    is_active, created_date, updated_date
             FROM task
-            WHERE is_active=1
-            ORDER BY task_id DESC
+            {where_sql}
+            ORDER BY is_active DESC, task_id DESC
             """
         )
         tasks = cursor.fetchall()
@@ -419,6 +423,7 @@ def list_tasks():
                     "important_columns": important_cols,
                     "qc_percentage": t.get("qc_percentage"),
                     "task_file": task_file_url(t.get("task_file")),  # ✅ absolute
+                    "is_active": int(t.get("is_active") if t.get("is_active") is not None else 1),
                     "created_date": t["created_date"],
                     "updated_date": t["updated_date"],
                 }
