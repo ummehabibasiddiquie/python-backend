@@ -234,7 +234,7 @@ def update_project():
     try:
 
         cursor.execute(
-            "SELECT * FROM project WHERE project_id=%s AND is_active=1",
+            "SELECT * FROM project WHERE project_id=%s",
             (project_id,)
         )
 
@@ -283,6 +283,12 @@ def update_project():
 
         if form.get("requires_duplicate_check") is not None:
             update_values["duplicate_check"] = str(form.get("requires_duplicate_check")).lower() in ("true", "1")
+
+        # Active / inactive toggle (does not delete files)
+        if form.get("is_active") is not None:
+            v = form.get("is_active")
+            if str(v).strip().isdigit():
+                update_values["is_active"] = 1 if int(v) == 1 else 0
             
         if not update_values:
             return api_response(400, "No fields to update")
@@ -320,13 +326,17 @@ def update_project():
 
 @project_bp.route("/list", methods=["POST"])
 def list_projects():
+    data = request.get_json(silent=True) or {}
+    # Management screens can pass include_inactive=1 to show Active/Inactive and reactivate.
+    # Dropdowns / reports should omit this (default = active only).
+    include_inactive = str(data.get("include_inactive") or "").strip().lower() in ("1", "true", "yes")
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     try:
-
-        cursor.execute("""
+        where_sql = "" if include_inactive else "WHERE is_active = 1"
+        cursor.execute(f"""
             SELECT
                 project_id,
                 project_name,
@@ -340,11 +350,12 @@ def list_projects():
                 project_pprt,
                 ai_evaluation,
                 duplicate_check,
+                is_active,
                 created_date,
                 updated_date
             FROM project
-            WHERE is_active = 1
-            ORDER BY project_id DESC
+            {where_sql}
+            ORDER BY is_active DESC, project_id DESC
         """)
 
         projects = cursor.fetchall()
@@ -371,6 +382,7 @@ def list_projects():
 
                 "requires_ai_evaluation": bool(proj["ai_evaluation"]),
                 "requires_duplicate_check": bool(proj["duplicate_check"]),
+                "is_active": int(proj.get("is_active") if proj.get("is_active") is not None else 1),
 
                 "created_date": proj["created_date"],
                 "updated_date": proj["updated_date"]
