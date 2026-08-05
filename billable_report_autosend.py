@@ -73,7 +73,7 @@ def fetch_data():
         report_date = today - timedelta(days=1)
 
         # TEST DATE
-        report_date = datetime.strptime("2026-07-31", "%Y-%m-%d").date()
+        # report_date = datetime.strptime("2026-07-31", "%Y-%m-%d").date()
         
         report_month = report_date.strftime("%b%Y").upper()
 
