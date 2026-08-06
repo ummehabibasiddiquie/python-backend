@@ -455,11 +455,12 @@ def fetch_data():
             roster_info = roster_day_map.get(uid) or {}
             if is_team_agent(u):
                 assigned = 0
-            elif uid in assigned_map_qc:
-                # Source of truth: temp_qc (written by assign_daily_hours)
-                assigned = assigned_map_qc.get(uid, 0)
             elif roster_info.get("assigned_hours") is not None:
+                # Prefer live roster (so Leave → Working updates assigned hours for that person/day)
                 assigned = roster_info["assigned_hours"]
+            elif uid in assigned_map_qc:
+                # Legacy fallback: temp_qc (written by assign_daily_hours)
+                assigned = assigned_map_qc.get(uid, 0)
             else:
                 # Tenure-based full day when no temp_qc / roster row yet
                 try:
@@ -477,12 +478,15 @@ def fetch_data():
             working_days = float(u["working_days"])
 
             monthly_goal = monthly_target + extra
-            pending = monthly_goal - mtd
+            pending = max(0, monthly_goal - mtd)
 
             days_worked = days_worked_map.get(uid, 0)
             # Remaining days must exclude the report day (Half → 0.5 from roster).
+            # Use explicit None check: day_weight 0 (WeekOff/Holiday/Leave) must stay 0
+            # (`or 1` would treat 0 as missing and incorrectly add a full day).
             if uid not in users_with_report_day:
-                days_worked = days_worked + float(roster_info.get("day_weight") or 1)
+                dw = roster_info.get("day_weight")
+                days_worked = days_worked + (1.0 if dw is None else float(dw))
             remaining_days = max(0, working_days - days_worked)
 
             print(f"DEBUG - User: {u['user_name']}, Team: {u['team_name']}")
@@ -495,7 +499,7 @@ def fetch_data():
             print(f"  mtd_hours: {mtd}")
             print(f"  pending_goal: {pending}")
 
-            daily_required = pending / remaining_days if remaining_days else pending
+            daily_required = (pending / remaining_days) if remaining_days else 0
 
             print(f"  daily_required_hours: {daily_required}")
             print(f"  ---")

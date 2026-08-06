@@ -347,6 +347,7 @@ def get_eligible_employees(
     """
     Active Agents and QA only.
     Excludes employees who left before the roster month.
+    Excludes employees without joining_date (roster cannot be generated/edited).
     """
     role_ids = get_roster_role_ids(cursor)
     agent_role_id = role_ids.get("agent")
@@ -398,6 +399,7 @@ def get_eligible_employees(
         WHERE u.is_delete = 1
           AND u.is_active = 1
           AND u.role_id IN ({placeholders})
+          AND u.joining_date IS NOT NULL
           AND (u.deactivated_at IS NULL OR DATE(u.deactivated_at) >= %s)
           {scope_sql}
           {team_sql}
@@ -423,10 +425,19 @@ def get_excel_roster_employees(
     team_id=None,
 ) -> list[dict]:
     """
-    Active users of all roles in the manager's scope (for weekly Excel templates).
-    Unlike get_eligible_employees, this is not limited to Agent/QA.
+    Active Agents and QA only in the manager's scope (for weekly Excel templates).
+    Admin / PM / AM / other roles are excluded.
+    Employees without joining_date are excluded (no roster / no Excel row).
     """
+    role_ids = get_roster_role_ids(cursor)
+    agent_role_id = role_ids.get("agent")
+    qa_role_id = role_ids.get("qa")
+    eligible_role_ids = [rid for rid in (agent_role_id, qa_role_id) if rid is not None]
+    if not eligible_role_ids:
+        return []
+
     month_start, _ = month_date_range(roster_year, roster_month)
+    placeholders = ",".join(["%s"] * len(eligible_role_ids))
     scope_sql, scope_params = _employee_scope_sql(role_name, logged_in_user_id)
 
     team_sql = ""
@@ -469,12 +480,15 @@ def get_excel_roster_employees(
         LEFT JOIN team t ON t.team_id = u.team_id
         WHERE u.is_delete = 1
           AND u.is_active = 1
+          AND u.role_id IN ({placeholders})
+          AND u.joining_date IS NOT NULL
           AND (u.deactivated_at IS NULL OR DATE(u.deactivated_at) >= %s)
           {scope_sql}
           {team_sql}
         ORDER BY u.user_name ASC
     """
-    params: list[Any] = [month_start.isoformat()]
+    params: list[Any] = list(eligible_role_ids)
+    params.append(month_start.isoformat())
     params.extend(scope_params)
     params.extend(team_params)
     cursor.execute(query, tuple(params))

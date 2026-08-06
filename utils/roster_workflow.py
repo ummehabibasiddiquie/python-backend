@@ -13,11 +13,13 @@ from typing import Any
 from utils.roster_helpers import (
     FULL_DAY_HOURS,
     HALF_DAY_HOURS,
+    assigned_hours_for_roster_day,
     day_shift_times,
     get_eligible_employees,
     half_day_hours_from_roster_day,
     implied_full_day_hours,
     is_admin_or_super_admin,
+    load_user_monthly_tracker_baseline,
     now_str,
     parse_date,
     parse_month_year,
@@ -631,6 +633,57 @@ def _parse_time_value(value) -> time | None:
     return None
 
 
+def _daily_full_hours_for_roster_month(cursor, roster_month: dict) -> float:
+    """Per-day full hours for this person (tracker baseline, else 9)."""
+    user_id = roster_month.get("user_id")
+    month_year = roster_month.get("month_year")
+    if user_id and month_year:
+        baseline = load_user_monthly_tracker_baseline(cursor, int(user_id), str(month_year))
+        hrs = float(baseline.get("daily_full_hours") or 0)
+        if hrs > 0:
+            return hrs
+    return FULL_DAY_HOURS
+
+
+def _sync_temp_qc_assigned_for_day(
+    cursor,
+    *,
+    user_id: int,
+    roster_date: date,
+    day_type: str,
+    working_type: str | None,
+    is_half_leave: bool = False,
+) -> None:
+    """
+    Keep temp_qc.assigned_hours in sync for this person/date so billable + tracker
+    pick up Leave → Working (and the reverse) without waiting for the morning cron.
+    """
+    cursor.execute(
+        "SELECT user_tenure FROM tfs_user WHERE user_id=%s LIMIT 1",
+        (int(user_id),),
+    )
+    user_row = cursor.fetchone() or {}
+    hours = assigned_hours_for_roster_day(
+        user_row.get("user_tenure"),
+        day_type=day_type,
+        working_type=working_type or "Full",
+        has_roster_day=True,
+        is_half_leave=is_half_leave,
+    )
+    date_str = roster_date.isoformat()
+    now = now_str()
+    cursor.execute(
+        """
+        INSERT INTO temp_qc (user_id, assigned_hours, date, updated_date)
+        VALUES (%s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            assigned_hours = VALUES(assigned_hours),
+            updated_date = VALUES(updated_date)
+        """,
+        (int(user_id), float(hours), date_str, now),
+    )
+
+
 def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
     roster_month_id = int(roster_month["roster_month_id"])
     roster_date = parse_date(payload.get("roster_date"))
@@ -694,6 +747,32 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
         )
         clear_leave = cursor.fetchone() is not None
 
+    # Leave → Working: ensure this person gets that day's assigned hours back
+    restoring_to_working = day_type_norm == "Working" and (
+        old_day_type == "Leave" or clear_leave
+    )
+    if restoring_to_working:
+        wt = (working_type or "Full").strip() or "Full"
+        working_type = wt
+        full_hrs = _daily_full_hours_for_roster_month(cursor, roster_month)
+        if wt == "Half":
+            if float(working_hours or 0) <= 0:
+                working_hours = round(full_hrs / 2, 2)
+        else:
+            # Full day for this employee (recover from half-leave hours if needed)
+            recovered = implied_full_day_hours(old_working_type, current_hours)
+            payload_hrs = payload.get("working_hours")
+            try:
+                payload_hrs_f = float(payload_hrs) if payload_hrs is not None else 0.0
+            except (TypeError, ValueError):
+                payload_hrs_f = 0.0
+            if payload_hrs_f > 0 and old_working_type != "Half":
+                working_hours = payload_hrs_f
+            elif recovered > 0:
+                working_hours = recovered
+            else:
+                working_hours = full_hrs
+
     now = now_str()
     cursor.execute(
         """
@@ -723,6 +802,22 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
             roster_month_id,
             roster_date,
             leave_id=int(old_leave_id) if old_leave_id else None,
+        )
+
+    # Sync assigned hours for this person on this date (billable / tracker)
+    if roster_month.get("user_id") and day_type_norm in (
+        "Working",
+        "Leave",
+        "WeekOff",
+        "Holiday",
+    ):
+        _sync_temp_qc_assigned_for_day(
+            cursor,
+            user_id=int(roster_month["user_id"]),
+            roster_date=roster_date,
+            day_type=day_type_norm,
+            working_type=working_type,
+            is_half_leave=False,
         )
 
 
@@ -965,8 +1060,10 @@ def _clear_leave_from_days(cursor, roster_month_id: int, leave_id: int) -> None:
     cursor.execute(
         """
         SELECT rd.roster_day_id, rd.roster_date, rd.holiday_id,
-               rd.working_type, rd.working_hours, rl.is_half_day
+               rd.working_type, rd.working_hours, rl.is_half_day,
+               rm.user_id, rm.month_year
         FROM roster_day rd
+        JOIN roster_month rm ON rm.roster_month_id = rd.roster_month_id
         LEFT JOIN roster_leave rl ON rl.leave_id = rd.leave_id
         WHERE rd.roster_month_id=%s AND rd.leave_id=%s AND rd.is_active=1
         """,
@@ -996,6 +1093,13 @@ def _clear_leave_from_days(cursor, roster_month_id: int, leave_id: int) -> None:
             except (TypeError, ValueError):
                 working_hours = FULL_DAY_HOURS
 
+        if new_type == "Working" and (working_hours is None or float(working_hours or 0) <= 0):
+            baseline = load_user_monthly_tracker_baseline(
+                cursor, int(row["user_id"]), str(row.get("month_year") or "")
+            )
+            working_hours = float(baseline.get("daily_full_hours") or FULL_DAY_HOURS)
+            working_type = "Full"
+
         cursor.execute(
             """
             UPDATE roster_day
@@ -1011,12 +1115,29 @@ def _clear_leave_from_days(cursor, roster_month_id: int, leave_id: int) -> None:
             ),
         )
 
+        if row.get("user_id") and new_type in ("Working", "WeekOff", "Holiday"):
+            _sync_temp_qc_assigned_for_day(
+                cursor,
+                user_id=int(row["user_id"]),
+                roster_date=d,
+                day_type=new_type,
+                working_type=working_type,
+                is_half_leave=False,
+            )
+
 
 def _apply_leave_to_days(cursor, roster_month_id: int, leave_id: int, payload: dict) -> None:
     start = parse_date(payload.get("start_date"))
     end = parse_date(payload.get("end_date"))
     if not start or not end:
         raise ValueError("Invalid leave dates")
+
+    cursor.execute(
+        "SELECT user_id FROM roster_month WHERE roster_month_id=%s LIMIT 1",
+        (int(roster_month_id),),
+    )
+    month_row = cursor.fetchone() or {}
+    user_id = month_row.get("user_id")
 
     is_half = bool(int(payload.get("is_half_day") or 0))
     now = now_str()
@@ -1053,6 +1174,15 @@ def _apply_leave_to_days(cursor, roster_month_id: int, leave_id: int, payload: d
                 """,
                 (int(leave_id), half_hours, now, int(day_row["roster_day_id"])),
             )
+            if user_id:
+                _sync_temp_qc_assigned_for_day(
+                    cursor,
+                    user_id=int(user_id),
+                    roster_date=d,
+                    day_type="Leave",
+                    working_type="Half",
+                    is_half_leave=True,
+                )
         else:
             cursor.execute(
                 """
@@ -1065,6 +1195,15 @@ def _apply_leave_to_days(cursor, roster_month_id: int, leave_id: int, payload: d
                 """,
                 (int(leave_id), now, int(roster_month_id), date_str),
             )
+            if user_id:
+                _sync_temp_qc_assigned_for_day(
+                    cursor,
+                    user_id=int(user_id),
+                    roster_date=d,
+                    day_type="Leave",
+                    working_type="Full",
+                    is_half_leave=False,
+                )
 
 
 def apply_extra_hours_update(cursor, roster_month: dict, payload: dict) -> None:

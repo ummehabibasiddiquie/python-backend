@@ -720,21 +720,29 @@ def match_employee_name(
 ) -> tuple[dict | None, str | None]:
     """Return (employee, error)."""
     key = _normalize_key(name)
+    if not key:
+        return None, f"No matching employee for '{name}'"
+
     matches = employees_by_norm.get(key) or []
     if len(matches) == 1:
         return matches[0], None
     if len(matches) > 1:
         return None, f"Ambiguous name '{name}' matches multiple employees"
 
-    # Short keys like team agents "A" / "B" must be exact only — partial
-    # matching would hit every name containing that letter.
-    if len(key) <= 2:
+    # Short Excel names (e.g. team codes "A" / "B") — exact match only.
+    # Never use them in substring matching (would hit every name containing that letter).
+    MIN_PARTIAL_LEN = 3
+    if len(key) < MIN_PARTIAL_LEN:
         return None, f"No matching employee for '{name}'"
 
-    # Partial contains match as fallback (longer names only)
+    # Partial contains match as fallback (longer names only).
+    # Also skip short *employee* keys so a user named "A" cannot steal
+    # another row via `"a" in "priyasharma"`.
     partial = []
     for k, emps in employees_by_norm.items():
-        if key and (key in k or k in key):
+        if not k or len(k) < MIN_PARTIAL_LEN:
+            continue
+        if key in k or k in key:
             partial.extend(emps)
     # unique by user_id
     uniq: dict[int, dict] = {int(e["user_id"]): e for e in partial}

@@ -189,6 +189,18 @@ def roster_create_change_request():
         if not roster_month:
             return api_response(404, "Roster month not found")
 
+        cursor.execute(
+            "SELECT joining_date, user_name FROM tfs_user WHERE user_id=%s LIMIT 1",
+            (int(roster_month["user_id"]),),
+        )
+        emp_row = cursor.fetchone() or {}
+        if not emp_row.get("joining_date"):
+            return api_response(
+                400,
+                f"Cannot edit roster for {emp_row.get('user_name') or 'this employee'}: "
+                "joining date is not set",
+            )
+
         scope_err = assert_manager_scope(cursor, logged_in_user_id, role_name, roster_month)
         if scope_err:
             return api_response(403, scope_err)
@@ -1635,6 +1647,18 @@ def _build_excel_preview(
                     "sheet": row.get("sheet"),
                     "name": row["name"],
                     "reason": f"{err or 'Unmatched'} — skipped",
+                }
+            )
+            continue
+
+        if not emp.get("joining_date"):
+            skipped.append(
+                {
+                    "row": row["row"],
+                    "sheet": row.get("sheet"),
+                    "name": row["name"],
+                    "user_id": emp.get("user_id"),
+                    "reason": "joining_date is not set — skipped (set DOJ before roster/Excel)",
                 }
             )
             continue
