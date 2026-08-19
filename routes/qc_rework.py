@@ -136,6 +136,8 @@ def view_all_qc_history():
         query_qc_records = """
         SELECT
             qr.id AS qc_record_id,
+            qr.qa_user_id,
+            qa.user_name AS qc_name,
             u.user_name AS agent_name,
             p.project_name,
             t.task_name,
@@ -150,6 +152,7 @@ def view_all_qc_history():
         FROM qc_records qr
         LEFT JOIN task_work_tracker twt ON qr.tracker_id = twt.tracker_id
         LEFT JOIN tfs_user u ON u.user_id = twt.user_id
+        LEFT JOIN tfs_user qa ON qa.user_id = qr.qa_user_id
         LEFT JOIN project p ON p.project_id = twt.project_id
         LEFT JOIN task t ON t.task_id = twt.task_id
         ORDER BY qr.id DESC
