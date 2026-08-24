@@ -10,14 +10,6 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
 from collections import defaultdict
-import sys
-
-# Ensure backend-api root is on path when run as a standalone script
-_BACKEND_ROOT = Path(__file__).resolve().parent
-if str(_BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(_BACKEND_ROOT))
-
-from utils.roster_helpers import roster_day_status_label
 
 
 # -------------------------------
@@ -27,36 +19,27 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 RECIPIENTS = [
     "ummehabiba.siddiquie@transformsolution.net",
-    # "dharmesh.jotania@transformsolution.net",
-    # "yahya.irani@transformsolution.net",
-    # "amit.mandviwala@transformsolution.net",
-    # "sriman.narayan@transformsolution.net",
-    # "shirin.gafoor@transformsolution.net",
-    # "avinash.dwivedi@transformsolution.net",
-    # "manas.pradhan@transformsolution.net",
-    # "ishan.sharma@transformsolution.net"
+    "dharmesh.jotania@transformsolution.net",
+    "yahya.irani@transformsolution.net",
+    "amit.mandviwala@transformsolution.net",
+    "sriman.narayan@transformsolution.net",
+    "shirin.gafoor@transformsolution.net",
+    "avinash.dwivedi@transformsolution.net",
+    "manas.pradhan@transformsolution.net"
 ]
 
 CC_RECIPIENTS = [
-    # "ashfaq@transformsolution.com",
-    # "seema@transformsolution.com"
+    "ashfaq@transformsolution.com",
+    "seema@transformsolution.com"
 ]
 
 
 LOG_FILE = Path(__file__).resolve().parent / "daily_tracker_report.log"
 
-_handlers = [logging.StreamHandler()]
-try:
-    _handlers.insert(0, logging.FileHandler(LOG_FILE))
-except OSError:
-    # Vercel / read-only FS — stdout only
-    pass
-
 logging.basicConfig(
+    filename=LOG_FILE,
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=_handlers,
-    force=True,
 )
 
 def is_team_agent(u):
@@ -89,7 +72,7 @@ def fetch_data():
         report_date = today - timedelta(days=1)
 
         # TEST DATE
-        # report_date = datetime.strptime("2026-07-14", "%Y-%m-%d").date()
+        # report_date = datetime.strptime("2026-07-31", "%Y-%m-%d").date()
         
         report_month = report_date.strftime("%b%Y").upper()
 
@@ -110,7 +93,6 @@ def fetch_data():
                 COALESCE(umt.monthly_target,0) AS monthly_target,
                 COALESCE(umt.extra_assigned_hours,0) AS extra_assigned_hours,
                 COALESCE(umt.working_days,0) AS working_days,
-                u.user_tenure,
                 u.is_active,
                 u.deactivated_at,
                 CASE
@@ -243,18 +225,14 @@ def fetch_data():
                     twt.user_id,
                     DATE(CAST(twt.date_time AS DATETIME)) AS work_date,
                     CASE
-                        WHEN MAX(rd.working_type) = 'Half' THEN 0.5
-                        ELSE 1
+                        WHEN MAX(tq.assigned_hours) = 4.5 THEN 0.5
+                        WHEN MAX(tq.assigned_hours) > 0 THEN 1
+                        ELSE 0
                     END AS day_value
                 FROM task_work_tracker twt
-                LEFT JOIN roster_month rm
-                    ON rm.user_id = twt.user_id
-                   AND rm.is_active = 1
-                   AND UPPER(rm.month_year) = UPPER(%s)
-                LEFT JOIN roster_day rd
-                    ON rd.roster_month_id = rm.roster_month_id
-                   AND rd.is_active = 1
-                   AND DATE(rd.roster_date) = DATE(CAST(twt.date_time AS DATETIME))
+                INNER JOIN temp_qc tq
+                    ON tq.user_id = twt.user_id
+                    AND DATE(tq.date) = DATE(CAST(twt.date_time AS DATETIME))
                 WHERE DATE(twt.date_time) BETWEEN %s AND %s
                 AND twt.user_id IN ({in_ph})
                 AND twt.is_active = 1
@@ -262,84 +240,12 @@ def fetch_data():
             ) t
             GROUP BY user_id
             """,
-            [report_month, month_start, report_date] + user_ids,
+            [month_start, report_date] + user_ids,
         )
 
         days_worked_map = {
             r["user_id"]: float(r["days_worked"]) for r in cursor.fetchall()
         }
-
-        # Roster day weight for report_date (Half → 0.5, else 1) for remaining-days math
-        cursor.execute(
-            f"""
-            SELECT
-                rm.user_id,
-                rd.day_type,
-                COALESCE(rd.working_type, 'Full') AS working_type,
-                COALESCE(rl.is_half_day, 0) AS is_half_day,
-                CASE
-                    WHEN rd.day_type IN ('WeekOff', 'Holiday', 'PreJoin') THEN 0
-                    WHEN rd.day_type = 'Leave' AND NOT (
-                        rd.working_type = 'Half' OR COALESCE(rl.is_half_day, 0) = 1
-                    ) THEN 0
-                    WHEN rd.working_type = 'Half' OR COALESCE(rl.is_half_day, 0) = 1 THEN 0.5
-                    ELSE 1
-                END AS day_weight,
-                COALESCE(
-                    NULLIF(rd.working_hours, 0),
-                    CASE
-                        WHEN rd.day_type = 'Leave' AND (
-                            rd.working_type = 'Half' OR COALESCE(rl.is_half_day, 0) = 1
-                        ) THEN
-                            ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
-                        WHEN rd.day_type IN ('Leave', 'WeekOff', 'Holiday', 'PreJoin') THEN 0
-                        WHEN rd.working_type = 'Half' THEN
-                            ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
-                        WHEN rd.roster_day_id IS NOT NULL THEN
-                            ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
-                        ELSE NULL
-                    END
-                ) AS assigned_hours
-            FROM roster_month rm
-            JOIN tfs_user u ON u.user_id = rm.user_id
-            LEFT JOIN roster_day rd
-                ON rd.roster_month_id = rm.roster_month_id
-               AND rd.is_active = 1
-               AND DATE(rd.roster_date) = %s
-            LEFT JOIN roster_leave rl
-                ON rl.leave_id = rd.leave_id
-               AND rl.is_active = 1
-            WHERE rm.is_active = 1
-              AND UPPER(rm.month_year) = UPPER(%s)
-              AND rm.user_id IN ({in_ph})
-            """,
-            [report_date, report_month] + user_ids,
-        )
-        roster_day_map = {
-            r["user_id"]: {
-                "day_weight": float(r["day_weight"] if r.get("day_weight") is not None else 1),
-                "assigned_hours": float(r["assigned_hours"]) if r.get("assigned_hours") is not None else None,
-                "roster_status": roster_day_status_label(
-                    r.get("day_type"),
-                    r.get("working_type"),
-                    r.get("is_half_day"),
-                ),
-            }
-            for r in cursor.fetchall()
-        }
-
-        # Tracker dates on report_date (to know if report day was already counted)
-        cursor.execute(
-            f"""
-            SELECT DISTINCT user_id
-            FROM task_work_tracker
-            WHERE DATE(date_time) = %s
-              AND user_id IN ({in_ph})
-              AND is_active = 1
-            """,
-            [report_date] + user_ids,
-        )
-        users_with_report_day = {r["user_id"] for r in cursor.fetchall()}
 
         print(f"DEBUG - Days worked summary:")
         for uid, days in days_worked_map.items():
@@ -414,7 +320,7 @@ def fetch_data():
             }
                 
         # -------------------------
-        # ASSIGNED HOURS (REPORT DATE) — roster / tenure first; temp_qc only as legacy fallback
+        # ASSIGNED HOURS (REPORT DATE)
         # -------------------------
 
         cursor.execute(
@@ -427,7 +333,7 @@ def fetch_data():
             [report_date] + user_ids,
         )
 
-        assigned_map_qc = {
+        assigned_map = {
             r["user_id"]: float(r["assigned_hours"] or 0)
             for r in cursor.fetchall()
         }
@@ -451,42 +357,17 @@ def fetch_data():
                 qc_date = qc_date.strftime("%Y-%m-%d")
 
             avg_qc = avg_qc_map.get(uid)
-
-            roster_info = roster_day_map.get(uid) or {}
-            if is_team_agent(u):
-                assigned = 0
-            elif roster_info.get("assigned_hours") is not None:
-                # Prefer live roster (so Leave → Working updates assigned hours for that person/day)
-                assigned = roster_info["assigned_hours"]
-            elif uid in assigned_map_qc:
-                # Legacy fallback: temp_qc (written by assign_daily_hours)
-                assigned = assigned_map_qc.get(uid, 0)
-            else:
-                # Tenure-based full day when no temp_qc / roster row yet
-                try:
-                    tenure = float(u.get("user_tenure") or 1)
-                except (TypeError, ValueError):
-                    tenure = 1.0
-                if tenure < 0:
-                    tenure = 0.0
-                if tenure > 1:
-                    tenure = 1.0
-                assigned = round(9.0 * tenure, 2) if uid in daily_map else 0
+            
+            assigned = 0 if is_team_agent(u) else (assigned_map.get(uid, 0) if uid in daily_map else 0)
 
             monthly_target = float(u["monthly_target"])
             extra = float(u["extra_assigned_hours"])
             working_days = float(u["working_days"])
 
             monthly_goal = monthly_target + extra
-            pending = max(0, monthly_goal - mtd)
+            pending = monthly_goal - mtd
 
             days_worked = days_worked_map.get(uid, 0)
-            # Remaining days must exclude the report day (Half → 0.5 from roster).
-            # Use explicit None check: day_weight 0 (WeekOff/Holiday/Leave) must stay 0
-            # (`or 1` would treat 0 as missing and incorrectly add a full day).
-            if uid not in users_with_report_day:
-                dw = roster_info.get("day_weight")
-                days_worked = days_worked + (1.0 if dw is None else float(dw))
             remaining_days = max(0, working_days - days_worked)
 
             print(f"DEBUG - User: {u['user_name']}, Team: {u['team_name']}")
@@ -499,7 +380,7 @@ def fetch_data():
             print(f"  mtd_hours: {mtd}")
             print(f"  pending_goal: {pending}")
 
-            daily_required = (pending / remaining_days) if remaining_days else 0
+            daily_required = pending / remaining_days if remaining_days else pending
 
             print(f"  daily_required_hours: {daily_required}")
             print(f"  ---")
@@ -515,7 +396,6 @@ def fetch_data():
                     "monthly_goal": monthly_goal,
                     "pending_goal": pending,
                     "daily_required_hours": daily_required,
-                    "roster_status": roster_info.get("roster_status") or "—",
                 }
             )
 
@@ -555,7 +435,6 @@ def generate_html(report_date, data_rows):
     <tr style="background:#FFD966;font-weight:bold">
         <th rowspan="2">Team Member</th>
         <th rowspan="2">Status</th>
-        <th rowspan="2">Day Status</th>
         <th colspan="4">Daily Report</th>
         <th colspan="4">MTD Report</th>
     </tr>
@@ -614,12 +493,10 @@ def generate_html(report_date, data_rows):
             goal = u["monthly_goal"]
             pending = u["pending_goal"]
 
-            day_status = u.get("roster_status") or "—"
             html += f"""
             <tr>
             <td>{u['user_name']}</td>
             <td align="center">{u.get('exit_status', 'Active')}</td>
-            <td align="center">{day_status}</td>
             <td align="right">{"" if is_team_agent(u) else f"{assigned:.2f}"}</td>
             <td align="right">{worked:.2f}</td>
             <td align="right">{f"{u['qc_score']:.2f}" if u.get('qc_score') is not None else ""}</td>
@@ -651,7 +528,6 @@ def generate_html(report_date, data_rows):
         <tr style="font-weight:bold;background:#C9DAF8">
         <td>Team {team} Total</td>
         <td></td>
-        <td></td>
         <td align="right">{team_assigned:.2f}</td>
         <td align="right">{team_worked:.2f}</td>
         <td></td>
@@ -666,7 +542,6 @@ def generate_html(report_date, data_rows):
     html += f"""
         <tr style="font-weight:bold;background:#A4C2F4">
         <td>Grand Total</td>
-        <td></td>
         <td></td>
         <td align="right">{grand_assigned:.2f}</td>
         <td align="right">{grand_worked:.2f}</td>
@@ -712,43 +587,25 @@ def send_email(report_date, html_body):
 
 
 # -------------------------------
-# MAIN (CLI + Vercel /qc/send-billable-report)
+# MAIN
 # -------------------------------
-def run_billable_report():
-    """Build yesterday's report and email it. Returns a result dict."""
-    report_date, data = fetch_data()
-    if not data:
-        logging.info("No data found")
-        return {
-            "ok": True,
-            "sent": False,
-            "report_date": report_date.isoformat() if report_date else None,
-            "message": "No data found",
-        }
-
-    html = generate_html(report_date, data)
-    send_email(report_date, html)
-    logging.info("Report sent successfully")
-    return {
-        "ok": True,
-        "sent": True,
-        "report_date": report_date.isoformat(),
-        "recipients": list(RECIPIENTS),
-        "message": "Report sent successfully",
-    }
-
-
 if __name__ == "__main__":
 
     try:
-        result = run_billable_report()
-        if not result.get("sent"):
-            print(result.get("message") or "No data found")
-            raise SystemExit(0)
-        print(result.get("message"))
+
+        report_date, data = fetch_data()
+
+        if not data:
+            logging.info("No data found")
+            exit()
+
+        html = generate_html(report_date, data)
+
+        send_email(report_date, html)
+
+        logging.info("Report sent successfully")
 
     except Exception as e:
         print("Error:", str(e))
 
         logging.exception(f"Report failed: {str(e)}")
-        raise SystemExit(1)

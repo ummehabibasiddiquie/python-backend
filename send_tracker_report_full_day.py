@@ -21,8 +21,7 @@ RECIPIENTS = [
     "sriman.narayan@transformsolution.net",
     "shirin.gafoor@transformsolution.net",
     "avinash.dwivedi@transformsolution.net",
-    "manas.pradhan@transformsolution.net",
-    "ishan.sharma@transformsolution.net"
+    "manas.pradhan@transformsolution.net"
 ]
 
 CC_RECIPIENTS = [
