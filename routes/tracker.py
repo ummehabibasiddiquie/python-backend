@@ -465,7 +465,13 @@ def update_tracker():
         updated_date = now.strftime("%Y-%m-%d %H:%M:%S")
         # date_time = adjusted_datetime.strftime("%Y-%m-%d %H:%M:%S")
         
-        tracker_note = form.get("tracker_note", tracker.get("tracker_note"))  # optional, keep existing if not provided
+        # If tracker_note is present in the form (even blank), use it so notes can be cleared.
+        # If the key is omitted entirely, keep the existing note.
+        if "tracker_note" in form:
+            raw_note = form.get("tracker_note")
+            tracker_note = (raw_note or "").strip() or None
+        else:
+            tracker_note = tracker.get("tracker_note")
 
         cursor.execute(
             """
