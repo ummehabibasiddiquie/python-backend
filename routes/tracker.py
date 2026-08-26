@@ -918,10 +918,11 @@ def view_daily_trackers():
         # ---------- Smart Month Detection ----------
         month_year = None
 
-        # 1️⃣ If date filter exists → derive month from date_to OR date_from
-        if data.get("date_from") or data.get("date_to"):
+        # 1️⃣ If date filter exists → derive month from date_from (roster/target join)
+        has_date_range = bool(data.get("date_from") or data.get("date_to"))
+        if has_date_range:
             try:
-                ref_date = data.get("date_to") or data.get("date_from")
+                ref_date = data.get("date_from") or data.get("date_to")
                 ref_date = str(ref_date)[:10]  # ensure YYYY-MM-DD
                 dt_obj = datetime.strptime(ref_date, "%Y-%m-%d")
                 month_year = dt_obj.strftime("%b%Y")
@@ -954,13 +955,14 @@ def view_daily_trackers():
         # -------- WHERE (same filters as /view)
         where = "WHERE twt.is_active != 0"
 
-        # Month filter
-        try:
-            dt = datetime.strptime(month_year, "%b%Y")
-            where += " AND YEAR(CAST(twt.date_time AS DATETIME))=%s AND MONTH(CAST(twt.date_time AS DATETIME))=%s"
-            params.extend([dt.year, dt.month])
-        except Exception:
-            pass
+        # Month filter — skip when date_from/date_to are the source of truth
+        if not has_date_range:
+            try:
+                dt = datetime.strptime(month_year, "%b%Y")
+                where += " AND YEAR(CAST(twt.date_time AS DATETIME))=%s AND MONTH(CAST(twt.date_time AS DATETIME))=%s"
+                params.extend([dt.year, dt.month])
+            except Exception:
+                pass
 
         # Team filter
         if data.get("team_id"):
@@ -980,19 +982,15 @@ def view_daily_trackers():
             where += " AND twt.shift = %s"
             params.append(data["shift"].upper())
 
-        # Date range filters
+        # Date range filters (inclusive by calendar day — avoids timezone off-by-one)
         if data.get("date_from"):
-            date_from = str(data["date_from"])
-            if len(date_from) == 10:
-                date_from += " 00:00:00"
-            where += " AND CAST(twt.date_time AS DATETIME) >= %s"
+            date_from = str(data["date_from"]).strip()[:10]
+            where += " AND DATE(CAST(twt.date_time AS DATETIME)) >= %s"
             params.append(date_from)
 
         if data.get("date_to"):
-            date_to = str(data["date_to"])
-            if len(date_to) == 10:
-                date_to += " 23:59:59"
-            where += " AND CAST(twt.date_time AS DATETIME) <= %s"
+            date_to = str(data["date_to"]).strip()[:10]
+            where += " AND DATE(CAST(twt.date_time AS DATETIME)) <= %s"
             params.append(date_to)
 
         if data.get("is_active") is not None:
