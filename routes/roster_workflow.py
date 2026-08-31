@@ -43,7 +43,6 @@ from utils.roster_helpers import (
     write_audit_log,
     now_str,
 )
-from utils.roster_leave_email import notify_agent_leave_decision
 from utils.roster_workflow import (
     EDITABLE_STATUSES,
     SUBMITTABLE_STATUSES,
@@ -70,6 +69,16 @@ from utils.roster_workflow import (
     new_batch_id,
     refresh_roster_month_metrics,
     weekoff_swap_preview,
+)
+from utils.roster_week_lock import (
+    annotate_weeks_with_locks,
+    get_week_lock,
+    list_week_locks,
+    lock_weeks_touched_by_requests,
+    unlock_week,
+    week_lock_message_for_change,
+    week_lock_message_for_dates,
+    week_meta_for_date,
 )
 
 from routes.roster import roster_bp
@@ -111,6 +120,26 @@ def _validate_month_editable(cursor, roster_month: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def _validate_change_dates_editable(
+    cursor,
+    roster_month: dict,
+    change_type: str,
+    change_payload: dict | None,
+) -> tuple[bool, str]:
+    """Month-level + per-week lock checks for a specific change."""
+    ok, msg = _validate_month_editable(cursor, roster_month)
+    if not ok:
+        return False, msg
+    month_year = (roster_month.get("month_year") or "").strip()
+    if month_year:
+        week_msg = week_lock_message_for_change(
+            cursor, month_year, change_type, change_payload or {}
+        )
+        if week_msg:
+            return False, week_msg
+    return True, ""
+
+
 @roster_bp.route("/weekoff/swap_preview", methods=["POST"])
 def roster_weekoff_swap_preview():
     data = request.get_json(silent=True) or {}
@@ -142,6 +171,16 @@ def roster_weekoff_swap_preview():
         ok, msg = _validate_month_editable(cursor, roster_month)
         if not ok:
             return api_response(400, msg)
+
+        month_year = (roster_month.get("month_year") or "").strip()
+        if month_year:
+            week_msg = week_lock_message_for_dates(
+                cursor,
+                month_year,
+                [parse_date(d) for d in (new_week_off_dates or []) if parse_date(d)],
+            )
+            if week_msg:
+                return api_response(400, week_msg)
 
         preview = weekoff_swap_preview(cursor, int(roster_month_id), new_week_off_dates)
         return api_response(200, "Week-off swap preview generated", preview)
@@ -205,7 +244,9 @@ def roster_create_change_request():
         if scope_err:
             return api_response(403, scope_err)
 
-        ok, msg = _validate_month_editable(cursor, roster_month)
+        ok, msg = _validate_change_dates_editable(
+            cursor, roster_month, change_type, change_payload
+        )
         if not ok:
             return api_response(400, msg)
 
@@ -721,51 +762,6 @@ def _load_roster_months_by_ids(cursor, roster_month_ids: list[int]) -> dict[int,
     return {int(r["roster_month_id"]): r for r in (cursor.fetchall() or [])}
 
 
-def _notify_leave_decisions_background(
-    approved_reqs: list[dict],
-    *,
-    status: str,
-    reviewer_comment: str | None,
-) -> None:
-    """Send leave emails off the request thread so bulk approve returns quickly."""
-    leave_reqs = [
-        r
-        for r in approved_reqs
-        if (r.get("change_type") or "").strip()
-        in ("LEAVE_ADD", "LEAVE_UPDATE", "LEAVE_DELETE")
-    ]
-    if not leave_reqs:
-        return
-
-    import threading
-
-    def _run():
-        conn = None
-        cursor = None
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor(dictionary=True)
-            for req in leave_reqs:
-                try:
-                    notify_agent_leave_decision(
-                        cursor,
-                        req,
-                        status=status,
-                        reviewer_comment=reviewer_comment,
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        finally:
-            if cursor is not None:
-                cursor.close()
-            if conn is not None:
-                conn.close()
-
-    threading.Thread(target=_run, daemon=True).start()
-
-
 @roster_bp.route("/requests/approve", methods=["POST"])
 def roster_approve_request():
     data = request.get_json(silent=True) or {}
@@ -803,14 +799,38 @@ def roster_approve_request():
                 cursor, batch_id, reviewer_comment, logged_in_user_id
             )
 
+        roster_month = get_roster_month(cursor, int(req["roster_month_id"]))
+        locked_weeks = []
+        if roster_month:
+            locked_weeks = lock_weeks_touched_by_requests(
+                cursor,
+                requests=[req],
+                months_by_id={int(roster_month["roster_month_id"]): roster_month},
+                locked_by=logged_in_user_id,
+            )
+            for lw in locked_weeks:
+                write_audit_log(
+                    cursor,
+                    roster_month_id=int(roster_month["roster_month_id"]),
+                    user_id=int(req["user_id"]),
+                    action="WEEK_LOCKED",
+                    entity_type="roster_week_lock",
+                    entity_id=int(lw["week_number"]),
+                    old_value=None,
+                    new_value=lw,
+                    performed_by=logged_in_user_id,
+                    notes=f"Auto-locked {lw.get('label')} after approval",
+                )
+
         conn.commit()
-        notify_agent_leave_decision(
-            cursor, req, status="Approved", reviewer_comment=reviewer_comment
-        )
         return api_response(
             200,
             "Change request approved",
-            {"request_id": int(request_id), "finalized_cycles": finalized},
+            {
+                "request_id": int(request_id),
+                "finalized_cycles": finalized,
+                "locked_weeks": locked_weeks,
+            },
         )
     except ValueError as e:
         conn.rollback()
@@ -930,13 +950,46 @@ def roster_approve_bulk():
                 )
             )
 
-        conn.commit()
-        # Emails must not block the API response
-        _notify_leave_decisions_background(
-            approved_reqs,
-            status="Approved",
-            reviewer_comment=reviewer_comment,
+        locked_weeks = lock_weeks_touched_by_requests(
+            cursor,
+            requests=approved_reqs,
+            months_by_id=months_by_id,
+            locked_by=logged_in_user_id,
         )
+        for lw in locked_weeks:
+            # Audit against first touched month in that month_year if available
+            sample_mid = next(
+                (
+                    mid
+                    for mid, rm in months_by_id.items()
+                    if (rm.get("month_year") or "") == lw.get("month_year")
+                ),
+                None,
+            )
+            sample_req = next(
+                (
+                    r
+                    for r in approved_reqs
+                    if sample_mid is not None
+                    and int(r.get("roster_month_id") or 0) == int(sample_mid)
+                ),
+                approved_reqs[0] if approved_reqs else None,
+            )
+            if sample_req and sample_mid is not None:
+                write_audit_log(
+                    cursor,
+                    roster_month_id=int(sample_mid),
+                    user_id=int(sample_req.get("user_id") or 0),
+                    action="WEEK_LOCKED",
+                    entity_type="roster_week_lock",
+                    entity_id=int(lw["week_number"]),
+                    old_value=None,
+                    new_value=lw,
+                    performed_by=logged_in_user_id,
+                    notes=f"Auto-locked {lw.get('label')} after bulk approval",
+                )
+
+        conn.commit()
 
         return api_response(
             200,
@@ -945,6 +998,7 @@ def roster_approve_bulk():
                 "approved": approved,
                 "failed": failed,
                 "finalized_cycles": finalized,
+                "locked_weeks": locked_weeks,
             },
         )
     except Exception as e:
@@ -1016,9 +1070,6 @@ def roster_reject_request():
             _process_batch_completion(cursor, batch_id, reviewer_comment, logged_in_user_id)
 
         conn.commit()
-        notify_agent_leave_decision(
-            cursor, req, status="Rejected", reviewer_comment=reviewer_comment
-        )
         return api_response(200, "Change request rejected", {"request_id": int(request_id)})
     except Exception as e:
         conn.rollback()
@@ -1332,6 +1383,124 @@ def roster_unlock_month():
         conn.close()
 
 
+@roster_bp.route("/week/unlock", methods=["POST"])
+def roster_unlock_week():
+    """Admin unlocks a single Mon–Sun week so managers can edit it again."""
+    data = request.get_json(silent=True) or {}
+    logged_in_user_id, err = _require_logged_in_user(data)
+    if err:
+        return err
+
+    month_year = (data.get("month_year") or "").strip()
+    week_number = data.get("week_number")
+    if not month_year:
+        return api_response(400, "month_year is required")
+    if week_number is None:
+        return api_response(400, "week_number is required")
+
+    try:
+        week_number = int(week_number)
+    except (TypeError, ValueError):
+        return api_response(400, "week_number must be an integer")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, logged_in_user_id)
+        if not is_admin_or_super_admin(ctx.get("user_role_name", "")):
+            return api_response(403, "Only Admin or Super Admin can unlock roster weeks")
+
+        existing = get_week_lock(cursor, month_year, week_number)
+        if not existing:
+            return api_response(400, f"Week {week_number} is not locked for {month_year}")
+
+        unlock_week(cursor, month_year, week_number)
+
+        # Audit against any active roster in the month (if present)
+        cursor.execute(
+            """
+            SELECT roster_month_id, user_id
+            FROM roster_month
+            WHERE month_year=%s AND is_active=1
+            ORDER BY roster_month_id ASC
+            LIMIT 1
+            """,
+            (month_year,),
+        )
+        sample = cursor.fetchone()
+        if sample:
+            write_audit_log(
+                cursor,
+                roster_month_id=int(sample["roster_month_id"]),
+                user_id=int(sample["user_id"]),
+                action="WEEK_UNLOCKED",
+                entity_type="roster_week_lock",
+                entity_id=week_number,
+                old_value={
+                    "week_number": week_number,
+                    "locked_by": existing.get("locked_by"),
+                    "locked_date": str(existing.get("locked_date") or ""),
+                },
+                new_value={"status": "Unlocked"},
+                performed_by=logged_in_user_id,
+                notes=f"Unlocked Week {week_number} for {month_year}",
+            )
+
+        conn.commit()
+        meta = week_meta_for_date(
+            month_year, parse_date(existing.get("week_start"))
+        )
+        label = (meta or {}).get("label") or f"Week {week_number}"
+        return api_response(
+            200,
+            f"{label} unlocked for {month_year}",
+            {
+                "month_year": month_year,
+                "week_number": week_number,
+                "week_locks": list_week_locks(cursor, month_year),
+            },
+        )
+    except Exception as e:
+        conn.rollback()
+        return api_response(500, f"Week unlock failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@roster_bp.route("/week/locks", methods=["POST"])
+def roster_list_week_locks():
+    """List locked weeks for a month."""
+    data = request.get_json(silent=True) or {}
+    logged_in_user_id, err = _require_logged_in_user(data)
+    if err:
+        return err
+
+    month_year = (data.get("month_year") or "").strip()
+    if not month_year:
+        return api_response(400, "month_year is required")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, logged_in_user_id)
+        role_name = ctx.get("user_role_name", "")
+        if not (
+            can_manage_roster_employees(role_name)
+            or is_admin_or_super_admin(role_name)
+            or is_self_read_only_roster_role(role_name)
+        ):
+            return api_response(403, "You do not have permission to view week locks")
+
+        locks = list_week_locks(cursor, month_year)
+        return api_response(200, "Week locks fetched", {"week_locks": locks})
+    except Exception as e:
+        return api_response(500, f"Failed to list week locks: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @roster_bp.route("/versions/list", methods=["POST"])
 def roster_list_versions():
     data = request.get_json(silent=True) or {}
@@ -1545,7 +1714,7 @@ def _load_roster_months_for_users(
 
 
 def _load_days_lookup(cursor, roster_month_ids: list[int]) -> dict[tuple[int, str], dict]:
-    """(user_id, date_iso) -> day row (includes user_id via join)."""
+    """(user_id, date_iso) -> day row (includes user_id via join; leave overlay applied)."""
     if not roster_month_ids:
         return {}
     placeholders = ",".join(["%s"] * len(roster_month_ids))
@@ -1559,12 +1728,25 @@ def _load_days_lookup(cursor, roster_month_ids: list[int]) -> dict[tuple[int, st
         """,
         tuple(roster_month_ids),
     )
-    lookup: dict[tuple[int, str], dict] = {}
+    rows_by_month: dict[int, list[dict]] = {}
+    user_by_month: dict[int, int] = {}
     for row in cursor.fetchall() or []:
-        d = parse_date(row.get("roster_date"))
-        if not d:
-            continue
-        lookup[(int(row["user_id"]), d.isoformat())] = row
+        mid = int(row["roster_month_id"])
+        rows_by_month.setdefault(mid, []).append(row)
+        user_by_month[mid] = int(row["user_id"])
+
+    from utils.roster_metrics import apply_active_leaves_to_days
+
+    lookup: dict[tuple[int, str], dict] = {}
+    for mid, days in rows_by_month.items():
+        leaves = get_roster_leaves(cursor, mid)
+        enriched = apply_active_leaves_to_days(days, leaves)
+        uid = user_by_month.get(mid)
+        for row in enriched:
+            d = parse_date(row.get("roster_date"))
+            if not d or uid is None:
+                continue
+            lookup[(uid, d.isoformat())] = row
     return lookup
 
 
@@ -1602,9 +1784,11 @@ def _build_excel_preview(
     changes: list[dict] = []
     skipped: list[dict] = []
     errors: list[dict] = []
+    locked_weeks_found: dict[tuple[str, int], dict] = {}
 
     # Cache lock lookups — otherwise every cell hits the DB (all-weeks = thousands of queries)
     month_lock_cache: dict[str, str] = {}
+    week_lock_cache: dict[tuple[str, int], str] = {}
     editable_cache: dict[int, tuple[bool, str]] = {}
 
     def _month_editable(roster_month: dict) -> tuple[bool, str]:
@@ -1635,6 +1819,35 @@ def _build_excel_preview(
             return editable_cache[rid]
         editable_cache[rid] = (True, "")
         return editable_cache[rid]
+
+    def _week_lock_for_date(month_year: str, d: date) -> str:
+        """Return lock message if this date's week is locked; caches by week number."""
+        month_year = (month_year or "").strip()
+        if not month_year or not d:
+            return ""
+        meta = week_meta_for_date(month_year, d)
+        if not meta:
+            return ""
+        wn = int(meta["week_number"])
+        key = (month_year, wn)
+        if key in week_lock_cache:
+            return week_lock_cache[key]
+        msg = week_lock_message_for_dates(cursor, month_year, [d]) or ""
+        week_lock_cache[key] = msg
+        if msg:
+            locked_weeks_found[key] = {
+                "month_year": month_year,
+                "week_number": wn,
+                "week_start": meta.get("week_start"),
+                "week_end": meta.get("week_end"),
+                "label": meta.get("label") or f"Week {wn}",
+                "short_label": meta.get("short_label") or f"Week {wn}",
+                "message": (
+                    f"{meta.get('short_label') or f'Week {wn}'} is locked. "
+                    "You cannot edit this week until an administrator unlocks it."
+                ),
+            }
+        return msg
 
     for row in parsed["rows"]:
         emp, err = match_employee_name(row["name"], name_index)
@@ -1713,6 +1926,29 @@ def _build_excel_preview(
                 )
                 continue
 
+            month_year = (roster_month.get("month_year") or "").strip()
+            week_msg = _week_lock_for_date(month_year, d)
+            if week_msg:
+                meta = week_meta_for_date(month_year, d)
+                short = (meta or {}).get("short_label") or "This week"
+                errors.append(
+                    {
+                        "row": row["row"],
+                        "sheet": row.get("sheet"),
+                        "name": emp.get("user_name") or row["name"],
+                        "user_id": uid,
+                        "date": date_iso,
+                        "value": label,
+                        "reason": (
+                            f"{short} is locked. You cannot edit this week "
+                            "until an administrator unlocks it."
+                        ),
+                        "locked_week": True,
+                        "week_number": (meta or {}).get("week_number"),
+                    }
+                )
+                continue
+
             ok, msg = _month_editable(roster_month)
             if not ok:
                 # Locked / not editable — skip these cells; don't block the rest
@@ -1787,6 +2023,11 @@ def _build_excel_preview(
                 }
             )
 
+    locked_weeks_list = list(locked_weeks_found.values())
+    locked_weeks_list.sort(
+        key=lambda x: (x.get("month_year") or "", int(x.get("week_number") or 0))
+    )
+
     return {
         "week_start": dates[0].isoformat() if dates else None,
         "week_end": dates[-1].isoformat() if dates else None,
@@ -1798,10 +2039,12 @@ def _build_excel_preview(
             "skipped": len(skipped),
             "errors": len(errors),
             "sheets": len(parsed.get("sheets") or []),
+            "locked_weeks": len(locked_weeks_list),
         },
         "changes": changes,
         "skipped": skipped,
         "errors": errors,
+        "locked_weeks": locked_weeks_list,
     }
 
 
@@ -1825,7 +2068,14 @@ def roster_excel_weeks():
         if not can_manage_roster_employees(role_name):
             return api_response(403, "You do not have permission to manage rosters")
         year, month = parse_month_year(month_year)
-        return api_response(200, "Weeks fetched", {"weeks": weeks_in_month(year, month)})
+        weeks = annotate_weeks_with_locks(
+            cursor, month_year, weeks_in_month(year, month)
+        )
+        return api_response(
+            200,
+            "Weeks fetched",
+            {"weeks": weeks, "week_locks": list_week_locks(cursor, month_year)},
+        )
     except ValueError as e:
         return api_response(400, str(e))
     except Exception as e:
@@ -2118,7 +2368,9 @@ def roster_excel_apply():
                     )
                     continue
 
-                ok, msg = _validate_month_editable(cursor, roster_month)
+                ok, msg = _validate_change_dates_editable(
+                    cursor, roster_month, change_type, change_payload
+                )
                 if not ok:
                     failed.append(
                         {
@@ -2175,6 +2427,33 @@ def roster_excel_apply():
                 )
 
         conn.commit()
+        if created + updated == 0 and failed:
+            lock_fail = next(
+                (
+                    f
+                    for f in failed
+                    if "is locked" in str(f.get("reason") or "").lower()
+                    or "cannot edit this week" in str(f.get("reason") or "").lower()
+                ),
+                None,
+            )
+            if lock_fail and all(
+                "locked" in str(f.get("reason") or "").lower()
+                or "cannot edit this week" in str(f.get("reason") or "").lower()
+                for f in failed
+            ):
+                return api_response(
+                    400,
+                    lock_fail.get("reason")
+                    or "This week is locked. You cannot edit it until an administrator unlocks it.",
+                    {
+                        "created": 0,
+                        "updated": 0,
+                        "failed": failed,
+                        "request_ids": [],
+                    },
+                )
+
         return api_response(
             200,
             "Roster Excel changes applied as pending requests",

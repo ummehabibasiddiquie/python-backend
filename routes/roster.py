@@ -35,6 +35,7 @@ from utils.roster_helpers import (
     require_logged_in_user,
     write_audit_log,
 )
+from utils.roster_week_lock import list_week_locks
 from utils.roster_metrics import (
     apply_active_leaves_to_days,
     recalculate_metrics_from_days_and_leaves,
@@ -743,6 +744,7 @@ def list_rosters():
 
         lock_info = month_calendar_has_lock(cursor, month_year)
         month_calendar_locked = lock_info is not None
+        week_locks = list_week_locks(cursor, month_year)
 
         return api_response(
             200,
@@ -761,6 +763,7 @@ def list_rosters():
                 }
                 if lock_info
                 else None,
+                "week_locks": week_locks,
                 "rosters": rows,
             },
         )

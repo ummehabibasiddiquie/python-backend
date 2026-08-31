@@ -32,6 +32,7 @@ LABEL_QA_DAY = "10:00AM to 7:30PM"
 LABEL_NIGHT = "7:30 PM to 8:30 AM"
 LABEL_WEEK_OFF = "Week Off"
 LABEL_LEAVE = "Leave"
+LABEL_LEAVE_AFFECT_TARGET = "Leave (Affect Target)"
 LABEL_HALF_DAY = "Half day"
 
 DROPDOWN_VALUES = [
@@ -40,6 +41,7 @@ DROPDOWN_VALUES = [
     LABEL_NIGHT,
     LABEL_WEEK_OFF,
     LABEL_LEAVE,
+    LABEL_LEAVE_AFFECT_TARGET,
     LABEL_HALF_DAY,
 ]
 
@@ -205,6 +207,11 @@ def day_to_excel_label(day: dict | None, role_name: str | None = None) -> str:
         working_type = (day.get("working_type") or "Full").strip()
         if working_type == "Half":
             return LABEL_HALF_DAY
+        affect = day.get("leave_affect_target")
+        if affect is None:
+            affect = day.get("affect_target")
+        if bool(int(affect or 0)):
+            return LABEL_LEAVE_AFFECT_TARGET
         return LABEL_LEAVE
     if day_type == "Holiday":
         return LABEL_WEEK_OFF  # managers usually don't set Holiday in weekly Excel
@@ -256,6 +263,7 @@ def excel_label_to_change(
         _normalize_key(LABEL_QA_DAY): "qa_day",
         _normalize_key(LABEL_NIGHT): "night",
         _normalize_key(LABEL_WEEK_OFF): "week_off",
+        _normalize_key(LABEL_LEAVE_AFFECT_TARGET): "leave_affect_target",
         _normalize_key(LABEL_LEAVE): "leave",
         _normalize_key(LABEL_HALF_DAY): "half_day",
         "weekoff": "week_off",
@@ -267,6 +275,9 @@ def excel_label_to_change(
         "night": "night",
         "dayshift": "agent_day",
         "day": "agent_day",
+        "leaveaffecttarget": "leave_affect_target",
+        "leaveaffectsarget": "leave_affect_target",
+        "leavewithtarget": "leave_affect_target",
     }
     kind = alias_map.get(key)
     if not kind:
@@ -276,6 +287,8 @@ def excel_label_to_change(
             kind = "week_off"
         elif "half" in lower:
             kind = "half_day"
+        elif "leave" in lower and ("affect" in lower or "target" in lower):
+            kind = "leave_affect_target"
         elif "leave" in lower:
             kind = "leave"
         elif "7:30" in lower.replace(" ", "") and ("pm" in lower or "p.m" in lower):
@@ -300,16 +313,18 @@ def excel_label_to_change(
             },
         }
 
-    if kind == "leave":
+    if kind in ("leave", "leave_affect_target"):
+        affect_target = 1 if kind == "leave_affect_target" else 0
+        label = LABEL_LEAVE_AFFECT_TARGET if affect_target else LABEL_LEAVE
         return {
             "change_type": "LEAVE_ADD",
-            "label": LABEL_LEAVE,
+            "label": label,
             "change_payload": {
                 "leave_type": "Leave",
                 "start_date": date_str,
                 "end_date": date_str,
                 "reason": "Roster Excel upload",
-                "affect_target": 0,
+                "affect_target": affect_target,
                 "is_half_day": 0,
                 "is_rostered": 1,
             },
@@ -379,12 +394,19 @@ def proposed_signature(change: dict) -> tuple:
     p = change.get("change_payload") or {}
     if ct == "LEAVE_ADD":
         half = int(p.get("is_half_day") or 0)
-        return ("Leave", "DAY", "Half" if half else "Full", LABEL_LEAVE if not half else LABEL_HALF_DAY)
+        affect = int(p.get("affect_target") or 0)
+        leave_label = (
+            LABEL_HALF_DAY
+            if half
+            else (LABEL_LEAVE_AFFECT_TARGET if affect else LABEL_LEAVE)
+        )
+        return ("Leave", "DAY", "Half" if half else "Full", leave_label, affect)
     return (
         (p.get("day_type") or "").strip(),
         (p.get("shift") or "DAY").strip().upper(),
         (p.get("working_type") or "Full").strip(),
         change.get("label") or "",
+        0,
     )
 
 
@@ -393,10 +415,19 @@ def is_noop_change(day: dict | None, change: dict) -> bool:
     if not day:
         return False
     cur_type, cur_shift, cur_wt, cur_label = _current_day_signature(day)
-    prop_type, prop_shift, prop_wt, prop_label = proposed_signature(change)
+    prop = proposed_signature(change)
+    prop_type, prop_shift, prop_wt, prop_label = prop[0], prop[1], prop[2], prop[3]
 
     if change.get("change_type") == "LEAVE_ADD":
-        return cur_type == "Leave" and cur_wt != "Half"
+        if cur_type != "Leave" or cur_wt == "Half":
+            return False
+        cur_affect = int(
+            day.get("leave_affect_target")
+            if day.get("leave_affect_target") is not None
+            else day.get("affect_target") or 0
+        )
+        prop_affect = int((change.get("change_payload") or {}).get("affect_target") or 0)
+        return cur_affect == prop_affect
 
     if prop_type == "WeekOff":
         return cur_type == "WeekOff"
@@ -474,9 +505,10 @@ def _add_week_sheet(
         for c in range(1, 9):
             ws.cell(r, c).border = thin
 
+    n = len(DROPDOWN_VALUES)
     dv = DataValidation(
         type="list",
-        formula1="=_Lists!$A$1:$A$6",
+        formula1=f"=_Lists!$A$1:$A${n}",
         allow_blank=True,
         showDropDown=False,
         showErrorMessage=True,
@@ -520,7 +552,8 @@ def build_month_workbook(
         f"   - {LABEL_QA_DAY}",
         f"   - {LABEL_NIGHT}",
         f"   - {LABEL_WEEK_OFF}",
-        f"   - {LABEL_LEAVE}",
+        f"   - {LABEL_LEAVE}  (does NOT affect monthly target)",
+        f"   - {LABEL_LEAVE_AFFECT_TARGET}  (DOES reduce monthly target)",
         f"   - {LABEL_HALF_DAY}",
         "5. Fill Week 1, Week 2, … as needed (later weeks can stay blank for a later upload).",
         "6. Upload from Roster Management → Excel Upload. All week sheets are read together.",
@@ -591,7 +624,8 @@ def build_template_workbook(
         f"   - {LABEL_QA_DAY}",
         f"   - {LABEL_NIGHT}",
         f"   - {LABEL_WEEK_OFF}",
-        f"   - {LABEL_LEAVE}",
+        f"   - {LABEL_LEAVE}  (does NOT affect monthly target)",
+        f"   - {LABEL_LEAVE_AFFECT_TARGET}  (DOES reduce monthly target)",
         f"   - {LABEL_HALF_DAY}",
         "5. Save the file and upload it from Roster Management → Excel Upload.",
         "6. Review the preview, then confirm. Changes become pending requests (submit for approval as usual).",
