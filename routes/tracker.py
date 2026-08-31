@@ -958,19 +958,15 @@ def view_daily_trackers():
             where += " AND twt.shift = %s"
             params.append(data["shift"].upper())
 
-        # Date range filters
+        # Date range filters - use DATE() to avoid timezone issues
         if data.get("date_from"):
             date_from = str(data["date_from"])
-            if len(date_from) == 10:
-                date_from += " 00:00:00"
-            where += " AND CAST(twt.date_time AS DATETIME) >= %s"
+            where += " AND DATE(CAST(twt.date_time AS DATETIME)) >= %s"
             params.append(date_from)
 
         if data.get("date_to"):
             date_to = str(data["date_to"])
-            if len(date_to) == 10:
-                date_to += " 23:59:59"
-            where += " AND CAST(twt.date_time AS DATETIME) <= %s"
+            where += " AND DATE(CAST(twt.date_time AS DATETIME)) <= %s"
             params.append(date_to)
 
         if data.get("is_active") is not None:
