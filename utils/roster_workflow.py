@@ -25,6 +25,7 @@ from utils.roster_helpers import (
     parse_month_year,
     sync_to_user_monthly_tracker,
     write_audit_log,
+    cap_month_goals_to_universal_working_days,
 )
 from utils.json_utils import dumps_json_safe
 from utils.roster_metrics import (
@@ -1277,6 +1278,39 @@ def refresh_roster_month_metrics(cursor, roster_month_id: int) -> dict:
         ),
     )
     return metrics
+
+
+def reconcile_month_goals_to_universal(cursor, month_year: str, performed_by: int) -> dict:
+    """
+    Recalculate every active roster in the month and write User Monthly Goal
+    from those metrics (week-offs do not reduce target; extras do not raise it).
+    """
+    cursor.execute(
+        """
+        SELECT roster_month_id
+        FROM roster_month
+        WHERE is_active=1 AND month_year=%s
+        """,
+        (str(month_year).strip(),),
+    )
+    ids = [int(r["roster_month_id"]) for r in (cursor.fetchall() or [])]
+    synced = 0
+    for roster_month_id in ids:
+        refresh_roster_month_metrics(cursor, roster_month_id)
+        roster_month = get_roster_month(cursor, roster_month_id)
+        if not roster_month:
+            continue
+        sync_to_user_monthly_tracker(
+            cursor,
+            roster_month,
+            "Monthly goal anchored to universal working days",
+            int(performed_by),
+            write_audit=False,
+        )
+        synced += 1
+    cap_result = cap_month_goals_to_universal_working_days(cursor, month_year)
+    cap_result["goals_synced"] = synced
+    return cap_result
 
 
 def save_version_snapshot(

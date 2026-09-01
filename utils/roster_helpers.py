@@ -909,30 +909,48 @@ def compute_roster_metrics(
     daily_full_hours: float | None = None,
 ) -> dict:
     """
-    Business metrics derived from day_type, working_type, and working_hours.
-    Never uses display_labels or other UI-only response fields.
-    Target days/hours are capped at universal Mon–Fri minus holidays.
+    Calendar days follow the actual grid (including weekly week-off swaps).
+    Monthly target follows universal Mon–Fri minus holidays so extra week-offs
+    do not cut the goal and extra weekend days cannot inflate it.
     """
     calendar_working_days = 0.0
-    monthly_target_hours = 0.0
+    hours_from_grid = 0.0
 
     for day in days:
         if is_calendar_working_day(day):
             hours = working_hours_for_day(day)
             working_type = (day.get("working_type") or "Full").strip()
             calendar_working_days += 0.5 if working_type == "Half" else 1.0
-            monthly_target_hours += hours
+            hours_from_grid += hours
+
+    cap = universal_days
+    if cap is None:
+        cap = count_universal_working_days_from_days(days)
+    daily = daily_full_hours
+    if daily is None:
+        daily = FULL_DAY_HOURS
+        for day in days:
+            if day.get("day_type") == "Working" and (day.get("working_type") or "Full") == "Full":
+                daily = implied_full_day_hours(day.get("working_type"), day.get("working_hours"))
+                break
+
+    if cap and cap > 0:
+        target_working_days = float(cap)
+        monthly_target_hours = round(float(cap) * float(daily), 2)
+    else:
+        target_working_days = calendar_working_days
+        monthly_target_hours = hours_from_grid
 
     metrics = {
         "calendar_working_days": calendar_working_days,
-        "target_working_days": calendar_working_days,
+        "target_working_days": target_working_days,
         "monthly_target_hours": monthly_target_hours,
     }
     return apply_universal_working_days_cap(
         metrics,
         days,
-        universal_days=universal_days,
-        daily_full_hours=daily_full_hours,
+        universal_days=cap,
+        daily_full_hours=daily,
     )
 
 

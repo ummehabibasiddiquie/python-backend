@@ -19,6 +19,7 @@ from utils.roster_helpers import (
     half_day_hours_from_roster_day,
     working_hours_for_day,
     apply_universal_working_days_cap,
+    count_universal_working_days_from_days,
 )
 
 
@@ -107,26 +108,36 @@ def apply_active_leaves_to_days(days: list[dict], leaves: list[dict] | None) -> 
     return [indexed[d] for d in sorted(indexed.keys())]
 
 
+def _is_universal_working_date(d: date | None, day: dict | None) -> bool:
+    """Mon–Fri that is not an org holiday. Week-off swaps do not change this."""
+    if d is None or d.weekday() >= 5:
+        return False
+    if not day:
+        return True
+    if (day.get("day_type") or "").strip() == "Holiday":
+        return False
+    return True
+
+
 def recalculate_metrics_from_days_and_leaves(
     days: list[dict],
     leaves: list[dict] | None = None,
 ) -> dict[str, float]:
     """
-    Compute calendar_working_days, target_working_days, monthly_target_hours.
+    Calendar working days follow the weekly grid (week-offs, extra working days).
 
-    Leave rules (approved):
-    - Full leave removes the day from calendar/base hours.
-    - Half-day leave counts as 0.5 working day + half hours (employee worked half).
-    - affect_target=No credits the leave back onto target (full → +1 / full hours;
-      half → +0.5 / half hours so the other half is restored and target is unchanged).
-    - affect_target=Yes keeps the reduction (full → −1; half → −0.5).
+    Monthly target starts at universal Mon–Fri minus holidays, then:
+    - extra week-offs do NOT reduce target (agents settle offs across later weeks)
+    - extra weekend working days do NOT raise target (ceiling)
+    - leave with affect_target=Yes reduces target (full −1, half −0.5)
+    - leave with affect_target=No does not reduce target
+    - Working-type Half on a universal day reduces target by 0.5
     """
     leaves = leaves or []
     full_day_hours = infer_full_day_hours_from_days(days)
     leave_by_date = _index_leaves_by_date(leaves)
 
     calendar_working_days = 0.0
-    base_target_hours = 0.0
 
     for day in days:
         d = parse_date(day.get("roster_date"))
@@ -139,41 +150,40 @@ def recalculate_metrics_from_days_and_leaves(
                 calendar_working_days += 0.5
             else:
                 calendar_working_days += 1.0
-            base_target_hours += working_hours_for_day(day)
         elif day.get("day_type") == "Leave" and is_half_leave:
-            # Half-day leave: still worked half the day
             calendar_working_days += 0.5
-            base_target_hours += leave_hours_credit(True, full_day_hours)
 
-    target_hour_credit = 0.0
-    target_day_credit = 0.0
+    universal = count_universal_working_days_from_days(days)
+    penalty_days = 0.0
+    penalty_hours = 0.0
 
-    for leave in leaves:
-        if not int(leave.get("is_active", 1)):
+    for day in days:
+        d = parse_date(day.get("roster_date"))
+        if not _is_universal_working_date(d, day):
             continue
-        # Only credit when leave should NOT reduce target
-        if int(leave.get("affect_target", 0)):
+        leave = leave_by_date.get(d) if d else None
+        day_type = (day.get("day_type") or "").strip()
+        working_type = (day.get("working_type") or "Full").strip()
+
+        if leave and int(leave.get("is_active", 1)) and int(leave.get("affect_target", 0)):
+            if day_type == "Leave":
+                is_half = bool(int(leave.get("is_half_day", 0)))
+                penalty_days += leave_day_credit(is_half)
+                penalty_hours += leave_hours_credit(is_half, full_day_hours)
             continue
 
-        start = parse_date(leave.get("start_date"))
-        end = parse_date(leave.get("end_date"))
-        if not start or not end:
-            continue
+        if day_type == "Working" and working_type == "Half":
+            penalty_days += 0.5
+            penalty_hours += round(full_day_hours / 2, 2)
 
-        is_half = bool(int(leave.get("is_half_day", 0)))
-        # Full leave was fully removed → credit full day back
-        # Half leave already counted 0.5 → credit remaining 0.5 so target stays full
-        hrs = leave_hours_credit(is_half, full_day_hours)
-        day_equiv = leave_day_credit(is_half)
-
-        for d in iter_dates_inclusive(start, end):
-            matching = [x for x in days if parse_date(x.get("roster_date")) == d]
-            if matching and matching[0].get("day_type") == "Leave":
-                target_hour_credit += hrs
-                target_day_credit += day_equiv
-
-    monthly_target_hours = round(base_target_hours + target_hour_credit, 2)
-    target_working_days = round(calendar_working_days + target_day_credit, 2)
+    if universal > 0:
+        target_working_days = round(max(0.0, float(universal) - penalty_days), 2)
+        monthly_target_hours = round(
+            max(0.0, float(universal) * full_day_hours - penalty_hours), 2
+        )
+    else:
+        target_working_days = calendar_working_days
+        monthly_target_hours = round(calendar_working_days * full_day_hours, 2)
 
     metrics = {
         "calendar_working_days": calendar_working_days,
@@ -183,6 +193,7 @@ def recalculate_metrics_from_days_and_leaves(
     return apply_universal_working_days_cap(
         metrics,
         days,
+        universal_days=universal if universal > 0 else None,
         daily_full_hours=full_day_hours,
     )
 

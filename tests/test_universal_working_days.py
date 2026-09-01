@@ -86,6 +86,22 @@ class UniversalWorkingDaysTest(unittest.TestCase):
         self.assertEqual(metrics["target_working_days"], 22.0)
         self.assertEqual(metrics["monthly_target_hours"], 198.0)
 
+    def test_extra_weekday_weekoff_does_not_reduce_target(self):
+        employee = {
+            "user_id": 1,
+            "role_name": "agent",
+            "joining_date": date(2026, 9, 1),
+        }
+        start, end = month_date_range(2026, 9)
+        days = generate_roster_days_for_employee(employee, start, end, {})
+        for day in days:
+            if day["roster_date"] == date(2026, 9, 1):  # Tuesday extra week-off
+                day["day_type"] = "WeekOff"
+        metrics = recalculate_metrics_from_days_and_leaves(days, [])
+        self.assertEqual(metrics["calendar_working_days"], 21.0)
+        self.assertEqual(metrics["target_working_days"], 22.0)
+        self.assertEqual(metrics["monthly_target_hours"], 198.0)
+
     def test_apply_cap_scales_hours(self):
         metrics = apply_universal_working_days_cap(
             {"target_working_days": 23.0, "monthly_target_hours": 207.0},

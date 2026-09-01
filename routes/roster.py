@@ -26,7 +26,6 @@ from utils.roster_helpers import (
     load_active_holidays,
     load_tracker_baselines_map,
     fill_missing_umt_for_roster_month,
-    cap_month_goals_to_universal_working_days,
     FULL_DAY_HOURS,
     format_ist_display,
     month_calendar_has_lock,
@@ -42,7 +41,7 @@ from utils.roster_metrics import (
     apply_active_leaves_to_days,
     recalculate_metrics_from_days_and_leaves,
 )
-from utils.roster_workflow import get_roster_leaves
+from utils.roster_workflow import get_roster_leaves, reconcile_month_goals_to_universal
 
 roster_bp = Blueprint("roster", __name__)
 
@@ -207,7 +206,9 @@ def generate_roster():
         goals_created = fill_missing_umt_for_roster_month(
             cursor, target_month_year, logged_in_user_id
         )
-        cap_result = cap_month_goals_to_universal_working_days(cursor, target_month_year)
+        cap_result = reconcile_month_goals_to_universal(
+            cursor, target_month_year, logged_in_user_id
+        )
 
         conn.commit()
         return api_response(
@@ -295,7 +296,7 @@ def generate_roster_for_employee():
             return api_response(400, result.get("reason", "Roster generation failed"), result)
 
         fill_missing_umt_for_roster_month(cursor, target_month_year, logged_in_user_id)
-        cap_month_goals_to_universal_working_days(cursor, target_month_year)
+        reconcile_month_goals_to_universal(cursor, target_month_year, logged_in_user_id)
         conn.commit()
         return api_response(200, "Employee roster generated successfully", result)
     except Exception as e:
@@ -412,7 +413,7 @@ def reset_regenerate_roster():
         )
 
         fill_missing_umt_for_roster_month(cursor, target_month_year, logged_in_user_id)
-        cap_month_goals_to_universal_working_days(cursor, target_month_year)
+        reconcile_month_goals_to_universal(cursor, target_month_year, logged_in_user_id)
 
         conn.commit()
         return api_response(
