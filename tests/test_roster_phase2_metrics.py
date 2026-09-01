@@ -1,7 +1,7 @@
 """Tests for Phase 2 roster metrics (leave affect_target split)."""
 
 import unittest
-from datetime import date
+from datetime import date, timedelta
 
 from utils.roster_metrics import recalculate_metrics_from_days_and_leaves
 
@@ -108,10 +108,16 @@ class RosterPhase2MetricsTest(unittest.TestCase):
         self.assertEqual(metrics["monthly_target_hours"], 22.5)
 
     def test_mixed_full_and_half_affect_target_yes(self):
-        """23 baseline − 4 full − 0.5 half = 18.5 days / 166.5 hours."""
-        days = [self._working_day(date(2026, 7, d)) for d in range(1, 24)]
-        leave_dates_full = [date(2026, 7, 1), date(2026, 7, 2), date(2026, 7, 3), date(2026, 7, 4)]
-        half_date = date(2026, 7, 5)
+        """July 2026 weekdays only (23) − 4 full − 0.5 half = 18.5 days / 166.5 hours."""
+        days = []
+        d = date(2026, 7, 1)
+        while d.month == 7:
+            if d.weekday() < 5:
+                days.append(self._working_day(d))
+            d += timedelta(days=1)
+        self.assertEqual(len(days), 23)
+        leave_dates_full = [date(2026, 7, 1), date(2026, 7, 2), date(2026, 7, 3), date(2026, 7, 6)]
+        half_date = date(2026, 7, 7)
         for i, d in enumerate(days):
             rd = d["roster_date"]
             if rd in leave_dates_full or rd == half_date:
@@ -129,8 +135,8 @@ class RosterPhase2MetricsTest(unittest.TestCase):
                 "is_active": 1,
                 "affect_target": 1,
                 "is_half_day": 0,
-                "start_date": date(2026, 7, 4),
-                "end_date": date(2026, 7, 4),
+                "start_date": date(2026, 7, 6),
+                "end_date": date(2026, 7, 6),
             },
             {
                 "is_active": 1,

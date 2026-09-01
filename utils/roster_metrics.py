@@ -13,12 +13,12 @@ from typing import Any
 
 from utils.roster_helpers import (
     FULL_DAY_HOURS,
-    HALF_DAY_HOURS,
     implied_full_day_hours,
     is_calendar_working_day,
     parse_date,
     half_day_hours_from_roster_day,
     working_hours_for_day,
+    apply_universal_working_days_cap,
 )
 
 
@@ -175,11 +175,16 @@ def recalculate_metrics_from_days_and_leaves(
     monthly_target_hours = round(base_target_hours + target_hour_credit, 2)
     target_working_days = round(calendar_working_days + target_day_credit, 2)
 
-    return {
+    metrics = {
         "calendar_working_days": calendar_working_days,
         "target_working_days": target_working_days,
         "monthly_target_hours": monthly_target_hours,
     }
+    return apply_universal_working_days_cap(
+        metrics,
+        days,
+        daily_full_hours=full_day_hours,
+    )
 
 
 def serialize_day_row(row: dict) -> dict:

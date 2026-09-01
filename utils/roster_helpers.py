@@ -567,6 +567,162 @@ def count_weekdays_in_range(start: date, end: date) -> int:
     return count
 
 
+def _holiday_date_set(holidays) -> set[date]:
+    if not holidays:
+        return set()
+    if isinstance(holidays, dict):
+        return {d for d in holidays.keys() if isinstance(d, date)}
+    out: set[date] = set()
+    for item in holidays:
+        d = parse_date(item) if not isinstance(item, date) else item
+        if d:
+            out.add(d)
+    return out
+
+
+def count_universal_working_days(start: date, end: date, holidays=None) -> int:
+    """
+    Company working days for a period: Mon–Fri minus weekday holidays.
+    Saturday/Sunday week-offs are never counted. Used as the ceiling for
+    monthly target days/hours so weekly week-off swaps cannot inflate the goal.
+    """
+    holiday_dates = _holiday_date_set(holidays)
+    count = 0
+    current = start
+    while current <= end:
+        if current.weekday() < 5 and current not in holiday_dates:
+            count += 1
+        current += timedelta(days=1)
+    return count
+
+
+def count_universal_working_days_from_days(days: list[dict]) -> int:
+    parsed: list[date] = []
+    holiday_dates: set[date] = set()
+    for day in days or []:
+        d = parse_date(day.get("roster_date"))
+        if not d:
+            continue
+        parsed.append(d)
+        if d.weekday() < 5 and (
+            (day.get("day_type") or "").strip() == "Holiday" or day.get("holiday_id")
+        ):
+            holiday_dates.add(d)
+    if not parsed:
+        return 0
+    return count_universal_working_days(min(parsed), max(parsed), holiday_dates)
+
+
+def apply_universal_working_days_cap(
+    metrics: dict,
+    days: list[dict] | None = None,
+    *,
+    universal_days: int | None = None,
+    daily_full_hours: float | None = None,
+) -> dict:
+    """If target days/hours exceed the Sat/Sun+holiday ceiling, clamp them down."""
+    cap = universal_days
+    if cap is None:
+        cap = count_universal_working_days_from_days(days or [])
+    metrics["universal_working_days"] = float(cap or 0)
+    if not cap or cap <= 0:
+        return metrics
+
+    twd = float(metrics.get("target_working_days") or 0)
+    hours = float(metrics.get("monthly_target_hours") or 0)
+    if daily_full_hours is None:
+        daily_full_hours = FULL_DAY_HOURS
+        for day in days or []:
+            if day.get("day_type") == "Working":
+                daily_full_hours = implied_full_day_hours(
+                    day.get("working_type"), day.get("working_hours")
+                )
+                if (day.get("working_type") or "Full").strip() == "Full":
+                    break
+
+    max_hours = round(float(cap) * float(daily_full_hours), 2)
+    if twd > cap:
+        if twd > 0:
+            hours = round(hours * (cap / twd), 2)
+        metrics["target_working_days"] = float(cap)
+    if hours > max_hours:
+        hours = max_hours
+    metrics["monthly_target_hours"] = hours
+    return metrics
+
+
+def cap_month_goals_to_universal_working_days(cursor, month_year: str) -> dict:
+    """
+    Clamp roster_month + user_monthly_tracker for this month when working days
+    or target hours exceed the universal Mon–Fri minus holidays ceiling.
+    Does not change roster_day week-offs (those stay weekly).
+    """
+    year, month = parse_month_year(month_year)
+    month_start, month_end = month_date_range(year, month)
+    holidays = load_active_holidays(cursor, year)
+    cap = count_universal_working_days(month_start, month_end, holidays)
+    if cap <= 0:
+        return {"universal_working_days": cap, "roster_updated": 0, "tracker_updated": 0}
+
+    now = now_str()
+    roster_updated = 0
+    tracker_updated = 0
+
+    cursor.execute(
+        """
+        SELECT roster_month_id, target_working_days, monthly_target_hours
+        FROM roster_month
+        WHERE is_active=1 AND month_year=%s
+        """,
+        (str(month_year).strip(),),
+    )
+    for row in cursor.fetchall() or []:
+        twd = float(row.get("target_working_days") or 0)
+        hours = float(row.get("monthly_target_hours") or 0)
+        if twd <= cap:
+            continue
+        new_hours = round(hours * (cap / twd), 2) if twd > 0 else hours
+        cursor.execute(
+            """
+            UPDATE roster_month
+            SET target_working_days=%s, monthly_target_hours=%s, updated_date=%s
+            WHERE roster_month_id=%s
+            """,
+            (float(cap), new_hours, now, int(row["roster_month_id"])),
+        )
+        roster_updated += 1
+
+    cursor.execute(
+        """
+        SELECT user_monthly_tracker_id, working_days, monthly_target
+        FROM user_monthly_tracker
+        WHERE is_active=1 AND month_year=%s
+        """,
+        (str(month_year).strip(),),
+    )
+    for row in cursor.fetchall() or []:
+        wd = float(row.get("working_days") or 0)
+        mt = float(row.get("monthly_target") or 0)
+        if wd <= cap:
+            continue
+        new_mt = round(mt * (cap / wd), 2) if wd > 0 else mt
+        cursor.execute(
+            """
+            UPDATE user_monthly_tracker
+            SET working_days=%s, monthly_target=%s
+            WHERE user_monthly_tracker_id=%s
+            """,
+            (str(cap), str(new_mt), int(row["user_monthly_tracker_id"])),
+        )
+        tracker_updated += 1
+
+    return {
+        "universal_working_days": cap,
+        "roster_updated": roster_updated,
+        "tracker_updated": tracker_updated,
+    }
+
+
 def day_shift_times(role_name: str) -> tuple[time, time]:
     if (role_name or "").strip().lower() == "qa":
         return QA_DAY_SHIFT_START, QA_DAY_SHIFT_END
@@ -746,10 +902,16 @@ def build_default_day(
     }
 
 
-def compute_roster_metrics(days: list[dict]) -> dict:
+def compute_roster_metrics(
+    days: list[dict],
+    *,
+    universal_days: int | None = None,
+    daily_full_hours: float | None = None,
+) -> dict:
     """
     Business metrics derived from day_type, working_type, and working_hours.
     Never uses display_labels or other UI-only response fields.
+    Target days/hours are capped at universal Mon–Fri minus holidays.
     """
     calendar_working_days = 0.0
     monthly_target_hours = 0.0
@@ -761,11 +923,17 @@ def compute_roster_metrics(days: list[dict]) -> dict:
             calendar_working_days += 0.5 if working_type == "Half" else 1.0
             monthly_target_hours += hours
 
-    return {
+    metrics = {
         "calendar_working_days": calendar_working_days,
         "target_working_days": calendar_working_days,
         "monthly_target_hours": monthly_target_hours,
     }
+    return apply_universal_working_days_cap(
+        metrics,
+        days,
+        universal_days=universal_days,
+        daily_full_hours=daily_full_hours,
+    )
 
 
 def resolve_roster_period(
@@ -1080,8 +1248,12 @@ def insert_roster_for_employee(
     days = generate_roster_days_for_employee(
         employee, roster_start, roster_end, holidays, daily_full_hours=daily_full_hours
     )
-    metrics = compute_roster_metrics(days)
-    baseline_target_days = count_weekdays_in_range(roster_start, roster_end)
+    baseline_target_days = count_universal_working_days(roster_start, roster_end, holidays)
+    metrics = compute_roster_metrics(
+        days,
+        universal_days=baseline_target_days,
+        daily_full_hours=daily_full_hours,
+    )
     now = now_str()
 
     cursor.execute(

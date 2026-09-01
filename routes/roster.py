@@ -26,6 +26,7 @@ from utils.roster_helpers import (
     load_active_holidays,
     load_tracker_baselines_map,
     fill_missing_umt_for_roster_month,
+    cap_month_goals_to_universal_working_days,
     FULL_DAY_HOURS,
     format_ist_display,
     month_calendar_has_lock,
@@ -206,6 +207,7 @@ def generate_roster():
         goals_created = fill_missing_umt_for_roster_month(
             cursor, target_month_year, logged_in_user_id
         )
+        cap_result = cap_month_goals_to_universal_working_days(cursor, target_month_year)
 
         conn.commit()
         return api_response(
@@ -216,6 +218,8 @@ def generate_roster():
                 "created_count": len(created),
                 "skipped_count": len(skipped),
                 "monthly_goals_created": goals_created,
+                "universal_working_days": cap_result.get("universal_working_days"),
+                "goals_capped": cap_result,
                 "created": created,
                 "skipped": skipped,
             },
@@ -291,6 +295,7 @@ def generate_roster_for_employee():
             return api_response(400, result.get("reason", "Roster generation failed"), result)
 
         fill_missing_umt_for_roster_month(cursor, target_month_year, logged_in_user_id)
+        cap_month_goals_to_universal_working_days(cursor, target_month_year)
         conn.commit()
         return api_response(200, "Employee roster generated successfully", result)
     except Exception as e:
@@ -405,6 +410,9 @@ def reset_regenerate_roster():
             performed_by=logged_in_user_id,
             notes="Super Admin reset and regenerated roster month",
         )
+
+        fill_missing_umt_for_roster_month(cursor, target_month_year, logged_in_user_id)
+        cap_month_goals_to_universal_working_days(cursor, target_month_year)
 
         conn.commit()
         return api_response(
