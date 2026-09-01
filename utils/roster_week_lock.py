@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 
 from utils.roster_excel import weeks_in_month
@@ -94,10 +95,17 @@ def dates_from_change_payload(change_type: str, payload: dict | None) -> list[da
 
 
 def dates_from_change_request(req: dict) -> list[date]:
-    return dates_from_change_payload(
-        req.get("change_type") or "",
-        req.get("change_payload") if isinstance(req.get("change_payload"), dict) else {},
-    )
+    payload = req.get("change_payload")
+    if isinstance(payload, (bytes, bytearray)):
+        payload = payload.decode("utf-8", errors="ignore")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return dates_from_change_payload(req.get("change_type") or "", payload)
 
 
 def list_week_locks(cursor, month_year: str) -> list[dict]:
@@ -326,6 +334,50 @@ def lock_weeks_touched_by_requests(
                     }
                 )
     return locked_out
+
+
+def weeks_touched_by_requests(
+    requests: list[dict],
+    months_by_id: dict[int, dict],
+) -> list[dict]:
+    """Unique weeks affected by approved change requests (for email / lock)."""
+    seen: set[tuple[str, int]] = set()
+    out: list[dict] = []
+    for req in requests or []:
+        mid = req.get("roster_month_id")
+        if mid is None:
+            continue
+        roster_month = months_by_id.get(int(mid))
+        if not roster_month:
+            continue
+        month_year = (roster_month.get("month_year") or "").strip()
+        if not month_year:
+            continue
+        try:
+            my_year, my_month = parse_month_year(month_year)
+        except ValueError:
+            continue
+        for d in dates_from_change_request(req):
+            if d.year != my_year or d.month != my_month:
+                continue
+            meta = week_meta_for_date(month_year, d)
+            if not meta:
+                continue
+            wn = int(meta["week_number"])
+            key = (month_year, wn)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "month_year": month_year,
+                    "week_number": wn,
+                    "week_start": meta["week_start"],
+                    "week_end": meta["week_end"],
+                    "label": meta.get("label") or f"Week {wn}",
+                }
+            )
+    return out
 
 
 def annotate_weeks_with_locks(cursor, month_year: str, weeks: list[dict]) -> list[dict]:

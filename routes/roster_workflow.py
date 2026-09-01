@@ -79,7 +79,9 @@ from utils.roster_week_lock import (
     week_lock_message_for_change,
     week_lock_message_for_dates,
     week_meta_for_date,
+    weeks_touched_by_requests,
 )
+from utils.roster_week_email import send_weekly_roster_after_approval
 
 from routes.roster import roster_bp
 
@@ -823,6 +825,24 @@ def roster_approve_request():
                 )
 
         conn.commit()
+
+        email_results = []
+        if roster_month:
+            try:
+                weeks = weeks_touched_by_requests(
+                    [req], {int(roster_month["roster_month_id"]): roster_month}
+                )
+                if not weeks:
+                    weeks = locked_weeks
+                email_results = send_weekly_roster_after_approval(
+                    cursor,
+                    weeks=weeks,
+                    logged_in_user_id=logged_in_user_id,
+                    role_name=role_name,
+                )
+            except Exception as mail_err:
+                print(f"[roster weekly email] approve mail failed: {mail_err}", flush=True)
+
         return api_response(
             200,
             "Change request approved",
@@ -830,6 +850,7 @@ def roster_approve_request():
                 "request_id": int(request_id),
                 "finalized_cycles": finalized,
                 "locked_weeks": locked_weeks,
+                "weekly_roster_emails": email_results,
             },
         )
     except ValueError as e:
@@ -991,6 +1012,21 @@ def roster_approve_bulk():
 
         conn.commit()
 
+        email_results = []
+        if approved_reqs:
+            try:
+                weeks = weeks_touched_by_requests(approved_reqs, months_by_id)
+                if not weeks:
+                    weeks = locked_weeks
+                email_results = send_weekly_roster_after_approval(
+                    cursor,
+                    weeks=weeks,
+                    logged_in_user_id=logged_in_user_id,
+                    role_name=role_name,
+                )
+            except Exception as mail_err:
+                print(f"[roster weekly email] bulk approve mail failed: {mail_err}", flush=True)
+
         return api_response(
             200,
             f"Approved {approved} request(s)",
@@ -999,6 +1035,7 @@ def roster_approve_bulk():
                 "failed": failed,
                 "finalized_cycles": finalized,
                 "locked_weeks": locked_weeks,
+                "weekly_roster_emails": email_results,
             },
         )
     except Exception as e:
@@ -1496,6 +1533,59 @@ def roster_list_week_locks():
         return api_response(200, "Week locks fetched", {"week_locks": locks})
     except Exception as e:
         return api_response(500, f"Failed to list week locks: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@roster_bp.route("/week/email", methods=["POST"])
+def roster_email_week():
+    """Admin resend of the weekly roster HTML mail for one week."""
+    data = request.get_json(silent=True) or {}
+    logged_in_user_id, err = _require_logged_in_user(data)
+    if err:
+        return err
+
+    month_year = (data.get("month_year") or "").strip()
+    week_number = data.get("week_number")
+    if not month_year:
+        return api_response(400, "month_year is required")
+    try:
+        wn = int(week_number)
+    except (TypeError, ValueError):
+        return api_response(400, "week_number is required")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, logged_in_user_id)
+        role_name = ctx.get("user_role_name", "")
+        if not is_admin_or_super_admin(role_name):
+            return api_response(403, "Only Admin or Super Admin can send weekly roster email")
+
+        year, month = parse_month_year(month_year)
+        match = next(
+            (w for w in weeks_in_month(year, month) if int(w.get("week_number") or 0) == wn),
+            None,
+        )
+        if not match:
+            return api_response(400, f"Week {wn} not found for {month_year}")
+
+        results = send_weekly_roster_after_approval(
+            cursor,
+            weeks=[match],
+            logged_in_user_id=logged_in_user_id,
+            role_name=role_name,
+        )
+        sent = any(r.get("sent") for r in results)
+        reason = next((r.get("reason") for r in results if r.get("reason")), None)
+        if not sent:
+            return api_response(400, reason or "Weekly roster email was not sent", {"weekly_roster_emails": results})
+        return api_response(200, "Weekly roster email sent", {"weekly_roster_emails": results})
+    except ValueError as e:
+        return api_response(400, str(e))
+    except Exception as e:
+        return api_response(500, f"Weekly roster email failed: {str(e)}")
     finally:
         cursor.close()
         conn.close()
