@@ -22,6 +22,7 @@ from utils.roster_helpers import (
     AGENT_DAY_SHIFT_START,
     QA_DAY_SHIFT_END,
     QA_DAY_SHIFT_START,
+    is_org_holiday_day,
     month_year_label,
     parse_date,
 )
@@ -31,6 +32,7 @@ LABEL_AGENT_DAY = "9:00AM to 6:30PM"
 LABEL_QA_DAY = "10:00AM to 7:30PM"
 LABEL_NIGHT = "7:30 PM to 8:30 AM"
 LABEL_WEEK_OFF = "Week Off"
+LABEL_HOLIDAY = "Holiday"
 LABEL_LEAVE = "Leave"
 LABEL_LEAVE_AFFECT_TARGET = "Leave (Affect Target)"
 LABEL_HALF_DAY = "Half day"
@@ -40,6 +42,7 @@ DROPDOWN_VALUES = [
     LABEL_AGENT_DAY,
     LABEL_QA_DAY,
     LABEL_NIGHT,
+    LABEL_HOLIDAY,
     LABEL_WEEK_OFF,
     LABEL_LEAVE,
     LABEL_LEAVE_AFFECT_TARGET,
@@ -203,8 +206,6 @@ def day_to_excel_label(day: dict | None, role_name: str | None = None) -> str:
     if not day:
         return ""
     day_type = (day.get("day_type") or "").strip()
-    if day_type == "WeekOff":
-        return LABEL_WEEK_OFF
     if day_type == "Leave":
         working_type = (day.get("working_type") or "Full").strip()
         is_half = working_type == "Half" or bool(int(day.get("leave_is_half_day") or 0))
@@ -217,31 +218,29 @@ def day_to_excel_label(day: dict | None, role_name: str | None = None) -> str:
         if affect:
             return LABEL_LEAVE_AFFECT_TARGET
         return LABEL_LEAVE
-    if day_type == "Holiday":
-        return LABEL_WEEK_OFF  # managers usually don't set Holiday in weekly Excel
+    if day_type == "Working":
+        working_type = (day.get("working_type") or "Full").strip()
+        if working_type == "Half":
+            return LABEL_HALF_DAY_AFFECT_TARGET
+        shift = (day.get("shift") or "DAY").strip().upper()
+        if shift == "NIGHT":
+            return LABEL_NIGHT
+        start = _coerce_time(day.get("shift_start"))
+        if _time_close(start, AGENT_DAY_SHIFT_START):
+            return LABEL_AGENT_DAY
+        if _time_close(start, QA_DAY_SHIFT_START):
+            return LABEL_QA_DAY
+        if (role_name or "").strip().lower() == "qa":
+            return LABEL_QA_DAY
+        return LABEL_AGENT_DAY
+    # Holiday outranks Week Off (including holiday-on-Saturday rows).
+    if day_type == "Holiday" or day.get("holiday_id"):
+        return LABEL_HOLIDAY
+    if day_type == "WeekOff":
+        return LABEL_WEEK_OFF
     if day_type == "PreJoin":
         return ""
-    if day_type != "Working":
-        return ""
-
-    working_type = (day.get("working_type") or "Full").strip()
-    if working_type == "Half":
-        # Working half-day always reduces hours/days (same as half leave that affects target).
-        return LABEL_HALF_DAY_AFFECT_TARGET
-
-    shift = (day.get("shift") or "DAY").strip().upper()
-    if shift == "NIGHT":
-        return LABEL_NIGHT
-
-    start = _coerce_time(day.get("shift_start"))
-
-    if _time_close(start, AGENT_DAY_SHIFT_START):
-        return LABEL_AGENT_DAY
-    if _time_close(start, QA_DAY_SHIFT_START):
-        return LABEL_QA_DAY
-    if (role_name or "").strip().lower() == "qa":
-        return LABEL_QA_DAY
-    return LABEL_AGENT_DAY
+    return ""
 
 
 def excel_label_to_change(
@@ -268,6 +267,7 @@ def excel_label_to_change(
         _normalize_key(LABEL_QA_DAY): "qa_day",
         _normalize_key(LABEL_NIGHT): "night",
         _normalize_key(LABEL_WEEK_OFF): "week_off",
+        _normalize_key(LABEL_HOLIDAY): "holiday",
         _normalize_key(LABEL_LEAVE_AFFECT_TARGET): "leave_affect_target",
         _normalize_key(LABEL_LEAVE): "leave",
         _normalize_key(LABEL_HALF_DAY_AFFECT_TARGET): "half_day_affect_target",
@@ -275,6 +275,7 @@ def excel_label_to_change(
         "weekoff": "week_off",
         "wo": "week_off",
         "off": "week_off",
+        "holiday": "holiday",
         "halfdayaffecttarget": "half_day_affect_target",
         "halfday": "half_day",
         "half": "half_day",
@@ -292,6 +293,8 @@ def excel_label_to_change(
         lower = raw.lower()
         if "week" in lower and "off" in lower:
             kind = "week_off"
+        elif "holiday" in lower:
+            kind = "holiday"
         elif "half" in lower and ("affect" in lower or "target" in lower):
             kind = "half_day_affect_target"
         elif "half" in lower:
@@ -316,6 +319,19 @@ def excel_label_to_change(
             "change_payload": {
                 "roster_date": date_str,
                 "day_type": "WeekOff",
+                "shift": "DAY",
+                "working_type": "Full",
+                "working_hours": 0,
+            },
+        }
+
+    if kind == "holiday":
+        return {
+            "change_type": "DAY_UPDATE",
+            "label": LABEL_HOLIDAY,
+            "change_payload": {
+                "roster_date": date_str,
+                "day_type": "Holiday",
                 "shift": "DAY",
                 "working_type": "Full",
                 "working_hours": 0,
@@ -437,8 +453,10 @@ def is_noop_change(day: dict | None, change: dict) -> bool:
         )
         return cur_affect == prop_affect
 
+    if prop_type == "Holiday":
+        return cur_type == "Holiday"
     if prop_type == "WeekOff":
-        return cur_type == "WeekOff"
+        return cur_type == "WeekOff" and not day.get("holiday_id")
     if prop_type == "Working" and prop_wt == "Half":
         return cur_type == "Working" and cur_wt == "Half"
     if prop_type == "Working" and prop_shift == "NIGHT":
@@ -452,6 +470,40 @@ def is_noop_change(day: dict | None, change: dict) -> bool:
             and cur_label == prop_label
         )
     return False
+
+
+HOLIDAY_LEAVE_ERROR = (
+    "Leave or half day cannot be added on a Holiday. "
+    "Use a working day or night shift if this person must work."
+)
+
+
+def holiday_day_change(date_str: str) -> dict:
+    return {
+        "change_type": "DAY_UPDATE",
+        "label": LABEL_HOLIDAY,
+        "change_payload": {
+            "roster_date": date_str,
+            "day_type": "Holiday",
+            "shift": "DAY",
+            "working_type": "Full",
+            "working_hours": 0,
+        },
+    }
+
+
+def adjust_excel_change_for_holiday(day: dict | None, change: dict | None) -> dict | None:
+    """Holiday outranks Week Off. Leave/half day on a holiday is not allowed."""
+    if not change or not is_org_holiday_day(day):
+        return change
+    payload = change.get("change_payload") or {}
+    if change.get("change_type") == "LEAVE_ADD" or int(payload.get("is_half_day") or 0):
+        raise ValueError(HOLIDAY_LEAVE_ERROR)
+    if (payload.get("working_type") or "Full").strip() == "Half":
+        raise ValueError(HOLIDAY_LEAVE_ERROR)
+    if change.get("change_type") == "DAY_UPDATE" and (payload.get("day_type") or "").strip() == "WeekOff":
+        return holiday_day_change(payload.get("roster_date") or "")
+    return change
 
 
 def _add_week_sheet(
@@ -556,9 +608,10 @@ def build_month_workbook(
         "2. Column A (Team Member) is prefilled — names must match HRMS.",
         "3. Use the dropdown in each day cell.",
         "4. Allowed values:",
-        f"   - {LABEL_AGENT_DAY}",
-        f"   - {LABEL_QA_DAY}",
-        f"   - {LABEL_NIGHT}",
+        f"   - {LABEL_AGENT_DAY}  (can be used on a Holiday if the person must work)",
+        f"   - {LABEL_QA_DAY}  (can be used on a Holiday if the person must work)",
+        f"   - {LABEL_NIGHT}  (can be used on a Holiday if the person must work)",
+        f"   - {LABEL_HOLIDAY}  (highest priority; not Week Off / Leave / Half day)",
         f"   - {LABEL_WEEK_OFF}",
         f"   - {LABEL_LEAVE}  (does NOT affect monthly target)",
         f"   - {LABEL_LEAVE_AFFECT_TARGET}  (DOES reduce monthly target)",
@@ -629,9 +682,10 @@ def build_template_workbook(
         "2. Column A (Team Member) is prefilled — do not rename agents (names must match HRMS).",
         "3. Use the dropdown in each day cell to pick a value.",
         "4. Allowed values:",
-        f"   - {LABEL_AGENT_DAY}",
-        f"   - {LABEL_QA_DAY}",
-        f"   - {LABEL_NIGHT}",
+        f"   - {LABEL_AGENT_DAY}  (can be used on a Holiday if the person must work)",
+        f"   - {LABEL_QA_DAY}  (can be used on a Holiday if the person must work)",
+        f"   - {LABEL_NIGHT}  (can be used on a Holiday if the person must work)",
+        f"   - {LABEL_HOLIDAY}  (highest priority; not Week Off / Leave / Half day)",
         f"   - {LABEL_WEEK_OFF}",
         f"   - {LABEL_LEAVE}  (does NOT affect monthly target)",
         f"   - {LABEL_LEAVE_AFFECT_TARGET}  (DOES reduce monthly target)",

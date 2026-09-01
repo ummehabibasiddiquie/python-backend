@@ -19,6 +19,7 @@ from utils.roster_helpers import (
     half_day_hours_from_roster_day,
     implied_full_day_hours,
     is_admin_or_super_admin,
+    is_org_holiday_day,
     load_user_monthly_tracker_baseline,
     now_str,
     parse_date,
@@ -709,6 +710,17 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
     working_type = payload.get("working_type", day.get("working_type"))
     shift = payload.get("shift", day.get("shift", "DAY"))
 
+    if is_org_holiday_day(day):
+        day_type_try = (day_type or "").strip()
+        wt_try = (working_type or "Full").strip()
+        if day_type_try == "WeekOff":
+            day_type = "Holiday"
+        if day_type_try == "Leave" or wt_try == "Half":
+            raise ValueError(
+                "Leave or half day cannot be added on a Holiday. "
+                "Set a working day or night shift if this person must work."
+            )
+
     current_hours = float(day.get("working_hours") or FULL_DAY_HOURS)
     old_working_type = (day.get("working_type") or "Full").strip()
     if working_type == "Half":
@@ -750,7 +762,7 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
 
     # Leave → Working: ensure this person gets that day's assigned hours back
     restoring_to_working = day_type_norm == "Working" and (
-        old_day_type == "Leave" or clear_leave
+        old_day_type in ("Leave", "Holiday", "WeekOff") or clear_leave
     )
     if restoring_to_working:
         wt = (working_type or "Full").strip() or "Full"
@@ -984,8 +996,33 @@ def apply_weekoff_swap(cursor, roster_month: dict, payload: dict) -> None:
         )
 
 
+def _assert_leave_not_on_holiday(cursor, roster_month_id: int, start, end) -> None:
+    start_d = parse_date(start)
+    end_d = parse_date(end)
+    if not start_d or not end_d:
+        return
+    cursor.execute(
+        """
+        SELECT roster_date, day_type, holiday_id
+        FROM roster_day
+        WHERE roster_month_id=%s AND is_active=1
+          AND DATE(roster_date) BETWEEN DATE(%s) AND DATE(%s)
+        """,
+        (int(roster_month_id), start_d.isoformat(), end_d.isoformat()),
+    )
+    for row in cursor.fetchall() or []:
+        if is_org_holiday_day(row):
+            raise ValueError(
+                "Leave or half day cannot be added on a Holiday. "
+                "Set a working day or night shift if this person must work."
+            )
+
+
 def apply_leave_add(cursor, roster_month: dict, payload: dict, created_by: int) -> int:
     roster_month_id = int(roster_month["roster_month_id"])
+    _assert_leave_not_on_holiday(
+        cursor, roster_month_id, payload.get("start_date"), payload.get("end_date")
+    )
     now = now_str()
     cursor.execute(
         """
@@ -1017,6 +1054,9 @@ def apply_leave_add(cursor, roster_month: dict, payload: dict, created_by: int) 
 def apply_leave_update(cursor, roster_month: dict, payload: dict) -> None:
     leave_id = int(payload["leave_id"])
     roster_month_id = int(roster_month["roster_month_id"])
+    _assert_leave_not_on_holiday(
+        cursor, roster_month_id, payload.get("start_date"), payload.get("end_date")
+    )
     now = now_str()
 
     cursor.execute(

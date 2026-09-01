@@ -16,6 +16,7 @@ from utils.roster_excel import (
     build_template_workbook,
     day_to_excel_label,
     excel_label_to_change,
+    adjust_excel_change_for_holiday,
     is_noop_change,
     match_employee_name,
     monday_of_week,
@@ -48,6 +49,7 @@ from utils.roster_workflow import (
     SUBMITTABLE_STATUSES,
     apply_change_request,
     assert_manager_scope,
+    _assert_leave_not_on_holiday,
     batch_processing_complete,
     can_approve_reject,
     can_create_change_requests,
@@ -256,6 +258,15 @@ def roster_create_change_request():
             return api_response(400, "Withdraw submission before creating new change requests")
 
         if change_type in ("LEAVE_ADD", "LEAVE_UPDATE"):
+            try:
+                _assert_leave_not_on_holiday(
+                    cursor,
+                    int(roster_month_id),
+                    change_payload.get("start_date"),
+                    change_payload.get("end_date"),
+                )
+            except ValueError as ve:
+                return api_response(400, str(ve))
             request_id, created = create_or_update_leave_request(
                 cursor,
                 roster_month_id=int(roster_month_id),
@@ -2080,6 +2091,22 @@ def _build_excel_preview(
                         "date": date_iso,
                         "label": change.get("label"),
                         "reason": "Roster day not found — skipped",
+                    }
+                )
+                continue
+
+            try:
+                change = adjust_excel_change_for_holiday(current_day, change)
+            except ValueError as ve:
+                errors.append(
+                    {
+                        "row": row["row"],
+                        "sheet": row.get("sheet"),
+                        "name": emp.get("user_name") or row["name"],
+                        "user_id": uid,
+                        "date": date_iso,
+                        "value": label,
+                        "reason": str(ve),
                     }
                 )
                 continue

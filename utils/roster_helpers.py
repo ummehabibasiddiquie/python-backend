@@ -842,6 +842,15 @@ def is_holiday_on_scheduled_week_off(day: dict) -> bool:
     return day.get("day_type") == "WeekOff" and bool(day.get("holiday_id"))
 
 
+def is_org_holiday_day(day: dict | None) -> bool:
+    """True when this roster date is an org holiday (including weekend holidays)."""
+    if not day:
+        return False
+    if (day.get("day_type") or "").strip() == "Holiday":
+        return True
+    return bool(day.get("holiday_id"))
+
+
 def build_default_day(
     d: date,
     employee_role_name: str,

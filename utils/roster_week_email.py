@@ -8,6 +8,7 @@ from html import escape
 from utils.email_utils import send_email
 from utils.roster_excel import (
     LABEL_HALF_DAY,
+    LABEL_HOLIDAY,
     LABEL_WEEK_OFF,
     day_to_excel_label,
     format_day_header,
@@ -42,8 +43,10 @@ def roster_weekly_recipients() -> tuple[list[str], list[str]]:
 
 def _cell_bg(label: str) -> str:
     key = (label or "").strip().lower()
-    if key == LABEL_WEEK_OFF.lower() or key == "holiday":
+    if key == LABEL_WEEK_OFF.lower():
         return WEEK_OFF_BG
+    if key == LABEL_HOLIDAY.lower() or key == "holiday":
+        return "#D5A6E6"
     if "leave" in key or "half day" in key or key == LABEL_HALF_DAY.lower():
         return LEAVE_BG
     return "#FFFFFF"
