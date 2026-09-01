@@ -44,7 +44,7 @@ def _cell_bg(label: str) -> str:
     key = (label or "").strip().lower()
     if key == LABEL_WEEK_OFF.lower() or key == "holiday":
         return WEEK_OFF_BG
-    if "leave" in key or key == LABEL_HALF_DAY.lower() or key == "half day":
+    if "leave" in key or "half day" in key or key == LABEL_HALF_DAY.lower():
         return LEAVE_BG
     return "#FFFFFF"
 

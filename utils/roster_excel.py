@@ -34,6 +34,7 @@ LABEL_WEEK_OFF = "Week Off"
 LABEL_LEAVE = "Leave"
 LABEL_LEAVE_AFFECT_TARGET = "Leave (Affect Target)"
 LABEL_HALF_DAY = "Half day"
+LABEL_HALF_DAY_AFFECT_TARGET = "Half day (Affect Target)"
 
 DROPDOWN_VALUES = [
     LABEL_AGENT_DAY,
@@ -43,6 +44,7 @@ DROPDOWN_VALUES = [
     LABEL_LEAVE,
     LABEL_LEAVE_AFFECT_TARGET,
     LABEL_HALF_DAY,
+    LABEL_HALF_DAY_AFFECT_TARGET,
 ]
 
 NIGHT_SHIFT_START = time(19, 30)
@@ -205,12 +207,14 @@ def day_to_excel_label(day: dict | None, role_name: str | None = None) -> str:
         return LABEL_WEEK_OFF
     if day_type == "Leave":
         working_type = (day.get("working_type") or "Full").strip()
-        if working_type == "Half":
-            return LABEL_HALF_DAY
+        is_half = working_type == "Half" or bool(int(day.get("leave_is_half_day") or 0))
         affect = day.get("leave_affect_target")
         if affect is None:
             affect = day.get("affect_target")
-        if bool(int(affect or 0)):
+        affect = bool(int(affect or 0))
+        if is_half:
+            return LABEL_HALF_DAY_AFFECT_TARGET if affect else LABEL_HALF_DAY
+        if affect:
             return LABEL_LEAVE_AFFECT_TARGET
         return LABEL_LEAVE
     if day_type == "Holiday":
@@ -222,7 +226,8 @@ def day_to_excel_label(day: dict | None, role_name: str | None = None) -> str:
 
     working_type = (day.get("working_type") or "Full").strip()
     if working_type == "Half":
-        return LABEL_HALF_DAY
+        # Working half-day always reduces hours/days (same as half leave that affects target).
+        return LABEL_HALF_DAY_AFFECT_TARGET
 
     shift = (day.get("shift") or "DAY").strip().upper()
     if shift == "NIGHT":
@@ -265,10 +270,12 @@ def excel_label_to_change(
         _normalize_key(LABEL_WEEK_OFF): "week_off",
         _normalize_key(LABEL_LEAVE_AFFECT_TARGET): "leave_affect_target",
         _normalize_key(LABEL_LEAVE): "leave",
+        _normalize_key(LABEL_HALF_DAY_AFFECT_TARGET): "half_day_affect_target",
         _normalize_key(LABEL_HALF_DAY): "half_day",
         "weekoff": "week_off",
         "wo": "week_off",
         "off": "week_off",
+        "halfdayaffecttarget": "half_day_affect_target",
         "halfday": "half_day",
         "half": "half_day",
         "nighthift": "night",
@@ -285,6 +292,8 @@ def excel_label_to_change(
         lower = raw.lower()
         if "week" in lower and "off" in lower:
             kind = "week_off"
+        elif "half" in lower and ("affect" in lower or "target" in lower):
+            kind = "half_day_affect_target"
         elif "half" in lower:
             kind = "half_day"
         elif "leave" in lower and ("affect" in lower or "target" in lower):
@@ -313,9 +322,13 @@ def excel_label_to_change(
             },
         }
 
-    if kind in ("leave", "leave_affect_target"):
-        affect_target = 1 if kind == "leave_affect_target" else 0
-        label = LABEL_LEAVE_AFFECT_TARGET if affect_target else LABEL_LEAVE
+    if kind in ("leave", "leave_affect_target", "half_day", "half_day_affect_target"):
+        is_half = 1 if kind in ("half_day", "half_day_affect_target") else 0
+        affect_target = 1 if kind in ("leave_affect_target", "half_day_affect_target") else 0
+        if is_half:
+            label = LABEL_HALF_DAY_AFFECT_TARGET if affect_target else LABEL_HALF_DAY
+        else:
+            label = LABEL_LEAVE_AFFECT_TARGET if affect_target else LABEL_LEAVE
         return {
             "change_type": "LEAVE_ADD",
             "label": label,
@@ -325,20 +338,8 @@ def excel_label_to_change(
                 "end_date": date_str,
                 "reason": "Roster Excel upload",
                 "affect_target": affect_target,
-                "is_half_day": 0,
+                "is_half_day": is_half,
                 "is_rostered": 1,
-            },
-        }
-
-    if kind == "half_day":
-        return {
-            "change_type": "DAY_UPDATE",
-            "label": LABEL_HALF_DAY,
-            "change_payload": {
-                "roster_date": date_str,
-                "day_type": "Working",
-                "shift": "DAY",
-                "working_type": "Half",
             },
         }
 
@@ -395,11 +396,10 @@ def proposed_signature(change: dict) -> tuple:
     if ct == "LEAVE_ADD":
         half = int(p.get("is_half_day") or 0)
         affect = int(p.get("affect_target") or 0)
-        leave_label = (
-            LABEL_HALF_DAY
-            if half
-            else (LABEL_LEAVE_AFFECT_TARGET if affect else LABEL_LEAVE)
-        )
+        if half:
+            leave_label = LABEL_HALF_DAY_AFFECT_TARGET if affect else LABEL_HALF_DAY
+        else:
+            leave_label = LABEL_LEAVE_AFFECT_TARGET if affect else LABEL_LEAVE
         return ("Leave", "DAY", "Half" if half else "Full", leave_label, affect)
     return (
         (p.get("day_type") or "").strip(),
@@ -419,14 +419,22 @@ def is_noop_change(day: dict | None, change: dict) -> bool:
     prop_type, prop_shift, prop_wt, prop_label = prop[0], prop[1], prop[2], prop[3]
 
     if change.get("change_type") == "LEAVE_ADD":
-        if cur_type != "Leave" or cur_wt == "Half":
+        if cur_type != "Leave":
+            return False
+        payload = change.get("change_payload") or {}
+        prop_half = int(payload.get("is_half_day") or 0)
+        prop_affect = int(payload.get("affect_target") or 0)
+        cur_half = 1 if (
+            cur_wt == "Half"
+            or bool(int(day.get("leave_is_half_day") or 0))
+        ) else 0
+        if cur_half != prop_half:
             return False
         cur_affect = int(
             day.get("leave_affect_target")
             if day.get("leave_affect_target") is not None
             else day.get("affect_target") or 0
         )
-        prop_affect = int((change.get("change_payload") or {}).get("affect_target") or 0)
         return cur_affect == prop_affect
 
     if prop_type == "WeekOff":
@@ -554,7 +562,8 @@ def build_month_workbook(
         f"   - {LABEL_WEEK_OFF}",
         f"   - {LABEL_LEAVE}  (does NOT affect monthly target)",
         f"   - {LABEL_LEAVE_AFFECT_TARGET}  (DOES reduce monthly target)",
-        f"   - {LABEL_HALF_DAY}",
+        f"   - {LABEL_HALF_DAY}  (works half day; does NOT affect monthly target)",
+        f"   - {LABEL_HALF_DAY_AFFECT_TARGET}  (works half day; DOES reduce monthly target by 0.5)",
         "5. Fill Week 1, Week 2, … as needed (later weeks can stay blank for a later upload).",
         "6. Upload from Roster Management → Excel Upload. All week sheets are read together.",
         "7. You can also download / upload a single week anytime.",
@@ -626,7 +635,8 @@ def build_template_workbook(
         f"   - {LABEL_WEEK_OFF}",
         f"   - {LABEL_LEAVE}  (does NOT affect monthly target)",
         f"   - {LABEL_LEAVE_AFFECT_TARGET}  (DOES reduce monthly target)",
-        f"   - {LABEL_HALF_DAY}",
+        f"   - {LABEL_HALF_DAY}  (works half day; does NOT affect monthly target)",
+        f"   - {LABEL_HALF_DAY_AFFECT_TARGET}  (works half day; DOES reduce monthly target by 0.5)",
         "5. Save the file and upload it from Roster Management → Excel Upload.",
         "6. Review the preview, then confirm. Changes become pending requests (submit for approval as usual).",
         "7. You can still add / edit / delete days from the roster calendar after upload.",
