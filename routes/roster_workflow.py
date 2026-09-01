@@ -76,11 +76,13 @@ from utils.roster_week_lock import (
     annotate_weeks_with_locks,
     get_week_lock,
     list_week_locks,
+    lock_week,
     lock_weeks_touched_by_requests,
     unlock_week,
     week_lock_message_for_change,
     week_lock_message_for_dates,
     week_meta_for_date,
+    week_meta_for_number,
     weeks_touched_by_requests,
     month_has_pending_submitted_requests,
     weeks_from_approved_requests_for_months,
@@ -1504,6 +1506,101 @@ def roster_unlock_month():
     except Exception as e:
         conn.rollback()
         return api_response(500, f"Unlock failed: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@roster_bp.route("/week/lock", methods=["POST"])
+def roster_lock_week():
+    """Admin locks a single Mon–Sun week so managers cannot edit it."""
+    data = request.get_json(silent=True) or {}
+    logged_in_user_id, err = _require_logged_in_user(data)
+    if err:
+        return err
+
+    month_year = (data.get("month_year") or "").strip()
+    week_number = data.get("week_number")
+    if not month_year:
+        return api_response(400, "month_year is required")
+    if week_number is None:
+        return api_response(400, "week_number is required")
+
+    try:
+        week_number = int(week_number)
+    except (TypeError, ValueError):
+        return api_response(400, "week_number must be an integer")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, logged_in_user_id)
+        if not is_admin_or_super_admin(ctx.get("user_role_name", "")):
+            return api_response(403, "Only Admin or Super Admin can lock roster weeks")
+
+        meta = week_meta_for_number(month_year, week_number)
+        if not meta:
+            return api_response(400, f"Week {week_number} is not valid for {month_year}")
+
+        existing = get_week_lock(cursor, month_year, week_number)
+        if existing:
+            return api_response(400, f"Week {week_number} is already locked for {month_year}")
+
+        lock_week(
+            cursor,
+            month_year=month_year,
+            week_number=week_number,
+            week_start=meta.get("week_start"),
+            week_end=meta.get("week_end"),
+            locked_by=logged_in_user_id,
+        )
+
+        cursor.execute(
+            """
+            SELECT roster_month_id, user_id
+            FROM roster_month
+            WHERE month_year=%s AND is_active=1
+            ORDER BY roster_month_id ASC
+            LIMIT 1
+            """,
+            (month_year,),
+        )
+        sample = cursor.fetchone()
+        if sample:
+            write_audit_log(
+                cursor,
+                roster_month_id=int(sample["roster_month_id"]),
+                user_id=int(sample["user_id"]),
+                action="WEEK_LOCKED",
+                entity_type="roster_week_lock",
+                entity_id=week_number,
+                old_value=None,
+                new_value={
+                    "week_number": week_number,
+                    "week_start": str(meta.get("week_start") or ""),
+                    "week_end": str(meta.get("week_end") or ""),
+                },
+                performed_by=logged_in_user_id,
+                notes=f"Manually locked Week {week_number} for {month_year}",
+            )
+
+        conn.commit()
+        label = meta.get("label") or f"Week {week_number}"
+        return api_response(
+            200,
+            f"{label} locked for {month_year}",
+            {
+                "month_year": month_year,
+                "week_number": week_number,
+                "week_locks": list_week_locks(cursor, month_year),
+            },
+        )
+    except ValueError as e:
+        conn.rollback()
+        return api_response(400, str(e))
+    except Exception as e:
+        conn.rollback()
+        return api_response(500, f"Week lock failed: {str(e)}")
     finally:
         cursor.close()
         conn.close()

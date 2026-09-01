@@ -37,6 +37,23 @@ def ensure_week_lock_table(cursor) -> None:
     _TABLE_READY = True
 
 
+def week_meta_for_number(month_year: str, week_number: int) -> dict | None:
+    """Return Week 1..N meta for this month, or None if the number is out of range."""
+    if not month_year:
+        return None
+    try:
+        year, month = parse_month_year(month_year)
+        wn = int(week_number)
+    except (TypeError, ValueError):
+        return None
+    if wn <= 0:
+        return None
+    for w in weeks_in_month(year, month):
+        if int(w.get("week_number") or 0) == wn:
+            return w
+    return None
+
+
 def week_meta_for_date(month_year: str, d: date) -> dict | None:
     """Return Week 1..N meta for a date within month_year, or None."""
     if not month_year or not d:
