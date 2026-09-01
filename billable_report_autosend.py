@@ -10,6 +10,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
 from collections import defaultdict
+from utils.qc_auto_score import AUTO_QC_DAYS_SQL
 
 
 # -------------------------------
@@ -20,17 +21,17 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 RECIPIENTS = [
     "ummehabiba.siddiquie@transformsolution.net",
     "dharmesh.jotania@transformsolution.net",
-    "yahya.irani@transformsolution.net",
-    "amit.mandviwala@transformsolution.net",
-    "sriman.narayan@transformsolution.net",
-    "shirin.gafoor@transformsolution.net",
-    "avinash.dwivedi@transformsolution.net",
-    "manas.pradhan@transformsolution.net"
+    # "yahya.irani@transformsolution.net",
+    # "amit.mandviwala@transformsolution.net",
+    # "sriman.narayan@transformsolution.net",
+    # "shirin.gafoor@transformsolution.net",
+    # "avinash.dwivedi@transformsolution.net",
+    # "manas.pradhan@transformsolution.net"
 ]
 
 CC_RECIPIENTS = [
-    "ashfaq@transformsolution.com",
-    "seema@transformsolution.com"
+    # "ashfaq@transformsolution.com",
+    # "seema@transformsolution.com"
 ]
 
 
@@ -72,7 +73,7 @@ def fetch_data():
         report_date = today - timedelta(days=1)
 
         # TEST DATE
-        # report_date = datetime.strptime("2026-07-31", "%Y-%m-%d").date()
+        report_date = datetime.strptime("2026-09-01", "%Y-%m-%d").date()
         
         report_month = report_date.strftime("%b%Y").upper()
 
@@ -261,7 +262,7 @@ def fetch_data():
             f"""
             SELECT 
                 dwc.user_id,
-                qr.qc_score,
+                COALESCE(tqc.qc_score, qr.qc_score, auto_qc.auto_qc_score) AS qc_score,
                 %s AS qc_date
             FROM (
                 SELECT DISTINCT user_id
@@ -278,8 +279,16 @@ def fetch_data():
                 GROUP BY agent_id
             ) qr
                 ON qr.agent_id = dwc.user_id
+            LEFT JOIN temp_qc tqc
+                ON tqc.user_id = dwc.user_id
+               AND tqc.date = DATE_FORMAT(%s, '%%Y-%%m-%%d')
+            LEFT JOIN (
+                {AUTO_QC_DAYS_SQL}
+            ) auto_qc
+                ON auto_qc.user_id = dwc.user_id
+               AND auto_qc.work_date = %s
             """,
-            [report_date] + user_ids + [report_date] + user_ids,
+            [report_date] + user_ids + [report_date] + user_ids + [report_date, report_date],
         )
 
         qc_map = {r["user_id"]: r for r in cursor.fetchall()}
