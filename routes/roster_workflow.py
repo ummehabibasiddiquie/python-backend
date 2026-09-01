@@ -82,6 +82,8 @@ from utils.roster_week_lock import (
     week_lock_message_for_dates,
     week_meta_for_date,
     weeks_touched_by_requests,
+    month_has_pending_submitted_requests,
+    weeks_from_approved_requests_for_months,
 )
 from utils.roster_week_email import send_weekly_roster_after_approval
 
@@ -672,6 +674,60 @@ def _process_batch_completion(cursor, batch_id: str, reviewer_comment: str, logg
     return finalized
 
 
+def _merge_week_lists(*lists: list[dict] | None) -> list[dict]:
+    seen: set[tuple[str, int]] = set()
+    out: list[dict] = []
+    for weeks in lists:
+        for week in weeks or []:
+            key = (str(week.get("month_year") or ""), int(week.get("week_number") or 0))
+            if not key[0] or key[1] <= 0 or key in seen:
+                continue
+            seen.add(key)
+            out.append(week)
+    return out
+
+
+def _send_roster_email_after_review(
+    cursor,
+    *,
+    month_years: list[str],
+    fallback_requests: list[dict],
+    months_by_id: dict[int, dict],
+    locked_weeks: list[dict] | None,
+    logged_in_user_id: int,
+    role_name: str,
+) -> list[dict]:
+    """
+    Do not email while the month still has pending items on the approval queue.
+    After the admin finishes (queue empty), send one mail per affected week.
+    """
+    months = [str(m).strip() for m in (month_years or []) if str(m).strip()]
+    if not months:
+        return [{"skipped": True, "sent": False, "reason": "No month on requests"}]
+    if month_has_pending_submitted_requests(cursor, months):
+        return [
+            {
+                "skipped": True,
+                "sent": False,
+                "deferred": True,
+                "reason": "Weekly roster email waits until all pending approval requests for this month are reviewed",
+            }
+        ]
+    weeks = _merge_week_lists(
+        weeks_from_approved_requests_for_months(cursor, months),
+        weeks_touched_by_requests(fallback_requests, months_by_id),
+        locked_weeks,
+    )
+    if not weeks:
+        return [{"skipped": True, "sent": False, "reason": "No weeks found to email"}]
+    return send_weekly_roster_after_approval(
+        cursor,
+        weeks=weeks,
+        logged_in_user_id=logged_in_user_id,
+        role_name=role_name,
+    )
+
+
 def _approve_single_request(
     cursor,
     *,
@@ -840,14 +896,12 @@ def roster_approve_request():
         email_results = []
         if roster_month:
             try:
-                weeks = weeks_touched_by_requests(
-                    [req], {int(roster_month["roster_month_id"]): roster_month}
-                )
-                if not weeks:
-                    weeks = locked_weeks
-                email_results = send_weekly_roster_after_approval(
+                email_results = _send_roster_email_after_review(
                     cursor,
-                    weeks=weeks,
+                    month_years=[roster_month.get("month_year") or ""],
+                    fallback_requests=[req],
+                    months_by_id={int(roster_month["roster_month_id"]): roster_month},
+                    locked_weeks=locked_weeks,
                     logged_in_user_id=logged_in_user_id,
                     role_name=role_name,
                 )
@@ -1026,12 +1080,15 @@ def roster_approve_bulk():
         email_results = []
         if approved_reqs:
             try:
-                weeks = weeks_touched_by_requests(approved_reqs, months_by_id)
-                if not weeks:
-                    weeks = locked_weeks
-                email_results = send_weekly_roster_after_approval(
+                email_results = _send_roster_email_after_review(
                     cursor,
-                    weeks=weeks,
+                    month_years=[
+                        (months_by_id.get(mid) or {}).get("month_year") or ""
+                        for mid in touched_month_ids
+                    ],
+                    fallback_requests=approved_reqs,
+                    months_by_id=months_by_id,
+                    locked_weeks=locked_weeks,
                     logged_in_user_id=logged_in_user_id,
                     role_name=role_name,
                 )
@@ -1117,8 +1174,29 @@ def roster_reject_request():
         if batch_id:
             _process_batch_completion(cursor, batch_id, reviewer_comment, logged_in_user_id)
 
+        roster_month = get_roster_month(cursor, int(req["roster_month_id"]))
         conn.commit()
-        return api_response(200, "Change request rejected", {"request_id": int(request_id)})
+
+        email_results = []
+        if roster_month:
+            try:
+                email_results = _send_roster_email_after_review(
+                    cursor,
+                    month_years=[roster_month.get("month_year") or ""],
+                    fallback_requests=[req],
+                    months_by_id={int(roster_month["roster_month_id"]): roster_month},
+                    locked_weeks=None,
+                    logged_in_user_id=logged_in_user_id,
+                    role_name=role_name,
+                )
+            except Exception as mail_err:
+                print(f"[roster weekly email] reject mail failed: {mail_err}", flush=True)
+
+        return api_response(
+            200,
+            "Change request rejected",
+            {"request_id": int(request_id), "weekly_roster_emails": email_results},
+        )
     except Exception as e:
         conn.rollback()
         return api_response(500, f"Reject failed: {str(e)}")

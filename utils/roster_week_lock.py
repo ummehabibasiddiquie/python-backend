@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 
-from utils.roster_excel import weeks_in_month
+from utils.roster_excel import month_years_for_dates, week_dates, weeks_in_month
 from utils.roster_helpers import format_ist_display, parse_date, parse_month_year, now_str
 
 
@@ -378,6 +378,94 @@ def weeks_touched_by_requests(
                 }
             )
     return out
+
+
+def week_has_pending_submitted_requests(cursor, week: dict) -> bool:
+    """True if any submitted pending change still touches this Mon–Sun week."""
+    ws = parse_date(week.get("week_start"))
+    we = parse_date(week.get("week_end"))
+    if not ws or not we:
+        return False
+    month_years: list[str] = []
+    extra = (week.get("month_year") or "").strip()
+    if extra:
+        month_years.append(extra)
+    for my in month_years_for_dates(week_dates(ws)):
+        if my not in month_years:
+            month_years.append(my)
+    if not month_years:
+        return False
+    placeholders = ",".join(["%s"] * len(month_years))
+    cursor.execute(
+        f"""
+        SELECT rcr.change_type, rcr.change_payload
+        FROM roster_change_request rcr
+        JOIN roster_month rm ON rm.roster_month_id = rcr.roster_month_id
+        WHERE rcr.is_active=1
+          AND rcr.status='Pending'
+          AND rcr.batch_id IS NOT NULL AND TRIM(rcr.batch_id) != ''
+          AND rm.is_active=1
+          AND rm.month_year IN ({placeholders})
+        """,
+        tuple(month_years),
+    )
+    for row in cursor.fetchall() or []:
+        for d in dates_from_change_request(row):
+            if ws <= d <= we:
+                return True
+    return False
+
+
+def month_has_pending_submitted_requests(cursor, month_years: list[str] | None) -> bool:
+    """True while the approval queue still has submitted pending rows for these months."""
+    months = [str(m).strip() for m in (month_years or []) if str(m).strip()]
+    if not months:
+        return False
+    placeholders = ",".join(["%s"] * len(months))
+    cursor.execute(
+        f"""
+        SELECT COUNT(*) AS n
+        FROM roster_change_request rcr
+        JOIN roster_month rm ON rm.roster_month_id = rcr.roster_month_id
+        WHERE rcr.is_active=1
+          AND rcr.status='Pending'
+          AND rcr.batch_id IS NOT NULL AND TRIM(rcr.batch_id) != ''
+          AND rm.is_active=1
+          AND rm.month_year IN ({placeholders})
+        """,
+        tuple(months),
+    )
+    return int((cursor.fetchone() or {}).get("n") or 0) > 0
+
+
+def weeks_from_approved_requests_for_months(cursor, month_years: list[str] | None) -> list[dict]:
+    """Weeks touched by approved submitted requests in these months."""
+    months = [str(m).strip() for m in (month_years or []) if str(m).strip()]
+    if not months:
+        return []
+    placeholders = ",".join(["%s"] * len(months))
+    cursor.execute(
+        f"""
+        SELECT rcr.*, rm.month_year
+        FROM roster_change_request rcr
+        JOIN roster_month rm ON rm.roster_month_id = rcr.roster_month_id
+        WHERE rcr.is_active=1
+          AND rcr.status='Approved'
+          AND rcr.batch_id IS NOT NULL AND TRIM(rcr.batch_id) != ''
+          AND rm.is_active=1
+          AND rm.month_year IN ({placeholders})
+        """,
+        tuple(months),
+    )
+    rows = cursor.fetchall() or []
+    months_by_id: dict[int, dict] = {}
+    for row in rows:
+        mid = int(row["roster_month_id"])
+        months_by_id[mid] = {
+            "roster_month_id": mid,
+            "month_year": row.get("month_year"),
+        }
+    return weeks_touched_by_requests(rows, months_by_id)
 
 
 def annotate_weeks_with_locks(cursor, month_year: str, weeks: list[dict]) -> list[dict]:
