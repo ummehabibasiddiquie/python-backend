@@ -10,7 +10,6 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
 from collections import defaultdict
-from utils.qc_auto_score import AUTO_QC_DAYS_SQL
 
 
 # -------------------------------
@@ -257,12 +256,12 @@ def fetch_data():
 
         qc_map = {}
 
-        # Get QC scores for report date
+        # QC for report date: read stored scores only (temp_qc then qc_records).
         cursor.execute(
             f"""
             SELECT 
                 dwc.user_id,
-                COALESCE(tqc.qc_score, qr.qc_score, auto_qc.auto_qc_score) AS qc_score,
+                COALESCE(tqc.qc_score, qr.qc_score) AS qc_score,
                 %s AS qc_date
             FROM (
                 SELECT DISTINCT user_id
@@ -282,13 +281,8 @@ def fetch_data():
             LEFT JOIN temp_qc tqc
                 ON tqc.user_id = dwc.user_id
                AND tqc.date = DATE_FORMAT(%s, '%%Y-%%m-%%d')
-            LEFT JOIN (
-                {AUTO_QC_DAYS_SQL}
-            ) auto_qc
-                ON auto_qc.user_id = dwc.user_id
-               AND auto_qc.work_date = %s
             """,
-            [report_date] + user_ids + [report_date] + user_ids + [report_date, report_date],
+            [report_date] + user_ids + [report_date] + user_ids + [report_date],
         )
 
         qc_map = {r["user_id"]: r for r in cursor.fetchall()}
