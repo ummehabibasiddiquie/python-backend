@@ -1153,6 +1153,20 @@ def insert_roster_for_employee(
             notes="Default roster generated",
         )
 
+    insert_umt_from_roster_if_missing(
+        cursor,
+        {
+            "roster_month_id": roster_month_id,
+            "user_id": int(employee["user_id"]),
+            "month_year": month_year,
+            "monthly_target_hours": metrics["monthly_target_hours"],
+            "target_working_days": metrics["target_working_days"],
+            "extra_assigned_hours": extra_assigned,
+        },
+        created_by,
+        write_audit=write_audit,
+    )
+
     return {
         "user_id": employee["user_id"],
         "user_name": employee.get("user_name"),
@@ -1175,9 +1189,8 @@ def sync_to_user_monthly_tracker(
 ) -> dict:
     """
     Upsert user_monthly_tracker from roster metrics.
-    Called only when a roster change cycle is approved — not on generate/reset.
-    Existing monthly-goal rows are left alone until that explicit approval.
-    Rejected changes never call this.
+    Used when a change cycle is approved, and insert-only on generate
+    (see insert_umt_from_roster_if_missing) so other months are not rewritten.
     """
     user_id = int(roster_month["user_id"])
     month_year = roster_month["month_year"]
@@ -1265,6 +1278,65 @@ def sync_to_user_monthly_tracker(
             notes=reviewer_comment,
         )
     return new_value
+
+
+def insert_umt_from_roster_if_missing(cursor, roster_month: dict, performed_by: int, write_audit: bool = False) -> dict | None:
+    """
+    Create user_monthly_tracker for this user+month from roster hours/days
+    only when that month has no goal row yet. Does not update AUG/JUN/etc.
+    """
+    user_id = int(roster_month["user_id"])
+    month_year = str(roster_month["month_year"]).strip()
+    cursor.execute(
+        """
+        SELECT user_monthly_tracker_id
+        FROM user_monthly_tracker
+        WHERE user_id=%s AND month_year=%s AND is_active=1
+        LIMIT 1
+        """,
+        (user_id, month_year),
+    )
+    if cursor.fetchone():
+        return None
+    return sync_to_user_monthly_tracker(
+        cursor,
+        roster_month,
+        "Created monthly goal from roster generate",
+        performed_by,
+        approval_status=None,
+        action="ROSTER_GENERATED_SYNCED_TO_UMT",
+        write_audit=write_audit,
+    )
+
+
+def fill_missing_umt_for_roster_month(cursor, month_year: str, performed_by: int) -> int:
+    """Insert missing monthly-goal rows for every active roster in this month."""
+    cursor.execute(
+        """
+        SELECT
+            rm.roster_month_id,
+            rm.user_id,
+            rm.month_year,
+            rm.monthly_target_hours,
+            rm.target_working_days,
+            rm.extra_assigned_hours
+        FROM roster_month rm
+        LEFT JOIN user_monthly_tracker umt
+          ON umt.user_id = rm.user_id
+         AND umt.month_year = rm.month_year
+         AND umt.is_active = 1
+        WHERE rm.is_active = 1
+          AND rm.month_year = %s
+          AND umt.user_monthly_tracker_id IS NULL
+        """,
+        (str(month_year).strip(),),
+    )
+    rows = cursor.fetchall() or []
+    created = 0
+    for row in rows:
+        if insert_umt_from_roster_if_missing(cursor, row, performed_by, write_audit=False):
+            created += 1
+    return created
 
 
 def enrich_roster_day_for_response(day: dict, holiday_lookup: dict[int, dict] | None = None) -> dict:

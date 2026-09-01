@@ -25,6 +25,7 @@ from utils.roster_helpers import (
     is_super_admin,
     load_active_holidays,
     load_tracker_baselines_map,
+    fill_missing_umt_for_roster_month,
     FULL_DAY_HOURS,
     format_ist_display,
     month_calendar_has_lock,
@@ -202,6 +203,10 @@ def generate_roster():
             else:
                 skipped.append(result)
 
+        goals_created = fill_missing_umt_for_roster_month(
+            cursor, target_month_year, logged_in_user_id
+        )
+
         conn.commit()
         return api_response(
             200,
@@ -210,6 +215,7 @@ def generate_roster():
                 "month_year": target_month_year,
                 "created_count": len(created),
                 "skipped_count": len(skipped),
+                "monthly_goals_created": goals_created,
                 "created": created,
                 "skipped": skipped,
             },
@@ -284,6 +290,7 @@ def generate_roster_for_employee():
             conn.rollback()
             return api_response(400, result.get("reason", "Roster generation failed"), result)
 
+        fill_missing_umt_for_roster_month(cursor, target_month_year, logged_in_user_id)
         conn.commit()
         return api_response(200, "Employee roster generated successfully", result)
     except Exception as e:
