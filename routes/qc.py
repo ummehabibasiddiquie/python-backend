@@ -214,6 +214,46 @@ def upsert_temp_qc():
     if qc_score is None and assigned_hours is None:
         return response(False, "Provide qc_score or assigned_hours (at least one).", None, 400)
 
+    if qc_score is not None:
+        conn = None
+        cur = None
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor(dictionary=True)
+            from utils.qc_auto_score import day_is_manual_qc_only
+
+            user_role = get_user_role(cur, int(logged_in_user_id))
+            role_norm = (user_role or "").replace("_", " ").strip().lower()
+            qc_roles = {
+                "qa",
+                "qa agent",
+                "admin",
+                "super admin",
+                "project manager",
+                "assistant manager",
+            }
+            if role_norm not in qc_roles and "qa" not in role_norm:
+                return response(False, "Permission denied. You cannot update QC score.", None, 403)
+            if not day_is_manual_qc_only(cur, int(user_id), qc_date):
+                return response(
+                    False,
+                    "QC score can be entered only when the agent worked only on project 7 and/or 8 that day.",
+                    None,
+                    403,
+                )
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            return response(False, f"QC score permission check failed: {str(e)}", None, 500)
+        finally:
+            try:
+                if cur:
+                    cur.close()
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
     # Permission check: Only Admin, Super Admin, Assistant Manager and Project Manager can update assigned_hours
     if assigned_hours is not None:
         conn = None

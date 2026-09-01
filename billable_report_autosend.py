@@ -430,7 +430,7 @@ def generate_html(report_date, data_rows):
     
     html = f"""
     <p><b>Delivered billable hours on {day_str} {month_year}</b></p>
-    <p><i><b>Note: This is the updated version of the report with correct Target and calculations.</b></i></p>
+    <p><i><b>Note: We will be monitoring and testing this report for this week. Assigned hours, targets, and related figures are now generated from the Roster module, which was recently uploaded.</b></i></p>
 
     <table border="1" cellpadding="3" cellspacing="0"
     style="border-collapse:collapse;font-family:Arial;font-size:11px;width:auto">

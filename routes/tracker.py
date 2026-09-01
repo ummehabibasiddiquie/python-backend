@@ -4,6 +4,7 @@ from utils.response import api_response
 from utils.api_log_utils import log_api_call
 from utils.cloudinary_utils import upload_to_cloudinary, delete_from_cloudinary, FOLDER_TRACKER
 from datetime import datetime, timedelta
+from utils.qc_auto_score import AUTO_QC_DAYS_SQL, MANUAL_QC_DAYS_SQL, sync_auto_qc_score_for_day
 import logging
 import re
 import os
@@ -350,8 +351,10 @@ def add_tracker():
                 billable_hours, actual_billable_hours, tracker_file, tracker_note, shift, 1, now_str, now_str
             ),
         )
-        conn.commit()
         tracker_id = cursor.lastrowid
+        work_dt = _parse_tracker_date_source(now_str)
+        sync_auto_qc_score_for_day(cursor, user_id, work_dt or now_str)
+        conn.commit()
 
         device_id = form.get("device_id")
         device_type = form.get("device_type")
@@ -535,6 +538,11 @@ def update_tracker():
                 tracker_id,
             ),
         )
+        sync_auto_qc_score_for_day(
+            cursor,
+            tracker["user_id"],
+            _parse_tracker_date_source(date_time) or date_time,
+        )
         conn.commit()
 
         # if DB commit succeeded, clear rollback marker
@@ -580,7 +588,7 @@ def delete_tracker():
 
     try:
         cursor.execute(
-            "SELECT tracker_id, user_id, tracker_file FROM task_work_tracker WHERE tracker_id=%s",
+            "SELECT tracker_id, user_id, tracker_file, date_time FROM task_work_tracker WHERE tracker_id=%s",
             (tracker_id,),
         )
         tracker = cursor.fetchone()
@@ -600,7 +608,12 @@ def delete_tracker():
                 "DELETE FROM tracker_records WHERE file_path = %s",
                 (tracker_file,)
             )
- 
+
+        sync_auto_qc_score_for_day(
+            cursor,
+            tracker["user_id"],
+            _parse_tracker_date_source(tracker.get("date_time")) or tracker.get("date_time"),
+        )
         conn.commit()
  
         # ✅ delete from Cloudinary
@@ -1134,7 +1147,8 @@ def view_daily_trackers():
                 -- QC score from temp_qc / qc_records.
                 -- Assigned hours: source of truth is temp_qc (written by assign_daily_hours cron).
                 -- Fallback to roster Working/Half + tenure only when no temp_qc row yet.
-                COALESCE(tqc.qc_score, qr.qc_score) AS qc_score,
+                COALESCE(tqc.qc_score, qr.qc_score, auto_qc.auto_qc_score) AS qc_score,
+                COALESCE(manual_qc.can_manual_qc, 0) AS can_manual_qc,
                 COALESCE(
                     tqc.assigned_hours,
                     CASE
@@ -1143,7 +1157,7 @@ def view_daily_trackers():
                          OR COALESCE(rl.is_half_day, 0) = 1
                       ) THEN
                         ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
-                      WHEN rd.day_type IN ('Leave', 'WeekOff', 'Holiday') THEN 0
+                      WHEN rd.day_type IN ('Leave', 'WeekOff', 'Holiday', 'Left', 'PreJoin') THEN 0
                       WHEN rd.working_type = 'Half' THEN
                         ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
                       WHEN rd.roster_day_id IS NOT NULL THEN
@@ -1159,6 +1173,7 @@ def view_daily_trackers():
                   WHEN rd.day_type = 'WeekOff' THEN 'Week Off'
                   WHEN rd.day_type = 'Holiday' THEN 'Holiday'
                   WHEN rd.day_type = 'PreJoin' THEN 'Pre Join'
+                  WHEN rd.day_type = 'Left' THEN 'Left'
                   WHEN rd.day_type = 'Leave' AND (
                         rd.working_type = 'Half'
                      OR COALESCE(rl.is_half_day, 0) = 1
@@ -1232,6 +1247,18 @@ def view_daily_trackers():
             LEFT JOIN temp_qc tqc
               ON tqc.user_id = dwc.user_id
              AND tqc.date = DATE_FORMAT(dwc.work_date, '%Y-%m-%d')
+
+            LEFT JOIN (
+                {AUTO_QC_DAYS_SQL}
+            ) auto_qc
+              ON auto_qc.user_id = dwc.user_id
+             AND auto_qc.work_date = dwc.work_date
+
+            LEFT JOIN (
+                {MANUAL_QC_DAYS_SQL}
+            ) manual_qc
+              ON manual_qc.user_id = dwc.user_id
+             AND manual_qc.work_date = dwc.work_date
 
             LEFT JOIN roster_month rm
               ON rm.user_id = dwc.user_id

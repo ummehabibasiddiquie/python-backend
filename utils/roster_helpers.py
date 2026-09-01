@@ -86,7 +86,7 @@ def assigned_hours_for_roster_day(
       Full Working + tenure < 1  → 9 * tenure
       Half Working / half-day leave + tenure >= 1 → 4.5
       Half Working / half-day leave + tenure < 1  → 4.5 * tenure
-      Full Leave / WeekOff / Holiday → 0
+      Full Leave / WeekOff / Holiday / Left / PreJoin → 0
       No roster day for date → full-day tenure hours (same as Full Working)
     """
     factor = tenure_cap(user_tenure)
@@ -546,6 +546,8 @@ def roster_day_status_label(
         return "Holiday"
     if dt == "PreJoin":
         return "Pre Join"
+    if dt == "Left":
+        return "Left"
     if dt == "Leave":
         if half or wt == "Half":
             return "Half Day Leave"
@@ -998,12 +1000,20 @@ def generate_roster_days_for_employee(
     daily_full_hours: float | None = None,
 ) -> list[dict]:
     role_name = (employee.get("role_name") or "").strip().lower()
+    left_from = parse_date(employee.get("deactivated_at"))
     days: list[dict] = []
     current = roster_start
     while current <= roster_end:
-        days.append(
-            build_default_day(current, role_name, holidays, daily_full_hours=daily_full_hours)
+        day = build_default_day(
+            current, role_name, holidays, daily_full_hours=daily_full_hours
         )
+        if left_from and current >= left_from:
+            day["day_type"] = "Left"
+            day["working_hours"] = 0.0
+            day["shift_start"] = None
+            day["shift_end"] = None
+            day["leave_id"] = None
+        days.append(day)
         current += timedelta(days=1)
     return days
 
@@ -1571,6 +1581,10 @@ def enrich_roster_day_for_response(day: dict, holiday_lookup: dict[int, dict] | 
         labels.append("Working")
     elif enriched.get("day_type") == "Leave":
         labels.append("Leave")
+    elif enriched.get("day_type") == "Left":
+        labels.append("Left")
+    elif enriched.get("day_type") == "PreJoin":
+        labels.append("PreJoin")
 
     if is_holiday_on_week_off:
         labels.append("Holiday")

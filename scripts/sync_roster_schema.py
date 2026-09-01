@@ -104,7 +104,7 @@ CREATE_TABLES_SQL = [
           roster_day_id INT NOT NULL AUTO_INCREMENT,
           roster_month_id INT NOT NULL,
           roster_date DATE NOT NULL,
-          day_type ENUM('Working','WeekOff','Holiday','Leave','PreJoin') NOT NULL DEFAULT 'Working',
+          day_type ENUM('Working','WeekOff','Holiday','Leave','PreJoin','Left') NOT NULL DEFAULT 'Working',
           shift ENUM('DAY','NIGHT') NOT NULL DEFAULT 'DAY',
           shift_start TIME DEFAULT NULL,
           shift_end TIME DEFAULT NULL,
@@ -275,6 +275,33 @@ def add_missing_columns(cursor, table: str, columns: list[tuple[str, str]]) -> l
     return added
 
 
+def ensure_roster_day_type_enum(cursor) -> None:
+    if not table_exists(cursor, "roster_day"):
+        return
+    cursor.execute(
+        """
+        SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'roster_day'
+          AND COLUMN_NAME = 'day_type'
+        """
+    )
+    row = cursor.fetchone() or {}
+    col_type = str(row.get("COLUMN_TYPE") or row.get("column_type") or "")
+    if "Left" in col_type:
+        print("skip roster_day.day_type enum (Left already present)")
+        return
+    cursor.execute(
+        """
+        ALTER TABLE roster_day
+          MODIFY COLUMN day_type ENUM(
+            'Working','WeekOff','Holiday','Leave','PreJoin','Left'
+          ) NOT NULL DEFAULT 'Working'
+        """
+    )
+    print("ensured roster_day.day_type enum includes Left")
+
+
 def ensure_change_request_status_enum(cursor) -> None:
     if not table_exists(cursor, "roster_change_request"):
         return
@@ -398,6 +425,7 @@ def main() -> None:
                     print("added idx_roster_change_batch")
 
         migrate_week_lock_table(cursor)
+        ensure_roster_day_type_enum(cursor)
 
         conn.commit()
         user_after = table_row_count(cursor, "tfs_user")

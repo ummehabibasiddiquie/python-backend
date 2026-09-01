@@ -37,6 +37,7 @@ LABEL_LEAVE = "Leave"
 LABEL_LEAVE_AFFECT_TARGET = "Leave (Affect Target)"
 LABEL_HALF_DAY = "Half day"
 LABEL_HALF_DAY_AFFECT_TARGET = "Half day (Affect Target)"
+LABEL_LEFT = "Left"
 
 DROPDOWN_VALUES = [
     LABEL_AGENT_DAY,
@@ -48,6 +49,7 @@ DROPDOWN_VALUES = [
     LABEL_LEAVE_AFFECT_TARGET,
     LABEL_HALF_DAY,
     LABEL_HALF_DAY_AFFECT_TARGET,
+    LABEL_LEFT,
 ]
 
 NIGHT_SHIFT_START = time(19, 30)
@@ -206,6 +208,8 @@ def day_to_excel_label(day: dict | None, role_name: str | None = None) -> str:
     if not day:
         return ""
     day_type = (day.get("day_type") or "").strip()
+    if day_type == "Left":
+        return LABEL_LEFT
     if day_type == "Leave":
         working_type = (day.get("working_type") or "Full").strip()
         is_half = working_type == "Half" or bool(int(day.get("leave_is_half_day") or 0))
@@ -272,6 +276,7 @@ def excel_label_to_change(
         _normalize_key(LABEL_LEAVE): "leave",
         _normalize_key(LABEL_HALF_DAY_AFFECT_TARGET): "half_day_affect_target",
         _normalize_key(LABEL_HALF_DAY): "half_day",
+        _normalize_key(LABEL_LEFT): "left",
         "weekoff": "week_off",
         "wo": "week_off",
         "off": "week_off",
@@ -286,6 +291,9 @@ def excel_label_to_change(
         "leaveaffecttarget": "leave_affect_target",
         "leaveaffectsarget": "leave_affect_target",
         "leavewithtarget": "leave_affect_target",
+        "left": "left",
+        "exited": "left",
+        "resigned": "left",
     }
     kind = alias_map.get(key)
     if not kind:
@@ -303,6 +311,8 @@ def excel_label_to_change(
             kind = "leave_affect_target"
         elif "leave" in lower:
             kind = "leave"
+        elif lower in ("left", "exit", "exited") or (lower.startswith("left") and "leave" not in lower):
+            kind = "left"
         elif "7:30" in lower.replace(" ", "") and ("pm" in lower or "p.m" in lower):
             kind = "night"
         elif "10:00" in lower.replace(" ", "") or "10am" in lower.replace(" ", ""):
@@ -311,6 +321,19 @@ def excel_label_to_change(
             kind = "agent_day"
         else:
             raise ValueError(f"Unrecognized value: {raw}")
+
+    if kind == "left":
+        return {
+            "change_type": "DAY_UPDATE",
+            "label": LABEL_LEFT,
+            "change_payload": {
+                "roster_date": date_str,
+                "day_type": "Left",
+                "shift": "DAY",
+                "working_type": "Full",
+                "working_hours": 0,
+            },
+        }
 
     if kind == "week_off":
         return {
@@ -453,6 +476,8 @@ def is_noop_change(day: dict | None, change: dict) -> bool:
         )
         return cur_affect == prop_affect
 
+    if prop_type == "Left":
+        return cur_type == "Left"
     if prop_type == "Holiday":
         return cur_type == "Holiday"
     if prop_type == "WeekOff":
@@ -617,6 +642,7 @@ def build_month_workbook(
         f"   - {LABEL_LEAVE_AFFECT_TARGET}  (DOES reduce monthly target)",
         f"   - {LABEL_HALF_DAY}  (works half day; does NOT affect monthly target)",
         f"   - {LABEL_HALF_DAY_AFFECT_TARGET}  (works half day; DOES reduce monthly target by 0.5)",
+        f"   - {LABEL_LEFT}  (agent left; ALWAYS reduces working days and monthly target on weekdays)",
         "5. Fill Week 1, Week 2, … as needed (later weeks can stay blank for a later upload).",
         "6. Upload from Roster Management → Excel Upload. All week sheets are read together.",
         "7. You can also download / upload a single week anytime.",
@@ -691,6 +717,7 @@ def build_template_workbook(
         f"   - {LABEL_LEAVE_AFFECT_TARGET}  (DOES reduce monthly target)",
         f"   - {LABEL_HALF_DAY}  (works half day; does NOT affect monthly target)",
         f"   - {LABEL_HALF_DAY_AFFECT_TARGET}  (works half day; DOES reduce monthly target by 0.5)",
+        f"   - {LABEL_LEFT}  (agent left; ALWAYS reduces working days and monthly target on weekdays)",
         "5. Save the file and upload it from Roster Management → Excel Upload.",
         "6. Review the preview, then confirm. Changes become pending requests (submit for approval as usual).",
         "7. You can still add / edit / delete days from the roster calendar after upload.",

@@ -594,7 +594,10 @@ def weekoff_swap_preview(cursor, roster_month_id: int, new_week_off_dates: list[
         d = parse_date(day.get("roster_date"))
         if not d:
             continue
-        currently_off = day.get("day_type") == "WeekOff"
+        current_type = (day.get("day_type") or "").strip()
+        if current_type in ("Left", "PreJoin"):
+            continue
+        currently_off = current_type == "WeekOff"
         should_off = d in new_offs
 
         if currently_off == should_off:
@@ -715,7 +718,7 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
         wt_try = (working_type or "Full").strip()
         if day_type_try == "WeekOff":
             day_type = "Holiday"
-        if day_type_try == "Leave" or wt_try == "Half":
+        if day_type_try not in ("Left",) and (day_type_try == "Leave" or wt_try == "Half"):
             raise ValueError(
                 "Leave or half day cannot be added on a Holiday. "
                 "Set a working day or night shift if this person must work."
@@ -743,11 +746,17 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
     # refresh_roster_month_metrics / list API re-apply Leave from roster_leave
     # and calendar + target look unchanged after approve.
     day_type_norm = (day_type or "").strip()
-    clear_leave = day_type_norm in ("Working", "WeekOff", "Holiday") and (
+    if day_type_norm == "Left":
+        working_type = "Full"
+        working_hours = 0.0
+        shift_start = None
+        shift_end = None
+
+    clear_leave = day_type_norm in ("Working", "WeekOff", "Holiday", "Left") and (
         old_day_type == "Leave" or bool(old_leave_id)
     )
     # Also clear if any active leave still covers this date (DB day may already be Working)
-    if day_type_norm in ("Working", "WeekOff", "Holiday") and not clear_leave:
+    if day_type_norm in ("Working", "WeekOff", "Holiday", "Left") and not clear_leave:
         cursor.execute(
             """
             SELECT leave_id FROM roster_leave
@@ -762,7 +771,7 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
 
     # Leave → Working: ensure this person gets that day's assigned hours back
     restoring_to_working = day_type_norm == "Working" and (
-        old_day_type in ("Leave", "Holiday", "WeekOff") or clear_leave
+        old_day_type in ("Leave", "Holiday", "WeekOff", "Left") or clear_leave
     )
     if restoring_to_working:
         wt = (working_type or "Full").strip() or "Full"
@@ -823,6 +832,7 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
         "Leave",
         "WeekOff",
         "Holiday",
+        "Left",
     ):
         _sync_temp_qc_assigned_for_day(
             cursor,
@@ -832,6 +842,20 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
             working_type=working_type,
             is_half_leave=False,
         )
+
+    apply_rest = payload.get("apply_through_month_end")
+    if day_type_norm == "Left" and (
+        apply_rest is True or str(apply_rest).strip() in ("1", "true", "True")
+    ):
+        end = parse_date(roster_month.get("roster_end_date"))
+        next_d = roster_date + timedelta(days=1)
+        while end and next_d <= end:
+            rest = dict(payload)
+            rest["roster_date"] = next_d.isoformat()
+            rest["day_type"] = "Left"
+            rest["apply_through_month_end"] = 0
+            apply_day_update(cursor, roster_month, rest)
+            next_d += timedelta(days=1)
 
 
 def _remove_date_from_one_leave(

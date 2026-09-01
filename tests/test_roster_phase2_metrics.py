@@ -168,6 +168,62 @@ class RosterPhase2MetricsTest(unittest.TestCase):
         self.assertEqual(metrics["target_working_days"], 2.5)
         self.assertEqual(metrics["monthly_target_hours"], 22.5)
 
+    def test_left_weekday_always_reduces_calendar_and_target(self):
+        days = [
+            self._working_day(date(2026, 9, 21)),
+            {
+                "roster_date": date(2026, 9, 22),
+                "day_type": "Left",
+                "working_type": "Full",
+                "working_hours": 0,
+            },
+            self._working_day(date(2026, 9, 23)),
+            self._working_day(date(2026, 9, 24)),
+        ]
+        metrics = recalculate_metrics_from_days_and_leaves(days, [])
+        self.assertEqual(metrics["calendar_working_days"], 3.0)
+        self.assertEqual(metrics["target_working_days"], 3.0)
+        self.assertEqual(metrics["monthly_target_hours"], 27.0)
+
+    def test_left_weekend_does_not_extra_cut_target(self):
+        days = [
+            self._working_day(date(2026, 9, 25)),  # Friday
+            {
+                "roster_date": date(2026, 9, 26),
+                "day_type": "Left",
+                "working_type": "Full",
+                "working_hours": 0,
+            },
+            {
+                "roster_date": date(2026, 9, 27),
+                "day_type": "Left",
+                "working_type": "Full",
+                "working_hours": 0,
+            },
+            self._working_day(date(2026, 9, 28)),  # Monday
+        ]
+        metrics = recalculate_metrics_from_days_and_leaves(days, [])
+        self.assertEqual(metrics["calendar_working_days"], 2.0)
+        self.assertEqual(metrics["target_working_days"], 2.0)
+        self.assertEqual(metrics["monthly_target_hours"], 18.0)
+
+    def test_left_on_holiday_does_not_double_cut(self):
+        days = [
+            self._working_day(date(2026, 9, 21)),
+            {
+                "roster_date": date(2026, 9, 22),
+                "day_type": "Left",
+                "holiday_id": 9,
+                "working_type": "Full",
+                "working_hours": 0,
+            },
+            self._working_day(date(2026, 9, 23)),
+        ]
+        metrics = recalculate_metrics_from_days_and_leaves(days, [])
+        self.assertEqual(metrics["calendar_working_days"], 2.0)
+        self.assertEqual(metrics["target_working_days"], 2.0)
+        self.assertEqual(metrics["monthly_target_hours"], 18.0)
+
 
 if __name__ == "__main__":
     unittest.main()

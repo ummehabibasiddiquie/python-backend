@@ -165,6 +165,22 @@ class RosterScenarioVerification(unittest.TestCase):
         metrics = compute_roster_metrics(days)
         self.assertEqual(metrics["calendar_working_days"], float(baseline))
 
+    def test_deactivated_from_date_marks_left(self):
+        employee = {
+            "user_id": 2,
+            "role_name": "agent",
+            "joining_date": date(2026, 9, 1),
+            "deactivated_at": date(2026, 9, 21),
+        }
+        days = generate_roster_days_for_employee(
+            employee, date(2026, 9, 1), date(2026, 9, 30), {}
+        )
+        left = [d for d in days if d["roster_date"] >= date(2026, 9, 21)]
+        before = [d for d in days if d["roster_date"] < date(2026, 9, 21)]
+        self.assertTrue(left)
+        self.assertTrue(all(d["day_type"] == "Left" for d in left))
+        self.assertTrue(all(d["day_type"] != "Left" for d in before))
+
     def test_display_labels_not_used_in_metrics(self):
         days = [
             {

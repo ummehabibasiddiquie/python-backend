@@ -36,6 +36,20 @@ class RosterExcelHolidayTest(unittest.TestCase):
         }
         self.assertEqual(day_to_excel_label(day), LABEL_NIGHT)
 
+    def test_left_label_roundtrip(self):
+        from utils.roster_excel import LABEL_LEFT
+
+        day = {"day_type": "Left"}
+        self.assertEqual(day_to_excel_label(day), LABEL_LEFT)
+        change = excel_label_to_change(LABEL_LEFT, date(2026, 9, 21))
+        self.assertEqual(change["change_payload"]["day_type"], "Left")
+
+    def test_left_on_holiday_exports_left_not_holiday(self):
+        from utils.roster_excel import LABEL_LEFT
+
+        day = {"day_type": "Left", "holiday_id": 1}
+        self.assertEqual(day_to_excel_label(day), LABEL_LEFT)
+
     def test_weekoff_upload_on_holiday_stays_holiday(self):
         day = {"day_type": "Holiday", "holiday_id": 1}
         change = excel_label_to_change(LABEL_WEEK_OFF, date(2026, 9, 7))

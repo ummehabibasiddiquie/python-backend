@@ -132,6 +132,9 @@ def recalculate_metrics_from_days_and_leaves(
     - leave with affect_target=Yes reduces target (full −1, half −0.5)
     - leave with affect_target=No does not reduce target
     - Working-type Half on a universal day reduces target by 0.5
+    - Left on a universal Mon–Fri (not a holiday) always reduces calendar
+      working days and target by a full day. Weekend / holiday Left does not
+      extra-cut (those days were never in the target).
     """
     leaves = leaves or []
     full_day_hours = infer_full_day_hours_from_days(days)
@@ -164,6 +167,13 @@ def recalculate_metrics_from_days_and_leaves(
         leave = leave_by_date.get(d) if d else None
         day_type = (day.get("day_type") or "").strip()
         working_type = (day.get("working_type") or "Full").strip()
+
+        if day_type == "Left":
+            if day.get("holiday_id"):
+                continue
+            penalty_days += 1.0
+            penalty_hours += full_day_hours
+            continue
 
         if leave and int(leave.get("is_active", 1)) and int(leave.get("affect_target", 0)):
             if day_type == "Leave":

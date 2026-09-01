@@ -3,6 +3,7 @@
 from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
+from utils.qc_auto_score import AUTO_QC_DAYS_WITHOUT_EXISTING_SCORE_SQL
 from utils.time_ist import now_str
 from datetime import datetime, timedelta
 
@@ -305,7 +306,7 @@ def list_user_monthly_targets():
                 AND {TRACKER_YEAR_MONTH}=%s
             """
 
-            qc_join = """
+            qc_join = f"""
                 LEFT JOIN (
                     SELECT
                         x.user_id,
@@ -334,6 +335,10 @@ def list_user_monthly_targets():
                             qr.agent_id,
                             DATE(qr.date_of_file_submission)
 
+                        UNION ALL
+
+                        {AUTO_QC_DAYS_WITHOUT_EXISTING_SCORE_SQL}
+
                     ) x
 
                     WHERE DATE_FORMAT(
@@ -360,7 +365,7 @@ def list_user_monthly_targets():
                 AND twt.is_active=1
             """
 
-            qc_join = """
+            qc_join = f"""
                 LEFT JOIN (
                     SELECT
                         x.user_id,
@@ -388,6 +393,10 @@ def list_user_monthly_targets():
                         GROUP BY
                             qr.agent_id,
                             DATE(qr.date_of_file_submission)
+
+                        UNION ALL
+
+                        {AUTO_QC_DAYS_WITHOUT_EXISTING_SCORE_SQL}
 
                     ) x
                     GROUP BY x.user_id

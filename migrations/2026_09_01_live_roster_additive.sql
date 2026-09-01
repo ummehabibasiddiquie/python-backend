@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS `roster_day` (
   `roster_day_id` INT NOT NULL AUTO_INCREMENT,
   `roster_month_id` INT NOT NULL,
   `roster_date` DATE NOT NULL,
-  `day_type` ENUM('Working','WeekOff','Holiday','Leave','PreJoin') NOT NULL DEFAULT 'Working',
+  `day_type` ENUM('Working','WeekOff','Holiday','Leave','PreJoin','Left') NOT NULL DEFAULT 'Working',
   `shift` ENUM('DAY','NIGHT') NOT NULL DEFAULT 'DAY',
   `shift_start` TIME DEFAULT NULL,
   `shift_end` TIME DEFAULT NULL,

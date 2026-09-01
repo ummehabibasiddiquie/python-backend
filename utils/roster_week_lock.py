@@ -83,6 +83,19 @@ def dates_from_change_payload(change_type: str, payload: dict | None) -> list[da
 
     if change_type in ("DAY_UPDATE", "EXTRA_HOURS_UPDATE", "LEAVE_DELETE"):
         add(payload.get("roster_date"))
+        apply_rest = payload.get("apply_through_month_end")
+        if change_type == "DAY_UPDATE" and (
+            apply_rest is True or str(apply_rest).strip() in ("1", "true", "True")
+        ):
+            start = parse_date(payload.get("roster_date"))
+            end = parse_date(
+                payload.get("through_end_date") or payload.get("roster_end_date")
+            )
+            if start and end and end >= start:
+                cur = start
+                while cur <= end:
+                    out.append(cur)
+                    cur += timedelta(days=1)
     elif change_type in ("LEAVE_ADD", "LEAVE_UPDATE"):
         start = parse_date(payload.get("start_date"))
         end = parse_date(payload.get("end_date")) or start
