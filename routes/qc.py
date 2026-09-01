@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify
+from datetime import datetime
 from config import get_db_connection
 from utils.time_ist import now_ist
 
@@ -222,11 +223,14 @@ def upsert_temp_qc():
             cur = conn.cursor(dictionary=True)
             
             user_role = get_user_role(cur, int(logged_in_user_id))
-            
-            # Allowed roles for assigned_hours: admin, super admin, project manager, assistant manager
-            allowed_roles = ["admin", "super admin", "project manager", "assistant manager"]
-            
-            if user_role not in allowed_roles:
+            role_norm = (user_role or "").replace("_", " ").strip().lower()
+            allowed_roles = {
+                "admin",
+                "super admin",
+                "project manager",
+                "assistant manager",
+            }
+            if "qa" in role_norm or role_norm not in allowed_roles:
                 return response(False, "Permission denied. Only Admin, Super Admin, Assistant Manager and Project Manager can update assigned hours.", None, 403)
                 
         except Exception as e:
