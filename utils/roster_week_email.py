@@ -25,7 +25,7 @@ RECIPIENTS = [
 ]
 
 CC_RECIPIENTS = [
-    #"dharmesh.jotania@transformsolution.com"
+    "dharmesh.jotania@transformsolution.com"
 ]
 
 TEAM_COLORS = ["#F8CBAD", "#D5A6E6", "#F4CCCC", "#D9EAD3"]
