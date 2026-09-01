@@ -175,6 +175,14 @@ def user_handler():
     assistant_manager = _to_id_array_json(form.get("assistant_manager"))
     qa = _to_id_array_json(form.get("qa"))
 
+    joining_date_raw = (form.get("joining_date") or "").strip()
+    joining_date = None
+    if joining_date_raw:
+        try:
+            joining_date = datetime.strptime(joining_date_raw[:10], "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            return api_response(400, "Invalid joining_date format. Expected YYYY-MM-DD")
+
     if not is_valid_username(user_name):
         return api_response(400, "Username must contain only alphabets")
 
@@ -234,9 +242,10 @@ def user_handler():
                 team_id,
                 device_id,
                 device_type,
+                joining_date,
                 created_date,
                 updated_date
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             user_name,
             profile_picture,
@@ -256,6 +265,7 @@ def user_handler():
             team,
             device_id,
             device_type,
+            joining_date,
             now,
             now
         ))

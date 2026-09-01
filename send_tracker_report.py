@@ -16,14 +16,16 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 # -------------------------------
 RECIPIENTS = [
     "ummehabiba.siddiquie@transformsolution.net",
-    "dharmesh.jotania@transformsolution.net",
-    "yahya.irani@transformsolution.net",
-    "amit.mandviwala@transformsolution.net",
-    "sriman.narayan@transformsolution.net",
-    "shirin.gafoor@transformsolution.net",
-    "avinash.dwivedi@transformsolution.net",
-    "manas.pradhan@transformsolution.net",
-    "ishan.sharma@transformsolution.net"
+    # "mohsin.pathan@transformsolution.net",
+    # "dharmesh.jotania@transformsolution.net",
+    # "venkateshwaran.iyer@transformsolution.net",
+    # "yahya.irani@transformsolution.net",
+    # "amit.mandviwala@transformsolution.net",
+    # "sriman.narayan@transformsolution.net",
+    # "shirin.gafoor@transformsolution.net",
+    # "avinash.dwivedi@transformsolution.net",
+    # "manas.pradhan@transformsolution.net",
+    # "ishan.sharma@transformsolution.net"
 ]
 
 CC_RECIPIENTS = [
@@ -221,7 +223,7 @@ def send_email(to_emails, subject, html_body):
         server.ehlo()
         server.login(user, password)
         server.sendmail(user, all_recipients, msg.as_string())
-    print("✅ Email sent successfully")
+    print("Email sent successfully")
 
 # -------------------------------
 # MAIN

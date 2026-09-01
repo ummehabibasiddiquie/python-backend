@@ -13,15 +13,12 @@ from utils.email_utils import send_email
 
 # ✅ NEW: use same encryption as user.py
 from utils.security import encrypt_password
+from utils.time_ist import now_str as _now_str
 
 password_reset_bp = Blueprint("password_reset", __name__)
 
 RESET_SALT = "tfshrms-password-reset"
 serializer = URLSafeTimedSerializer(RESET_SECRET_KEY)
-
-
-def _now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _load_token(token: str):

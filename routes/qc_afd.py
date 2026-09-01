@@ -3,13 +3,10 @@
 from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
+from utils.time_ist import now_str
 from datetime import datetime
 
 qc_afd_bp = Blueprint("qc_afd", __name__)
-
-
-def now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ---------------------------------------------------------

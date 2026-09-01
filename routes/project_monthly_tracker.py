@@ -1,12 +1,10 @@
 from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
+from utils.time_ist import now_str
 from datetime import datetime
 
 project_monthly_tracker_bp = Blueprint("project_monthly_tracker",__name__)
-
-def now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def validate_required(data: dict, fields: list[str]) -> str | None:
     for f in fields:

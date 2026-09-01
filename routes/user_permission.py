@@ -58,44 +58,13 @@ def user_list_with_permissions():
             LEFT JOIN user_permission up ON up.user_id = u.user_id
 
             WHERE u.is_active = 1 AND u.is_delete = 1
+              AND LOWER(r.role_name) NOT IN ('agent', 'qa')
         """
         params = []
 
-        # 4) Role-based filtering (handle multiple manager/QA assignments in JSON arrays)
-        logged_in_id_str = str(logged_in_user_id)
-        logged_in_id_int = int(logged_in_user_id)
-        
-        if role == "qa":
-            query += """ AND (
-                u.qa_id = %s 
-                OR u.qa_id = %s
-                OR (JSON_VALID(u.qa_id) AND (
-                    JSON_CONTAINS(u.qa_id, JSON_ARRAY(%s)) 
-                    OR JSON_CONTAINS(u.qa_id, JSON_ARRAY(CAST(%s AS UNSIGNED)))
-                ))
-            )"""
-            params.extend([logged_in_id_str, logged_in_id_int, logged_in_id_str, logged_in_id_str])
-        elif role == "assistant manager":
-            query += """ AND (
-                u.asst_manager_id = %s 
-                OR u.asst_manager_id = %s
-                OR (JSON_VALID(u.asst_manager_id) AND (
-                    JSON_CONTAINS(u.asst_manager_id, JSON_ARRAY(%s))
-                    OR JSON_CONTAINS(u.asst_manager_id, JSON_ARRAY(CAST(%s AS UNSIGNED)))
-                ))
-            )"""
-            params.extend([logged_in_id_str, logged_in_id_int, logged_in_id_str, logged_in_id_str])
-        elif role == "manager" or role == "project manager":
-            query += """ AND (
-                u.project_manager_id = %s 
-                OR u.project_manager_id = %s
-                OR (JSON_VALID(u.project_manager_id) AND (
-                    JSON_CONTAINS(u.project_manager_id, JSON_ARRAY(%s))
-                    OR JSON_CONTAINS(u.project_manager_id, JSON_ARRAY(CAST(%s AS UNSIGNED)))
-                ))
-            )"""
-            params.extend([logged_in_id_str, logged_in_id_int, logged_in_id_str, logged_in_id_str])
-        # admin / super admin -> no extra filter
+        # 4) No hierarchy filter needed — agents and QA are already excluded above,
+        #    and all remaining roles (super admin, admin, project manager, assistant manager)
+        #    should be visible to any user who can access this page.
 
         # 5) Additional filter: if filter_role is provided, filter by that role
         if filter_role:

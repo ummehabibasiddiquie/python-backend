@@ -3,7 +3,7 @@
 from flask import Blueprint, request
 from utils.response import api_response
 from config import get_db_connection
-from datetime import datetime
+from utils.time_ist import now_str as ist_now_str
 
 project_category_bp = Blueprint("project_category", __name__)
 
@@ -20,7 +20,7 @@ def create_project_category():
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = ist_now_str()
 
     try:
         # Check if category already exists
@@ -69,7 +69,7 @@ def update_project_category():
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    updated_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    updated_str = ist_now_str()
 
     try:
         # Check if category exists
@@ -122,7 +122,7 @@ def delete_project_category():
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    updated_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    updated_str = ist_now_str()
 
     try:
         # Check if category exists

@@ -3,6 +3,8 @@
 from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
+from utils.roster_helpers import sync_tracker_extra_hours_to_roster
+from utils.time_ist import now_str
 from datetime import datetime, timedelta
 
 user_monthly_tracker_bp = Blueprint("user_monthly_tracker", __name__)
@@ -10,10 +12,6 @@ user_monthly_tracker_bp = Blueprint("user_monthly_tracker", __name__)
 # task_work_tracker.date_time is TEXT like "YYYY-MM-DD HH:MM:SS"
 TRACKER_DT = "CAST(twt.date_time AS DATETIME)"
 TRACKER_YEAR_MONTH = f"(YEAR({TRACKER_DT})*100 + MONTH({TRACKER_DT}))"
-
-
-def now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def month_year_to_yyyymm_sql(month_year_col: str) -> str:
@@ -187,6 +185,9 @@ def add_user_monthly_target():
                 ),
             )
             inserted_ids.append(cursor.lastrowid)
+            sync_tracker_extra_hours_to_roster(
+                cursor, user_id, month_year, extra_assigned_hours
+            )
 
         conn.commit()
 
@@ -317,6 +318,21 @@ def update_user_monthly_target():
             WHERE user_monthly_tracker_id=%s
         """
         cursor.execute(query, tuple(params))
+
+        if "extra_assigned_hours" in data and data["extra_assigned_hours"] not in [None, ""]:
+            final_user_id = int(
+                data["user_id"] if data.get("user_id") not in [None, ""] else current["user_id"]
+            )
+            final_month_year = str(
+                data["month_year"] if data.get("month_year") not in [None, ""] else current["month_year"]
+            ).strip()
+            sync_tracker_extra_hours_to_roster(
+                cursor,
+                final_user_id,
+                final_month_year,
+                float(data["extra_assigned_hours"]),
+            )
+
         conn.commit()
 
         return api_response(200, "User monthly target updated successfully")
@@ -605,7 +621,14 @@ def list_user_monthly_targets():
                 umt.extra_assigned_hours,
                 qc.avg_qc_score,
                 qc.qc_days_count
-            ORDER BY u.user_name ASC
+            ORDER BY
+              CASE WHEN t.team_name IS NULL OR TRIM(t.team_name) = '' THEN 1 ELSE 0 END,
+              t.team_name ASC,
+              CASE
+                WHEN LOWER(TRIM(u.user_name)) = LOWER(TRIM(IFNULL(t.team_name, ''))) THEN 0
+                ELSE 1
+              END,
+              u.user_name ASC
         """
 
         # Params order:

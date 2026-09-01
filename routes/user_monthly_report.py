@@ -3,6 +3,7 @@
 from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
+from utils.time_ist import now_str
 from datetime import datetime, timedelta
 
 user_monthly_report_bp = Blueprint("user_monthly_report", __name__)
@@ -10,10 +11,6 @@ user_monthly_report_bp = Blueprint("user_monthly_report", __name__)
 # task_work_tracker.date_time is TEXT like "YYYY-MM-DD HH:MM:SS"
 TRACKER_DT = "CAST(twt.date_time AS DATETIME)"
 TRACKER_YEAR_MONTH = f"(YEAR({TRACKER_DT})*100 + MONTH({TRACKER_DT}))"
-
-
-def now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def month_year_to_yyyymm_sql(month_year_col: str) -> str:
@@ -185,7 +182,14 @@ def list_users_for_monthly_tracker():
                 u.user_id,
                 u.user_name,
                 t.team_name
-            ORDER BY u.user_name ASC
+            ORDER BY
+              CASE WHEN t.team_name IS NULL OR TRIM(t.team_name) = '' THEN 1 ELSE 0 END,
+              t.team_name ASC,
+              CASE
+                WHEN LOWER(TRIM(u.user_name)) = LOWER(TRIM(IFNULL(t.team_name, ''))) THEN 0
+                ELSE 1
+              END,
+              u.user_name ASC
         """
 
         cursor.execute(query, tuple(final_params))
@@ -439,7 +443,14 @@ def list_user_monthly_targets():
                 umt.extra_assigned_hours,
                 qc.avg_qc_score,
                 qc.qc_days_count
-            ORDER BY u.user_name ASC
+            ORDER BY
+              CASE WHEN t.team_name IS NULL OR TRIM(t.team_name) = '' THEN 1 ELSE 0 END,
+              t.team_name ASC,
+              CASE
+                WHEN LOWER(TRIM(u.user_name)) = LOWER(TRIM(IFNULL(t.team_name, ''))) THEN 0
+                ELSE 1
+              END,
+              u.user_name ASC
         """
 
         # Params order:

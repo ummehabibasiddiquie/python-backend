@@ -409,6 +409,14 @@ def dashboard_filter():
         where_sql, params = apply_tracker_filters(data, where_sql, params)
 
         # USERS list (from trackers scope)
+        desig_exists = bool(detect_existing_column(cursor, "user_designation", ["designation_id"]))
+        desig_select = "d.designation" if desig_exists else "NULL AS designation"
+        desig_join = (
+            "LEFT JOIN user_designation d ON d.designation_id = u.designation_id"
+            if desig_exists
+            else ""
+        )
+
         users_query = f"""
             SELECT DISTINCT
                 u.user_id,
@@ -418,11 +426,11 @@ def dashboard_filter():
                 u.user_address,
                 u.user_tenure,
                 r.role_name AS role,
-                d.designation,
+                {desig_select},
                 tm.team_name
             {base_from}
             LEFT JOIN user_role r ON r.role_id = u.role_id
-            LEFT JOIN user_designation d ON d.designation_id = u.designation_id
+            {desig_join}
             LEFT JOIN team tm ON tm.team_id = u.team_id
             {where_sql}
             ORDER BY u.user_id DESC
@@ -495,27 +503,24 @@ def dashboard_filter():
                 AND DATE(tqc.date) = twt_distinct.work_date
         """
         assigned_params = []
+        assigned_query += " WHERE 1=1"
 
         # Apply same user_id filter
         if visible_user_ids is not None:
             in_ph = ",".join(["%s"] * len(visible_user_ids))
-            assigned_query += f" WHERE twt_distinct.user_id IN ({in_ph})"
+            assigned_query += f" AND twt_distinct.user_id IN ({in_ph})"
             assigned_params.extend(visible_user_ids)
 
         # Apply date filters
         if data.get("date"):
             assigned_query += " AND twt_distinct.work_date = %s"
-            assigned_params.append(data["date"])
+            assigned_params.append(_date_only(data["date"]) or data["date"])
         if data.get("date_from"):
-            df = data["date_from"]
-            if len(df) == 10:
-                df = df[:10]
+            df = _date_only(data["date_from"]) or data["date_from"]
             assigned_query += " AND twt_distinct.work_date >= %s"
             assigned_params.append(df)
         if data.get("date_to"):
-            dt = data["date_to"]
-            if len(dt) == 10:
-                dt = dt[:10]
+            dt = _date_only(data["date_to"]) or data["date_to"]
             assigned_query += " AND twt_distinct.work_date <= %s"
             assigned_params.append(dt)
 

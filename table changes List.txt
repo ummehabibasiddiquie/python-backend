@@ -23,3 +23,16 @@ ALTER TABLE `task` ADD `qc_percentage` INT NOT NULL AFTER `important_columns`;
 24/3/2026
 ALTER TABLE tfs_user 
 ADD COLUMN deactivated_at DATETIME NULL;
+
+10/7/2026 - Roster Management Phase 1
+See migrations/2026_07_10_roster_phase1.sql
+- tfs_user.joining_date
+- org_holiday
+- roster_month, roster_day, roster_leave
+- roster_change_request, roster_audit_log
+
+10/7/2026 - Roster Management Phase 2
+See migrations/2026_07_10_roster_phase2.sql
+- roster_month versioning columns
+- roster_version_snapshot
+- roster_change_request batch_id, reviewer_comment, applied_at

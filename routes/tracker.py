@@ -252,12 +252,9 @@ def add_tracker():
     task_id = int(form["task_id"])
     user_id = int(form["user_id"])
     production = float(form["production"])
-    tenure_target = float(form["tenure_target"])
     shift = form.get("shift", "DAY").upper()
     now_str = form.get("date")
     print(now_str)
-
-    billable_hours = production / tenure_target if tenure_target else 0
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -281,10 +278,21 @@ def add_tracker():
         proj_row = cursor.fetchone() or {}
         project_code = proj_row.get("project_code") or "PROJECT"
 
-        # --- get user_name
-        cursor.execute("SELECT user_name FROM tfs_user WHERE user_id=%s", (user_id,))
+        # --- get user_name + tenure (if tenure < 1 → use 1)
+        cursor.execute(
+            "SELECT user_name, user_tenure FROM tfs_user WHERE user_id=%s",
+            (user_id,),
+        )
         usr_row = cursor.fetchone() or {}
         user_name = usr_row.get("user_name") or "USER"
+        try:
+            user_tenure = float(usr_row.get("user_tenure") or 1)
+        except (TypeError, ValueError):
+            user_tenure = 1.0
+        if user_tenure < 1:
+            user_tenure = 1.0
+        tenure_target = round(float(actual_target or 0) * user_tenure, 2)
+        billable_hours = production / tenure_target if tenure_target else 0
 
         # ✅ file upload to Cloudinary
         tracker_file = None
@@ -296,7 +304,17 @@ def add_tracker():
                 cloudinary_url, _ = upload_to_cloudinary(
                     uploaded, FOLDER_TRACKER, display_name=custom_name, resource_type="raw"
                 )
-                print(f"Cloudinary upload successful: {cloudinary_url}")
+                print(f"Cloudi nary  upload successful: {cloudinary_url}")
+                
+                # Verify the uploaded file is accessible on Cloudinary
+                file_status = check_cloudinary_file_status(cloudinary_url)
+                if file_status == "file_not_found":
+                    log_tracker_upload_failure(user_id, form, uploaded, "File not found on Cloudinary after upload")
+                    return api_response(400, TRACKER_UPLOAD_FAILURE_MESSAGE)
+                elif file_status == "file_unreachable":
+                    log_tracker_upload_failure(user_id, form, uploaded, "File unreachable on Cloudinary after upload")
+                    return api_response(500, TRACKER_UPLOAD_FAILURE_MESSAGE)
+                
                 tracker_file = cloudinary_url
                 new_file_saved = cloudinary_url
             except ValueError as e:
@@ -392,9 +410,10 @@ def update_tracker():
 
         # compute targets only if base_target is explicitly provided
         # NOTE: The base_target field in API contains tenure_target value
+        # Tenure min=1 clamp applies only at ADD time — update keeps submitted / raw tenure math
         if "base_target" in form:
             tenure_target = float(form.get("base_target"))  # API sends tenure_target as base_target
-            user_tenure = float(user_row["user_tenure"])
+            user_tenure = float(user_row["user_tenure"]) if user_row.get("user_tenure") is not None else 0
             base_target = tenure_target / user_tenure if user_tenure else 0
             actual_target = round(base_target, 2)
         else:
@@ -441,6 +460,15 @@ def update_tracker():
                 cloudinary_url, _ = upload_to_cloudinary(
                     uploaded, FOLDER_TRACKER, display_name=custom_filename, resource_type="raw"
                 )
+                
+                # Verify the uploaded file is accessible on Cloudinary
+                file_status = check_cloudinary_file_status(cloudinary_url)
+                if file_status == "file_not_found":
+                    log_tracker_upload_failure(tracker.get("user_id"), form, uploaded, "File not found on Cloudinary after upload")
+                    return api_response(400, TRACKER_UPDATE_UPLOAD_FAILURE_MESSAGE)
+                elif file_status == "file_unreachable":
+                    log_tracker_upload_failure(tracker.get("user_id"), form, uploaded, "File unreachable on Cloudinary after upload")
+                    return api_response(500, TRACKER_UPDATE_UPLOAD_FAILURE_MESSAGE)
             except ValueError as e:
                 log_tracker_upload_failure(tracker.get("user_id"), form, uploaded, e)
                 return api_response(400, TRACKER_UPDATE_UPLOAD_FAILURE_MESSAGE)
@@ -896,10 +924,11 @@ def view_daily_trackers():
         # ---------- Smart Month Detection ----------
         month_year = None
 
-        # 1️⃣ If date filter exists → derive month from date_to OR date_from
-        if data.get("date_from") or data.get("date_to"):
+        # 1️⃣ If date filter exists → derive month from date_from (roster/target join)
+        has_date_range = bool(data.get("date_from") or data.get("date_to"))
+        if has_date_range:
             try:
-                ref_date = data.get("date_to") or data.get("date_from")
+                ref_date = data.get("date_from") or data.get("date_to")
                 ref_date = str(ref_date)[:10]  # ensure YYYY-MM-DD
                 dt_obj = datetime.strptime(ref_date, "%Y-%m-%d")
                 month_year = dt_obj.strftime("%b%Y")
@@ -932,13 +961,14 @@ def view_daily_trackers():
         # -------- WHERE (same filters as /view)
         where = "WHERE twt.is_active != 0"
 
-        # Month filter
-        try:
-            dt = datetime.strptime(month_year, "%b%Y")
-            where += " AND YEAR(CAST(twt.date_time AS DATETIME))=%s AND MONTH(CAST(twt.date_time AS DATETIME))=%s"
-            params.extend([dt.year, dt.month])
-        except Exception:
-            pass
+        # Month filter — skip when date_from/date_to are the source of truth
+        if not has_date_range:
+            try:
+                dt = datetime.strptime(month_year, "%b%Y")
+                where += " AND YEAR(CAST(twt.date_time AS DATETIME))=%s AND MONTH(CAST(twt.date_time AS DATETIME))=%s"
+                params.extend([dt.year, dt.month])
+            except Exception:
+                pass
 
         # Team filter
         if data.get("team_id"):
@@ -958,14 +988,14 @@ def view_daily_trackers():
             where += " AND twt.shift = %s"
             params.append(data["shift"].upper())
 
-        # Date range filters - use DATE() to avoid timezone issues
+        # Date range filters (inclusive by calendar day — avoids timezone off-by-one)
         if data.get("date_from"):
-            date_from = str(data["date_from"])
+            date_from = str(data["date_from"]).strip()[:10]
             where += " AND DATE(CAST(twt.date_time AS DATETIME)) >= %s"
             params.append(date_from)
 
         if data.get("date_to"):
-            date_to = str(data["date_to"])
+            date_to = str(data["date_to"]).strip()[:10]
             where += " AND DATE(CAST(twt.date_time AS DATETIME)) <= %s"
             params.append(date_to)
 
@@ -1031,16 +1061,21 @@ def view_daily_trackers():
                 SELECT
                     twt.user_id,
                     DATE(CAST(twt.date_time AS DATETIME)) AS work_date,
+                    -- Half/Full from roster (not assigned_hours: tenure 0.5 also has 4.5h full day)
                     CASE
-                        WHEN MAX(tq.assigned_hours) = 4.5 THEN 0.5
-                        WHEN MAX(tq.assigned_hours) > 0 THEN 1
-                        ELSE 0
+                        WHEN MAX(rd.working_type) = 'Half' THEN 0.5
+                        ELSE 1
                     END AS day_weight
                 FROM task_work_tracker twt
                 LEFT JOIN tfs_user u ON u.user_id = twt.user_id
-                INNER JOIN temp_qc tq
-                    ON tq.user_id = twt.user_id
-                    AND DATE(tq.date) = DATE(CAST(twt.date_time AS DATETIME))
+                LEFT JOIN roster_month rm
+                    ON rm.user_id = twt.user_id
+                   AND rm.is_active = 1
+                   AND UPPER(rm.month_year) = UPPER(%s)
+                LEFT JOIN roster_day rd
+                    ON rd.roster_month_id = rm.roster_month_id
+                   AND rd.is_active = 1
+                   AND DATE(rd.roster_date) = DATE(CAST(twt.date_time AS DATETIME))
                 {where}
                 GROUP BY twt.user_id, DATE(CAST(twt.date_time AS DATETIME))
             ),
@@ -1050,12 +1085,20 @@ def view_daily_trackers():
                     SUM(d.total_billable_hours_day)
                         OVER (PARTITION BY d.user_id ORDER BY d.work_date)
                         AS cumulative_billable_hours_till_day,
-                    (
+                    -- Consumed days through this work_date (this day never stays in "remaining")
+                    COALESCE((
                         SELECT SUM(wd.day_weight)
                         FROM worked_days wd
                         WHERE wd.user_id = d.user_id
-                        AND wd.work_date <= d.work_date
-                    ) AS worked_days_till_day
+                          AND wd.work_date < d.work_date
+                    ), 0)
+                    + COALESCE((
+                        SELECT wd.day_weight
+                        FROM worked_days wd
+                        WHERE wd.user_id = d.user_id
+                          AND wd.work_date = d.work_date
+                        LIMIT 1
+                    ), 1) AS worked_days_till_day
                 FROM daily d
             )
             SELECT
@@ -1088,9 +1131,43 @@ def view_daily_trackers():
                 ROUND(dwc.cumulative_billable_hours_till_day, 4)
                     AS cumulative_billable_hours_till_day,
 
-                -- QC data from separate tables (temp_qc takes priority for historical data)
+                -- QC score from temp_qc / qc_records.
+                -- Assigned hours: source of truth is temp_qc (written by assign_daily_hours cron).
+                -- Fallback to roster Working/Half + tenure only when no temp_qc row yet.
                 COALESCE(tqc.qc_score, qr.qc_score) AS qc_score,
-                COALESCE(tqc.assigned_hours, 0) AS assigned_hours,
+                COALESCE(
+                    tqc.assigned_hours,
+                    CASE
+                      WHEN rd.day_type = 'Leave' AND (
+                            rd.working_type = 'Half'
+                         OR COALESCE(rl.is_half_day, 0) = 1
+                      ) THEN
+                        ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                      WHEN rd.day_type IN ('Leave', 'WeekOff', 'Holiday') THEN 0
+                      WHEN rd.working_type = 'Half' THEN
+                        ROUND(4.5 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                      WHEN rd.roster_day_id IS NOT NULL THEN
+                        ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                      ELSE
+                        ROUND(9 * LEAST(GREATEST(COALESCE(u.user_tenure, 1), 0), 1), 2)
+                    END
+                ) AS assigned_hours,
+                COALESCE(rd.working_type, 'Full') AS working_type,
+                COALESCE(rd.day_type, '') AS day_type,
+                COALESCE(rl.is_half_day, 0) AS is_half_day,
+                CASE
+                  WHEN rd.day_type = 'WeekOff' THEN 'Week Off'
+                  WHEN rd.day_type = 'Holiday' THEN 'Holiday'
+                  WHEN rd.day_type = 'PreJoin' THEN 'Pre Join'
+                  WHEN rd.day_type = 'Leave' AND (
+                        rd.working_type = 'Half'
+                     OR COALESCE(rl.is_half_day, 0) = 1
+                  ) THEN 'Half Day Leave'
+                  WHEN rd.day_type = 'Leave' THEN 'Leave'
+                  WHEN rd.day_type = 'Working' AND rd.working_type = 'Half' THEN 'Half Day'
+                  WHEN rd.day_type = 'Working' THEN 'Working'
+                  ELSE '—'
+                END AS roster_status,
 
                 umt.user_monthly_tracker_id,
                 COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0) AS monthly_target,
@@ -1156,17 +1233,44 @@ def view_daily_trackers():
               ON tqc.user_id = dwc.user_id
              AND tqc.date = DATE_FORMAT(dwc.work_date, '%Y-%m-%d')
 
+            LEFT JOIN roster_month rm
+              ON rm.user_id = dwc.user_id
+             AND rm.is_active = 1
+             AND UPPER(rm.month_year) = UPPER(%s)
+            LEFT JOIN roster_day rd
+              ON rd.roster_month_id = rm.roster_month_id
+             AND rd.is_active = 1
+             AND DATE(rd.roster_date) = dwc.work_date
+            LEFT JOIN roster_leave rl
+              ON rl.leave_id = rd.leave_id
+             AND rl.is_active = 1
+
             LEFT JOIN user_monthly_tracker umt
               ON umt.user_id = dwc.user_id
              AND umt.is_active = 1
-             AND umt.month_year = %s
+             AND UPPER(umt.month_year) = UPPER(%s)
 
             ORDER BY dwc.work_date DESC, u.user_name ASC
         """
 
-        final_params = list(params) + list(params) + [month_year]
+        # daily where + worked_days (month_year + where) + roster month_year + umt month_year
+        final_params = list(params) + [month_year] + list(params) + [month_year, month_year]
         cursor.execute(query, tuple(final_params))
         rows = cursor.fetchall()
+
+        from utils.roster_helpers import roster_day_status_label
+
+        for r in rows:
+            if r.get("work_date") is not None:
+                wd = r["work_date"]
+                r["work_date"] = wd.strftime("%Y-%m-%d") if hasattr(wd, "strftime") else str(wd)[:10]
+            status = (r.get("roster_status") or "").strip()
+            if not status or status == "—":
+                r["roster_status"] = roster_day_status_label(
+                    r.get("day_type"),
+                    r.get("working_type"),
+                    r.get("is_half_day"),
+                )
 
         # -------- month_summary
         user_ids = sorted({r.get("user_id") for r in rows if r.get("user_id") is not None})
@@ -1203,30 +1307,66 @@ def view_daily_trackers():
                     CASE
                       WHEN umt.user_monthly_tracker_id IS NULL THEN NULL
                       ELSE GREATEST(
-                             COALESCE(CAST(umt.working_days AS SIGNED), 0)
+                             COALESCE(CAST(umt.working_days AS DECIMAL(10,2)), 0)
                              - COALESCE((
                                  SELECT COUNT(DISTINCT DATE(CAST(twt2.date_time AS DATETIME)))
                                  FROM task_work_tracker twt2
                                  WHERE twt2.user_id = u.user_id
                                    AND twt2.is_active = 1
                                    AND (YEAR(CAST(twt2.date_time AS DATETIME))*100 + MONTH(CAST(twt2.date_time AS DATETIME))) = m.yyyymm
-                                   AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff
-                               ), 0),
+                                   AND (
+                                        (m.is_current_month = 1 AND DATE(CAST(twt2.date_time AS DATETIME)) < m.cutoff)
+                                     OR (m.is_current_month = 0 AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff)
+                                   )
+                               ), 0)
+                             - CASE
+                                 WHEN m.is_current_month = 1 THEN COALESCE((
+                                   SELECT CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END
+                                   FROM roster_month rm
+                                   INNER JOIN roster_day rd
+                                     ON rd.roster_month_id = rm.roster_month_id
+                                    AND rd.is_active = 1
+                                    AND DATE(rd.roster_date) = m.cutoff
+                                   WHERE rm.user_id = u.user_id
+                                     AND rm.is_active = 1
+                                     AND UPPER(rm.month_year) = UPPER(m.mon)
+                                   LIMIT 1
+                                 ), 1)
+                                 ELSE 0
+                               END,
                              0
                            )
                     END AS pending_days,
                     CASE
                       WHEN umt.user_monthly_tracker_id IS NULL THEN NULL
                       WHEN GREATEST(
-                             COALESCE(CAST(umt.working_days AS SIGNED), 0)
+                             COALESCE(CAST(umt.working_days AS DECIMAL(10,2)), 0)
                              - COALESCE((
                                  SELECT COUNT(DISTINCT DATE(CAST(twt2.date_time AS DATETIME)))
                                  FROM task_work_tracker twt2
                                  WHERE twt2.user_id = u.user_id
                                    AND twt2.is_active = 1
                                    AND (YEAR(CAST(twt2.date_time AS DATETIME))*100 + MONTH(CAST(twt2.date_time AS DATETIME))) = m.yyyymm
-                                   AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff
-                               ), 0),
+                                   AND (
+                                        (m.is_current_month = 1 AND DATE(CAST(twt2.date_time AS DATETIME)) < m.cutoff)
+                                     OR (m.is_current_month = 0 AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff)
+                                   )
+                               ), 0)
+                             - CASE
+                                 WHEN m.is_current_month = 1 THEN COALESCE((
+                                   SELECT CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END
+                                   FROM roster_month rm
+                                   INNER JOIN roster_day rd
+                                     ON rd.roster_month_id = rm.roster_month_id
+                                    AND rd.is_active = 1
+                                    AND DATE(rd.roster_date) = m.cutoff
+                                   WHERE rm.user_id = u.user_id
+                                     AND rm.is_active = 1
+                                     AND UPPER(rm.month_year) = UPPER(m.mon)
+                                   LIMIT 1
+                                 ), 1)
+                                 ELSE 0
+                               END,
                              0
                            ) = 0 THEN
                         (
@@ -1256,15 +1396,33 @@ def view_daily_trackers():
                         )
                         / NULLIF(
                             GREATEST(
-                              COALESCE(CAST(umt.working_days AS SIGNED), 0)
+                              COALESCE(CAST(umt.working_days AS DECIMAL(10,2)), 0)
                               - COALESCE((
                                   SELECT COUNT(DISTINCT DATE(CAST(twt2.date_time AS DATETIME)))
                                   FROM task_work_tracker twt2
                                   WHERE twt2.user_id = u.user_id
                                     AND twt2.is_active = 1
                                     AND (YEAR(CAST(twt2.date_time AS DATETIME))*100 + MONTH(CAST(twt2.date_time AS DATETIME))) = m.yyyymm
-                                    AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff
-                                ), 0),
+                                    AND (
+                                         (m.is_current_month = 1 AND DATE(CAST(twt2.date_time AS DATETIME)) < m.cutoff)
+                                      OR (m.is_current_month = 0 AND DATE(CAST(twt2.date_time AS DATETIME)) <= m.cutoff)
+                                    )
+                                ), 0)
+                              - CASE
+                                  WHEN m.is_current_month = 1 THEN COALESCE((
+                                    SELECT CASE WHEN rd.working_type = 'Half' THEN 0.5 ELSE 1 END
+                                    FROM roster_month rm
+                                    INNER JOIN roster_day rd
+                                      ON rd.roster_month_id = rm.roster_month_id
+                                     AND rd.is_active = 1
+                                     AND DATE(rd.roster_date) = m.cutoff
+                                    WHERE rm.user_id = u.user_id
+                                      AND rm.is_active = 1
+                                      AND UPPER(rm.month_year) = UPPER(m.mon)
+                                    LIMIT 1
+                                  ), 1)
+                                  ELSE 0
+                                END,
                               0
                             ),
                             0
@@ -1284,7 +1442,13 @@ def view_daily_trackers():
                              CAST(DATE_FORMAT(STR_TO_DATE(CONCAT('01-', %s), '%d-%b%Y'), '%Y%m') AS UNSIGNED)
                         THEN LAST_DAY(STR_TO_DATE(CONCAT('01-', %s), '%d-%b%Y'))
                         ELSE DATE_SUB(STR_TO_DATE(CONCAT('01-', %s), '%d-%b%Y'), INTERVAL 1 DAY)
-                      END AS cutoff
+                      END AS cutoff,
+                      CASE
+                        WHEN (YEAR(CURDATE())*100 + MONTH(CURDATE())) =
+                             CAST(DATE_FORMAT(STR_TO_DATE(CONCAT('01-', %s), '%d-%b%Y'), '%Y%m') AS UNSIGNED)
+                        THEN 1
+                        ELSE 0
+                      END AS is_current_month
                 ) m
                 LEFT JOIN user_monthly_tracker umt
                   ON umt.user_id = u.user_id
@@ -1295,7 +1459,8 @@ def view_daily_trackers():
                   AND (%s IS NULL OR u.team_id = %s)
             """
 
-            summary_params = [month_year] * 6 + user_ids + [team_id, team_id]
+            # month_year x7 (mon, yyyymm, 3x cutoff branches, is_current_month) + users + team filter
+            summary_params = [month_year] * 7 + user_ids + [team_id, team_id]
             cursor.execute(summary_query, tuple(summary_params))
             month_summary = cursor.fetchall()
 
