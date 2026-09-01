@@ -621,7 +621,14 @@ def list_user_monthly_targets():
                 umt.extra_assigned_hours,
                 qc.avg_qc_score,
                 qc.qc_days_count
-            ORDER BY u.user_name ASC
+            ORDER BY
+              CASE WHEN t.team_name IS NULL OR TRIM(t.team_name) = '' THEN 1 ELSE 0 END,
+              t.team_name ASC,
+              CASE
+                WHEN LOWER(TRIM(u.user_name)) = LOWER(TRIM(IFNULL(t.team_name, ''))) THEN 0
+                ELSE 1
+              END,
+              u.user_name ASC
         """
 
         # Params order:

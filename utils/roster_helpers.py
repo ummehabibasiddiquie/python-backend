@@ -1153,27 +1153,6 @@ def insert_roster_for_employee(
             notes="Default roster generated",
         )
 
-    # Push target hours + working days into user_monthly_tracker on generate/reset
-    sync_payload = {
-        "roster_month_id": roster_month_id,
-        "user_id": int(employee["user_id"]),
-        "month_year": month_year,
-        "monthly_target_hours": metrics["monthly_target_hours"],
-        "target_working_days": metrics["target_working_days"],
-        "extra_assigned_hours": extra_assigned,
-    }
-    if tracker.get("from_tracker") and tracker.get("user_monthly_tracker_id"):
-        sync_payload["existing_tracker_id"] = int(tracker["user_monthly_tracker_id"])
-    sync_to_user_monthly_tracker(
-        cursor,
-        sync_payload,
-        "Synced from roster generate/reset",
-        created_by,
-        approval_status=None,
-        action="ROSTER_GENERATED_SYNCED_TO_UMT",
-        write_audit=write_audit,
-    )
-
     return {
         "user_id": employee["user_id"],
         "user_name": employee.get("user_name"),
@@ -1196,8 +1175,9 @@ def sync_to_user_monthly_tracker(
 ) -> dict:
     """
     Upsert user_monthly_tracker from roster metrics.
-    Used on generate/reset and again when a change cycle is approved.
-    Rejected changes never call this (calendar + UMT stay as last approved/generated).
+    Called only when a roster change cycle is approved — not on generate/reset.
+    Existing monthly-goal rows are left alone until that explicit approval.
+    Rejected changes never call this.
     """
     user_id = int(roster_month["user_id"])
     month_year = roster_month["month_year"]
