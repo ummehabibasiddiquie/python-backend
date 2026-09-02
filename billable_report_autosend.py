@@ -211,100 +211,33 @@ def fetch_data():
 
         mtd_map = {r["user_id"]: float(r["mtd_hours"] or 0) for r in cursor.fetchall()}
 
-        # -------------------------
-        # DAYS WORKED
-        # -------------------------
-
+        # Pending days = roster Working days after the report date (includes today
+        # when this mail is sent next morning for yesterday).
         cursor.execute(
             f"""
-            SELECT
-                user_id,
-                SUM(day_value) AS days_worked
-            FROM (
-                SELECT
-                    twt.user_id,
-                    DATE(CAST(twt.date_time AS DATETIME)) AS work_date,
-                    CASE
-                        WHEN MAX(tq.assigned_hours) = 4.5 THEN 0.5
-                        WHEN MAX(tq.assigned_hours) > 0 THEN 1
-                        ELSE 0
-                    END AS day_value
-                FROM task_work_tracker twt
-                INNER JOIN temp_qc tq
-                    ON tq.user_id = twt.user_id
-                    AND DATE(tq.date) = DATE(CAST(twt.date_time AS DATETIME))
-                WHERE DATE(twt.date_time) BETWEEN %s AND %s
-                AND twt.user_id IN ({in_ph})
-                AND twt.is_active = 1
-                GROUP BY twt.user_id, DATE(CAST(twt.date_time AS DATETIME))
-            ) t
-            GROUP BY user_id
+            SELECT rm.user_id,
+                SUM(
+                  CASE
+                    WHEN COALESCE(rd.working_type, 'Full') = 'Half' THEN 0.5
+                    ELSE 1
+                  END
+                ) AS remaining_days
+            FROM roster_month rm
+            JOIN roster_day rd
+              ON rd.roster_month_id = rm.roster_month_id
+             AND rd.is_active = 1
+            WHERE rm.is_active = 1
+              AND UPPER(rm.month_year) = UPPER(%s)
+              AND rd.day_type = 'Working'
+              AND DATE(rd.roster_date) > %s
+              AND rm.user_id IN ({in_ph})
+            GROUP BY rm.user_id
             """,
-            [month_start, report_date] + user_ids,
+            [report_month, report_date] + user_ids,
         )
-
-        days_worked_map = {
-            r["user_id"]: float(r["days_worked"]) for r in cursor.fetchall()
+        remaining_map = {
+            r["user_id"]: float(r["remaining_days"] or 0) for r in cursor.fetchall() or []
         }
-
-        # Team agents have no assigned hours, so temp_qc never consumes a working day.
-        # Count roster Working days through the report date (same remaining-days logic as others).
-        team_agent_ids = [u["user_id"] for u in users if is_team_agent(u)]
-        if team_agent_ids:
-            ta_ph = ",".join(["%s"] * len(team_agent_ids))
-            cursor.execute(
-                f"""
-                SELECT rm.user_id,
-                    SUM(
-                      CASE
-                        WHEN rd.day_type = 'Working' AND COALESCE(rd.working_type, 'Full') = 'Half' THEN 0.5
-                        WHEN rd.day_type = 'Working' THEN 1
-                        ELSE 0
-                      END
-                    ) AS days_worked
-                FROM roster_month rm
-                JOIN roster_day rd
-                  ON rd.roster_month_id = rm.roster_month_id
-                 AND rd.is_active = 1
-                WHERE rm.is_active = 1
-                  AND UPPER(rm.month_year) = UPPER(%s)
-                  AND DATE(rd.roster_date) BETWEEN %s AND %s
-                  AND rm.user_id IN ({ta_ph})
-                GROUP BY rm.user_id
-                """,
-                [report_month, month_start, report_date] + team_agent_ids,
-            )
-            for r in cursor.fetchall() or []:
-                days_worked_map[r["user_id"]] = float(r["days_worked"] or 0)
-
-            cursor.execute(
-                f"""
-                SELECT rm.user_id
-                FROM roster_month rm
-                WHERE rm.is_active = 1
-                  AND UPPER(rm.month_year) = UPPER(%s)
-                  AND rm.user_id IN ({ta_ph})
-                """,
-                [report_month] + team_agent_ids,
-            )
-            roster_user_ids = {r["user_id"] for r in cursor.fetchall() or []}
-            for uid in team_agent_ids:
-                if uid in roster_user_ids:
-                    continue
-                n = 0
-                d = month_start
-                while d <= report_date:
-                    if d.weekday() < 5:
-                        n += 1
-                    d += timedelta(days=1)
-                days_worked_map[uid] = float(n)
-
-        print(f"DEBUG - Days worked summary:")
-        for uid, days in days_worked_map.items():
-            user = next((u for u in users if u["user_id"] == uid), None)
-            if user:
-                print(f"  {user['user_name']} (Team {user['team_name']}): {days} days")
-        print(f"  ---")
 
         qc_map = {}
 
@@ -469,12 +402,10 @@ def fetch_data():
             monthly_goal = monthly_target + extra
             pending = monthly_goal - mtd
 
-            days_worked = days_worked_map.get(uid, 0)
-            remaining_days = max(0, working_days - days_worked)
+            remaining_days = remaining_map.get(uid, 0)
 
             print(f"DEBUG - User: {u['user_name']}, Team: {u['team_name']}")
             print(f"  working_days: {working_days}")
-            print(f"  days_worked: {days_worked}")
             print(f"  remaining_days: {remaining_days}")
             print(f"  monthly_target: {monthly_target}")
             print(f"  extra_assigned_hours: {extra}")

@@ -5,7 +5,6 @@ from utils.api_log_utils import log_api_call
 from utils.cloudinary_utils import upload_to_cloudinary, delete_from_cloudinary, FOLDER_TRACKER
 from datetime import datetime, timedelta, date
 from collections import defaultdict
-import calendar
 from utils.qc_auto_score import AUTO_QC_DAYS_SQL, MANUAL_QC_DAYS_SQL, sync_auto_qc_score_for_day
 import logging
 import re
@@ -29,253 +28,17 @@ def calculate_targets(base_target, user_tenure):
     return actual_target, tenure_target
 
 
-def _month_date_bounds(month_year: str, date_from=None, date_to=None) -> tuple[str, str]:
-    """YYYY-MM-DD start/end for roster off-day rows on the billable report."""
-    start = str(date_from).strip()[:10] if date_from else ""
-    end = str(date_to).strip()[:10] if date_to else ""
-    year = month = None
-    if month_year:
-        try:
-            dt = datetime.strptime(str(month_year).strip().title(), "%b%Y")
-            year, month = dt.year, dt.month
-        except Exception:
-            year = month = None
-    if not start:
-        if year and month:
-            start = date(year, month, 1).isoformat()
-        else:
-            start = date.today().replace(day=1).isoformat()
-    if not end:
-        if year and month:
-            last = calendar.monthrange(year, month)[1]
-            end = date(year, month, last).isoformat()
-        else:
-            end = date.today().isoformat()
-    if start > end:
-        start, end = end, start
-    return start, end
-
-
-def _merge_roster_leave_weekoff_days(
-    cursor,
-    rows: list,
-    *,
-    month_year: str,
-    date_from=None,
-    date_to=None,
-    user_id=None,
-    team_id=None,
-    logged_in_user_id=None,
-    role_name: str = "",
-    shift=None,
-) -> list:
-    """
-    Billable daily list is tracker-based, so Leave / Week Off (and Holiday / Left)
-    never appear unless we add roster-only rows.
-    """
-    from utils.roster_helpers import roster_day_status_label
-
-    start, end = _month_date_bounds(month_year, date_from, date_to)
-    params: list = [month_year, start, end]
-    user_sql = """
-        AND u.is_delete = 1
-        AND LOWER(TRIM(ur.role_name)) = 'agent'
-    """
-    if user_id:
-        user_sql += " AND u.user_id=%s"
-        params.append(int(user_id))
-    if team_id:
-        user_sql += " AND u.team_id=%s"
-        params.append(int(team_id))
-    if shift:
-        user_sql += " AND UPPER(COALESCE(rd.shift, 'DAY')) = %s"
-        params.append(str(shift).upper())
-    if (
-        not user_id
-        and logged_in_user_id
-        and "admin" not in (role_name or "")
-        and "project manager" not in (role_name or "")
-    ):
-        manager_id_str = str(logged_in_user_id)
-        manager_id_int = int(logged_in_user_id)
-        user_sql += """
-            AND (
-                u.project_manager_id = %s OR u.project_manager_id = %s
-                OR u.asst_manager_id = %s OR u.asst_manager_id = %s
-                OR u.qa_id = %s OR u.qa_id = %s
-                OR u.user_id = %s
-                OR (JSON_VALID(u.project_manager_id) AND JSON_CONTAINS(u.project_manager_id, JSON_ARRAY(%s)))
-                OR (JSON_VALID(u.project_manager_id) AND JSON_CONTAINS(u.project_manager_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
-                OR (JSON_VALID(u.asst_manager_id) AND JSON_CONTAINS(u.asst_manager_id, JSON_ARRAY(%s)))
-                OR (JSON_VALID(u.asst_manager_id) AND JSON_CONTAINS(u.asst_manager_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
-                OR (JSON_VALID(u.qa_id) AND JSON_CONTAINS(u.qa_id, JSON_ARRAY(%s)))
-                OR (JSON_VALID(u.qa_id) AND JSON_CONTAINS(u.qa_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
-            )
-        """
-        params.extend(
-            [
-                manager_id_str, manager_id_int,
-                manager_id_str, manager_id_int,
-                manager_id_str, manager_id_int,
-                manager_id_int,
-                manager_id_str, manager_id_str,
-                manager_id_str, manager_id_str,
-                manager_id_str, manager_id_str,
-            ]
-        )
-
-    cursor.execute(
-        f"""
-        SELECT
-            u.user_id,
-            u.user_name,
-            t.team_id,
-            t.team_name,
-            DATE(rd.roster_date) AS work_date,
-            DAYNAME(rd.roster_date) AS day,
-            COALESCE(rd.shift, 'DAY') AS shift,
-            rd.day_type,
-            COALESCE(rd.working_type, 'Full') AS working_type,
-            COALESCE(rl.is_half_day, 0) AS is_half_day,
-            tqc.assigned_hours,
-            tqc.qc_score,
-            umt.user_monthly_tracker_id,
-            COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0) AS monthly_target,
-            COALESCE(umt.extra_assigned_hours, 0) AS extra_assigned_hours,
-            (
-              COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0)
-              + COALESCE(umt.extra_assigned_hours, 0)
-            ) AS monthly_total_target,
-            CAST(umt.working_days AS DECIMAL(10,2)) AS working_days
-        FROM roster_month rm
-        JOIN roster_day rd
-          ON rd.roster_month_id = rm.roster_month_id
-         AND rd.is_active = 1
-        JOIN tfs_user u ON u.user_id = rm.user_id
-        JOIN user_role ur ON ur.role_id = u.role_id
-        LEFT JOIN team t ON t.team_id = u.team_id
-        LEFT JOIN roster_leave rl
-          ON rl.leave_id = rd.leave_id AND rl.is_active = 1
-        LEFT JOIN temp_qc tqc
-          ON tqc.user_id = u.user_id
-         AND tqc.date = DATE_FORMAT(rd.roster_date, '%%Y-%%m-%%d')
-        LEFT JOIN user_monthly_tracker umt
-          ON umt.user_id = u.user_id
-         AND umt.is_active = 1
-         AND UPPER(umt.month_year) = UPPER(%s)
-        WHERE rm.is_active = 1
-          AND UPPER(rm.month_year) = UPPER(%s)
-          AND rd.day_type IN ('Leave', 'WeekOff', 'Holiday', 'Left')
-          AND DATE(rd.roster_date) BETWEEN DATE(%s) AND DATE(%s)
-          {user_sql}
-        """,
-        tuple([month_year] + params),
-    )
-    off_days = cursor.fetchall() or []
-    existing = {
-        (int(r["user_id"]), str(r.get("work_date") or "")[:10])
-        for r in rows
-        if r.get("user_id") is not None
-    }
-    by_user: dict = {}
-    for r in rows:
-        uid = r.get("user_id")
-        if uid is None:
-            continue
-        by_user.setdefault(int(uid), []).append(r)
-    for lst in by_user.values():
-        lst.sort(key=lambda x: str(x.get("work_date") or ""))
-
-    extra = []
-    for off in off_days:
-        uid = int(off["user_id"])
-        wd = off.get("work_date")
-        wd_str = wd.strftime("%Y-%m-%d") if hasattr(wd, "strftime") else str(wd)[:10]
-        if (uid, wd_str) in existing:
-            continue
-        priors = [r for r in by_user.get(uid, []) if str(r.get("work_date") or "")[:10] < wd_str]
-        last = priors[-1] if priors else None
-        working_days = off.get("working_days")
-        monthly_total = float(off.get("monthly_total_target") or 0)
-        if last:
-            cumulative = last.get("cumulative_billable_hours_till_day") or 0
-            pending_days = last.get("pending_days_after_this_day")
-            daily_required = last.get("daily_required_hours")
-        else:
-            cumulative = 0
-            pending_days = working_days
-            try:
-                wd_val = float(working_days) if working_days is not None else 0
-            except (TypeError, ValueError):
-                wd_val = 0
-            daily_required = (monthly_total / wd_val) if wd_val else monthly_total
-        assigned = off.get("assigned_hours")
-        if assigned is None:
-            assigned = 0
-        extra.append(
-            {
-                "user_id": uid,
-                "shift": off.get("shift") or "DAY",
-                "user_name": off.get("user_name"),
-                "team_id": off.get("team_id"),
-                "team_name": off.get("team_name"),
-                "assistant_manager_id": (last or {}).get("assistant_manager_id"),
-                "assistant_manager_name": (last or {}).get("assistant_manager_name"),
-                "work_date": wd_str,
-                "day": off.get("day"),
-                "total_billable_hours_day": 0,
-                "trackers_count_day": 0,
-                "cumulative_billable_hours_till_day": cumulative,
-                "qc_score": off.get("qc_score"),
-                "can_manual_qc": 0,
-                "assigned_hours": assigned,
-                "working_type": off.get("working_type") or "Full",
-                "day_type": off.get("day_type") or "",
-                "is_half_day": off.get("is_half_day") or 0,
-                "roster_status": roster_day_status_label(
-                    off.get("day_type"),
-                    off.get("working_type"),
-                    off.get("is_half_day"),
-                ),
-                "user_monthly_tracker_id": off.get("user_monthly_tracker_id"),
-                "monthly_target": off.get("monthly_target") or 0,
-                "extra_assigned_hours": off.get("extra_assigned_hours") or 0,
-                "monthly_total_target": monthly_total,
-                "working_days": working_days,
-                "pending_days_after_this_day": pending_days,
-                "daily_required_hours": daily_required,
-            }
-        )
-        existing.add((uid, wd_str))
-
-    if not extra:
-        return rows
-    merged = list(rows) + extra
-    merged.sort(
-        key=lambda r: (str(r.get("work_date") or ""), str(r.get("user_name") or "")),
-        reverse=True,
-    )
-    return merged
-
-
-def _apply_team_agent_roster_remaining_days(cursor, rows: list, month_year: str) -> None:
-    """
-    Team agents have no assigned hours, so tracker-based remaining days stay at 21.
-    Consume roster Working days through each row's date (e.g. 189/20 = 9.45 after 1 Sep).
-    """
-    from utils.roster_helpers import is_team_agent_user
-
-    ta_ids = sorted({int(r["user_id"]) for r in rows if r.get("user_id") is not None and is_team_agent_user(r)})
-    if not ta_ids or not month_year:
-        return
-    in_ph = ",".join(["%s"] * len(ta_ids))
+def _roster_working_weights(cursor, user_ids: list, month_year: str) -> dict:
+    """user_id -> [(YYYY-MM-DD, weight), ...] for Working roster days only."""
+    if not user_ids or not month_year:
+        return {}
+    in_ph = ",".join(["%s"] * len(user_ids))
     cursor.execute(
         f"""
         SELECT rm.user_id, DATE(rd.roster_date) AS roster_date,
             CASE
-              WHEN rd.day_type = 'Working' AND COALESCE(rd.working_type, 'Full') = 'Half' THEN 0.5
-              WHEN rd.day_type = 'Working' THEN 1
-              ELSE 0
+              WHEN COALESCE(rd.working_type, 'Full') = 'Half' THEN 0.5
+              ELSE 1
             END AS day_weight
         FROM roster_month rm
         JOIN roster_day rd
@@ -283,50 +46,73 @@ def _apply_team_agent_roster_remaining_days(cursor, rows: list, month_year: str)
          AND rd.is_active = 1
         WHERE rm.is_active = 1
           AND UPPER(rm.month_year) = UPPER(%s)
+          AND rd.day_type = 'Working'
           AND rm.user_id IN ({in_ph})
         """,
-        tuple([month_year] + ta_ids),
+        tuple([month_year] + [int(uid) for uid in user_ids]),
     )
     weights_by_user = defaultdict(list)
     for row in cursor.fetchall() or []:
         d = row.get("roster_date")
         d_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d or "")[:10]
+        if not d_str:
+            continue
         weights_by_user[int(row["user_id"])].append((d_str, float(row.get("day_weight") or 0)))
+    return weights_by_user
+
+
+def _remaining_from_weights(weights: list, start_date: str, *, include_start: bool) -> float:
+    total = 0.0
+    for d_str, w in weights:
+        if include_start:
+            if d_str >= start_date:
+                total += w
+        elif d_str > start_date:
+            total += w
+    return round(total, 2)
+
+
+def _apply_roster_pending_days(cursor, rows: list, month_year: str) -> None:
+    """
+    Pending days = roster Working days still ahead.
+    Past Working days are gone even with no tracker/assigned hours.
+    Email/yesterday row: remaining starts tomorrow's calendar from that row (includes today).
+    Tracker UI today: exclude today when today's tracker is already present.
+    """
+    today_str = date.today().isoformat()
+    user_ids = sorted({int(r["user_id"]) for r in rows if r.get("user_id") is not None})
+    weights_by_user = _roster_working_weights(cursor, user_ids, month_year)
 
     for r in rows:
-        if not is_team_agent_user(r):
+        if r.get("user_id") is None:
             continue
         uid = int(r["user_id"])
         wd = str(r.get("work_date") or "")[:10]
-        elapsed = sum(w for d_str, w in weights_by_user.get(uid, []) if d_str and d_str <= wd)
-        if not weights_by_user.get(uid):
-            try:
-                start = datetime.strptime(str(month_year).strip().title(), "%b%Y").date()
-                end = datetime.strptime(wd, "%Y-%m-%d").date() if wd else start
-                elapsed = 0
-                cur = start
-                while cur <= end:
-                    if cur.weekday() < 5:
-                        elapsed += 1
-                    cur += timedelta(days=1)
-            except Exception:
-                elapsed = 0
+        if not wd:
+            continue
         try:
-            working_days = float(r.get("working_days") or 0)
+            trackers = int(r.get("trackers_count_day") or 0)
         except (TypeError, ValueError):
-            working_days = 0
-        remaining = max(working_days - elapsed, 0)
+            trackers = 0
+        include_start = wd == today_str and trackers <= 0
+        remaining = _remaining_from_weights(
+            weights_by_user.get(uid, []),
+            wd,
+            include_start=include_start,
+        )
         r["pending_days_after_this_day"] = remaining
         try:
             monthly_total = float(r.get("monthly_total_target") or r.get("monthly_target") or 0)
         except (TypeError, ValueError):
-            monthly_total = 0
+            monthly_total = 0.0
         try:
             cumulative = float(r.get("cumulative_billable_hours_till_day") or 0)
         except (TypeError, ValueError):
-            cumulative = 0
-        pending = monthly_total - cumulative
-        r["daily_required_hours"] = (pending / remaining) if remaining else pending
+            cumulative = 0.0
+        pending_hours = monthly_total - cumulative
+        if r.get("user_monthly_tracker_id") is None and monthly_total == 0:
+            continue
+        r["daily_required_hours"] = (pending_hours / remaining) if remaining else pending_hours
 
 
 def normalize_month_year(month_year: str) -> str:
@@ -1603,26 +1389,7 @@ def view_daily_trackers():
             if is_team_agent_user(r):
                 r["assigned_hours"] = None
 
-        # Leave / Week Off / Holiday / Left have no tracker, so they never appear
-        # unless we merge roster-only days. Skip when filtering by project/task.
-        if not data.get("project_id") and not data.get("task_id"):
-            rows = _merge_roster_leave_weekoff_days(
-                cursor,
-                rows,
-                month_year=month_year,
-                date_from=data.get("date_from"),
-                date_to=data.get("date_to"),
-                user_id=data.get("user_id"),
-                team_id=data.get("team_id"),
-                logged_in_user_id=logged_in_user_id,
-                role_name=role_name,
-                shift=data.get("shift"),
-            )
-        for r in rows:
-            if is_team_agent_user(r):
-                r["assigned_hours"] = None
-
-        _apply_team_agent_roster_remaining_days(cursor, rows, month_year)
+        _apply_roster_pending_days(cursor, rows, month_year)
 
         # -------- month_summary
         user_ids = sorted({r.get("user_id") for r in rows if r.get("user_id") is not None})
@@ -1814,7 +1581,39 @@ def view_daily_trackers():
             # month_year x7 (mon, yyyymm, 3x cutoff branches, is_current_month) + users + team filter
             summary_params = [month_year] * 7 + user_ids + [team_id, team_id]
             cursor.execute(summary_query, tuple(summary_params))
-            month_summary = cursor.fetchall()
+            month_summary = cursor.fetchall() or []
+            today_str = date.today().isoformat()
+            has_tracker_today = {
+                int(r["user_id"])
+                for r in rows
+                if r.get("user_id") is not None
+                and str(r.get("work_date") or "")[:10] == today_str
+                and (r.get("trackers_count_day") or 0)
+            }
+            summary_weights = _roster_working_weights(cursor, user_ids, month_year)
+            for s in month_summary:
+                uid = s.get("user_id")
+                if uid is None:
+                    continue
+                include_start = int(uid) not in has_tracker_today
+                remaining = _remaining_from_weights(
+                    summary_weights.get(int(uid), []),
+                    today_str,
+                    include_start=include_start,
+                )
+                s["pending_days"] = remaining
+                try:
+                    monthly_total = float(s.get("monthly_total_target") or 0)
+                except (TypeError, ValueError):
+                    monthly_total = 0.0
+                try:
+                    delivered = float(s.get("total_billable_hours_month") or 0)
+                except (TypeError, ValueError):
+                    delivered = 0.0
+                pending_hours = monthly_total - delivered
+                if s.get("user_monthly_tracker_id") is None and monthly_total == 0:
+                    continue
+                s["daily_required_hours"] = (pending_hours / remaining) if remaining else pending_hours
 
         # -------- Response KEYS SAME AS /view
         return api_response(
