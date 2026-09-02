@@ -1515,7 +1515,7 @@ def view_daily_trackers():
         cursor.execute(query, tuple(final_params))
         rows = cursor.fetchall()
 
-        from utils.roster_helpers import roster_day_status_label
+        from utils.roster_helpers import fill_team_agent_billable_metrics, roster_day_status_label
 
         for r in rows:
             if r.get("work_date") is not None:
@@ -1544,6 +1544,8 @@ def view_daily_trackers():
                 role_name=role_name,
                 shift=data.get("shift"),
             )
+
+        fill_team_agent_billable_metrics(rows)
 
         # -------- month_summary
         user_ids = sorted({r.get("user_id") for r in rows if r.get("user_id") is not None})
@@ -1736,6 +1738,7 @@ def view_daily_trackers():
             summary_params = [month_year] * 7 + user_ids + [team_id, team_id]
             cursor.execute(summary_query, tuple(summary_params))
             month_summary = cursor.fetchall()
+            fill_team_agent_billable_metrics(month_summary, group_keys=("team_id",))
 
         # -------- Response KEYS SAME AS /view
         return api_response(

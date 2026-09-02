@@ -10,6 +10,13 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
 from collections import defaultdict
+import sys
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from utils.roster_helpers import fill_team_agent_billable_metrics
 
 
 # -------------------------------
@@ -456,6 +463,9 @@ def fetch_data():
                 }
             )
 
+        # Team agents have no roster/UMT — target, working days, daily required = team totals
+        fill_team_agent_billable_metrics(users, group_keys=("team_name",))
+
         # Filter out deactivated users with zero monthly goal
         users = [
             u for u in users
@@ -567,19 +577,19 @@ def generate_html(report_date, data_rows):
 
             if not is_team_agent(u):
                 team_assigned += assigned
+                team_required += required
+                team_goal += goal
+                team_pending += pending
             team_worked += worked
-            team_required += required
             team_mtd += mtd
-            team_goal += goal
-            team_pending += pending
             
             if not is_team_agent(u):
                 grand_assigned += assigned
+                grand_required += required
+                grand_goal += goal
+                grand_pending += pending
             grand_worked += worked
-            grand_required += required
             grand_mtd += mtd
-            grand_goal += goal
-            grand_pending += pending
 
         html += f"""
         <tr style="font-weight:bold;background:#C9DAF8">

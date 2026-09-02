@@ -3,6 +3,7 @@
 from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
+from utils.roster_helpers import fill_team_agent_billable_metrics
 from utils.qc_auto_score import AUTO_QC_DAYS_WITHOUT_EXISTING_SCORE_SQL
 from utils.time_ist import now_str
 from datetime import datetime, timedelta
@@ -481,7 +482,47 @@ def list_user_monthly_targets():
         print(f"DEBUG: Final params: {final_params}")
 
         cursor.execute(query, tuple(final_params))
-        rows = cursor.fetchall()
+        rows = cursor.fetchall() or []
+
+        # Team agents have no UMT/roster — still show them with team totals
+        ta_sql = f"""
+            SELECT
+                u.user_id,
+                u.user_name,
+                t.team_name,
+                NULL AS user_monthly_tracker_id,
+                %s AS month_year,
+                0 AS working_days,
+                0 AS monthly_target,
+                0 AS extra_assigned_hours,
+                0 AS monthly_total_target,
+                0 AS total_billable_hours,
+                0 AS total_production,
+                0 AS tracker_rows,
+                NULL AS avg_qc_score,
+                0 AS qc_days_count,
+                0 AS pending_target
+            FROM tfs_user u
+            LEFT JOIN team t ON u.team_id = t.team_id
+            {user_where}
+            AND LOWER(TRIM(u.user_name)) = LOWER(TRIM(IFNULL(t.team_name, '')))
+        """
+        ta_month = month_year or datetime.now().strftime("%b%Y")
+        cursor.execute(ta_sql, tuple([ta_month] + user_params))
+        existing_ids = {r.get("user_id") for r in rows}
+        for ta in cursor.fetchall() or []:
+            if ta.get("user_id") not in existing_ids:
+                rows.append(ta)
+
+        fill_team_agent_billable_metrics(rows, group_keys=("team_name",))
+        rows.sort(
+            key=lambda r: (
+                1 if not (r.get("team_name") or "").strip() else 0,
+                str(r.get("team_name") or ""),
+                0 if (str(r.get("user_name") or "").strip().lower() == str(r.get("team_name") or "").strip().lower()) else 1,
+                str(r.get("user_name") or ""),
+            )
+        )
 
         return api_response(200, "User monthly targets fetched successfully", rows)
 

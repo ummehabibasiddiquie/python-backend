@@ -559,6 +559,98 @@ def roster_day_status_label(
     return "—"
 
 
+def is_team_agent_user(row: dict) -> bool:
+    """Placeholder team row: user_name matches team_name (e.g. Team A → 'A')."""
+    name = (row.get("user_name") or "").strip().lower()
+    team = (row.get("team_name") or "").strip().lower()
+    return bool(name and team and name == team)
+
+
+def _metric_float(value) -> float:
+    try:
+        if value is None or value == "":
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def fill_team_agent_billable_metrics(
+    rows: list,
+    *,
+    group_keys: tuple = ("work_date", "team_id"),
+) -> list:
+    """
+    Team agents have no roster / user_monthly_tracker.
+    Copy team totals from other agents: target, extra hours, working days,
+    pending days/target, and daily required hours.
+    """
+    from collections import defaultdict
+
+    grouped = defaultdict(list)
+    for r in rows:
+        key = tuple(str(r.get(k) or "") for k in group_keys)
+        grouped[key].append(r)
+
+    for group in grouped.values():
+        members = [r for r in group if not is_team_agent_user(r)]
+        team_agents = [r for r in group if is_team_agent_user(r)]
+        if not team_agents or not members:
+            continue
+
+        monthly_target = round(sum(_metric_float(r.get("monthly_target")) for r in members), 2)
+        extra = round(sum(_metric_float(r.get("extra_assigned_hours")) for r in members), 2)
+        monthly_total = round(
+            sum(
+                _metric_float(r.get("monthly_total_target") or r.get("monthly_goal"))
+                for r in members
+            ),
+            2,
+        )
+        if monthly_total == 0:
+            monthly_total = round(monthly_target + extra, 2)
+        working_days = round(sum(_metric_float(r.get("working_days")) for r in members), 2)
+        pending_days = round(
+            sum(
+                _metric_float(r.get("pending_days") or r.get("pending_days_after_this_day"))
+                for r in members
+            ),
+            2,
+        )
+        pending_target = round(
+            sum(_metric_float(r.get("pending_target") or r.get("pending_goal")) for r in members),
+            2,
+        )
+        if pending_target == 0 and monthly_total:
+            pending_target = round(
+                monthly_total
+                - sum(
+                    _metric_float(
+                        r.get("total_billable_hours")
+                        or r.get("total_billable_hours_month")
+                        or r.get("mtd_hours")
+                    )
+                    for r in members
+                ),
+                2,
+            )
+        daily_required = round(sum(_metric_float(r.get("daily_required_hours")) for r in members), 4)
+
+        for ta in team_agents:
+            ta["monthly_target"] = monthly_target
+            ta["extra_assigned_hours"] = extra
+            ta["monthly_total_target"] = monthly_total
+            ta["monthly_goal"] = monthly_total
+            ta["working_days"] = working_days
+            ta["pending_days"] = pending_days
+            ta["pending_days_after_this_day"] = pending_days
+            ta["pending_target"] = pending_target
+            ta["pending_goal"] = pending_target
+            ta["daily_required_hours"] = daily_required
+
+    return rows
+
+
 def count_weekdays_in_range(start: date, end: date) -> int:
     count = 0
     current = start
