@@ -19,7 +19,7 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 RECIPIENTS = [
     "ummehabiba.siddiquie@transformsolution.net",
-    "dharmesh.jotania@transformsolution.net"
+    # "dharmesh.jotania@transformsolution.net"
     # "yahya.irani@transformsolution.net",
     # "amit.mandviwala@transformsolution.net",
     # "sriman.narayan@transformsolution.net",
@@ -342,6 +342,53 @@ def fetch_data():
         }
 
         # -------------------------
+        # ROSTER STATUS (REPORT DATE)
+        # -------------------------
+        roster_status_map = {}
+        cursor.execute(
+            f"""
+            SELECT
+                rm.user_id,
+                rd.day_type,
+                COALESCE(rd.working_type, 'Full') AS working_type,
+                COALESCE(rl.is_half_day, 0) AS is_half_day
+            FROM roster_month rm
+            JOIN roster_day rd
+              ON rd.roster_month_id = rm.roster_month_id
+             AND rd.is_active = 1
+             AND DATE(rd.roster_date) = %s
+            LEFT JOIN roster_leave rl
+              ON rl.leave_id = rd.leave_id AND rl.is_active = 1
+            WHERE rm.is_active = 1
+              AND UPPER(rm.month_year) = UPPER(%s)
+              AND rm.user_id IN ({in_ph})
+            """,
+            [report_date, report_month] + user_ids,
+        )
+        for r in cursor.fetchall() or []:
+            dt = (r.get("day_type") or "").strip()
+            wt = (r.get("working_type") or "Full").strip()
+            half = bool(int(r.get("is_half_day") or 0))
+            if dt == "WeekOff":
+                label = "Week Off"
+            elif dt == "Holiday":
+                label = "Holiday"
+            elif dt == "PreJoin":
+                label = "Pre Join"
+            elif dt == "Left":
+                label = "Left"
+            elif dt == "Leave":
+                label = "Half Day Leave" if half or wt == "Half" else "Leave"
+            elif dt == "Working" and wt == "Half":
+                label = "Half Day"
+            elif dt == "Working":
+                label = "Working"
+            else:
+                label = None
+            if label:
+                roster_status_map[r["user_id"]] = label
+
+        # -------------------------
         # CALCULATIONS
         # -------------------------
 
@@ -388,6 +435,11 @@ def fetch_data():
             print(f"  daily_required_hours: {daily_required}")
             print(f"  ---")
 
+            roster_status = roster_status_map.get(uid)
+            display_status = u.get("exit_status", "Active")
+            if display_status != "Exited" and roster_status and roster_status not in ("Working",):
+                display_status = roster_status
+
             u.update(
                 {
                     "daily_worked_hours": worked,
@@ -399,6 +451,8 @@ def fetch_data():
                     "monthly_goal": monthly_goal,
                     "pending_goal": pending,
                     "daily_required_hours": daily_required,
+                    "roster_status": roster_status,
+                    "display_status": display_status,
                 }
             )
 
@@ -499,7 +553,7 @@ def generate_html(report_date, data_rows):
             html += f"""
             <tr>
             <td>{u['user_name']}</td>
-            <td align="center">{u.get('exit_status', 'Active')}</td>
+            <td align="center">{u.get('display_status') or u.get('exit_status', 'Active')}</td>
             <td align="right">{"" if is_team_agent(u) else f"{assigned:.2f}"}</td>
             <td align="right">{worked:.2f}</td>
             <td align="right">{f"{u['qc_score']:.2f}" if u.get('qc_score') is not None else ""}</td>

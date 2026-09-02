@@ -3,7 +3,8 @@ from config import get_db_connection
 from utils.response import api_response
 from utils.api_log_utils import log_api_call
 from utils.cloudinary_utils import upload_to_cloudinary, delete_from_cloudinary, FOLDER_TRACKER
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
+import calendar
 from utils.qc_auto_score import AUTO_QC_DAYS_SQL, MANUAL_QC_DAYS_SQL, sync_auto_qc_score_for_day
 import logging
 import re
@@ -25,6 +26,235 @@ def calculate_targets(base_target, user_tenure):
     actual_target = round(base_target * 1, 2)
     tenure_target = round(base_target * user_tenure, 2)
     return actual_target, tenure_target
+
+
+def _month_date_bounds(month_year: str, date_from=None, date_to=None) -> tuple[str, str]:
+    """YYYY-MM-DD start/end for roster off-day rows on the billable report."""
+    start = str(date_from).strip()[:10] if date_from else ""
+    end = str(date_to).strip()[:10] if date_to else ""
+    year = month = None
+    if month_year:
+        try:
+            dt = datetime.strptime(str(month_year).strip().title(), "%b%Y")
+            year, month = dt.year, dt.month
+        except Exception:
+            year = month = None
+    if not start:
+        if year and month:
+            start = date(year, month, 1).isoformat()
+        else:
+            start = date.today().replace(day=1).isoformat()
+    if not end:
+        if year and month:
+            last = calendar.monthrange(year, month)[1]
+            end = date(year, month, last).isoformat()
+        else:
+            end = date.today().isoformat()
+    if start > end:
+        start, end = end, start
+    return start, end
+
+
+def _merge_roster_leave_weekoff_days(
+    cursor,
+    rows: list,
+    *,
+    month_year: str,
+    date_from=None,
+    date_to=None,
+    user_id=None,
+    team_id=None,
+    logged_in_user_id=None,
+    role_name: str = "",
+    shift=None,
+) -> list:
+    """
+    Billable daily list is tracker-based, so Leave / Week Off (and Holiday / Left)
+    never appear unless we add roster-only rows.
+    """
+    from utils.roster_helpers import roster_day_status_label
+
+    start, end = _month_date_bounds(month_year, date_from, date_to)
+    params: list = [month_year, start, end]
+    user_sql = """
+        AND u.is_delete = 1
+        AND LOWER(TRIM(ur.role_name)) = 'agent'
+    """
+    if user_id:
+        user_sql += " AND u.user_id=%s"
+        params.append(int(user_id))
+    if team_id:
+        user_sql += " AND u.team_id=%s"
+        params.append(int(team_id))
+    if shift:
+        user_sql += " AND UPPER(COALESCE(rd.shift, 'DAY')) = %s"
+        params.append(str(shift).upper())
+    if (
+        not user_id
+        and logged_in_user_id
+        and "admin" not in (role_name or "")
+        and "project manager" not in (role_name or "")
+    ):
+        manager_id_str = str(logged_in_user_id)
+        manager_id_int = int(logged_in_user_id)
+        user_sql += """
+            AND (
+                u.project_manager_id = %s OR u.project_manager_id = %s
+                OR u.asst_manager_id = %s OR u.asst_manager_id = %s
+                OR u.qa_id = %s OR u.qa_id = %s
+                OR u.user_id = %s
+                OR (JSON_VALID(u.project_manager_id) AND JSON_CONTAINS(u.project_manager_id, JSON_ARRAY(%s)))
+                OR (JSON_VALID(u.project_manager_id) AND JSON_CONTAINS(u.project_manager_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
+                OR (JSON_VALID(u.asst_manager_id) AND JSON_CONTAINS(u.asst_manager_id, JSON_ARRAY(%s)))
+                OR (JSON_VALID(u.asst_manager_id) AND JSON_CONTAINS(u.asst_manager_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
+                OR (JSON_VALID(u.qa_id) AND JSON_CONTAINS(u.qa_id, JSON_ARRAY(%s)))
+                OR (JSON_VALID(u.qa_id) AND JSON_CONTAINS(u.qa_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
+            )
+        """
+        params.extend(
+            [
+                manager_id_str, manager_id_int,
+                manager_id_str, manager_id_int,
+                manager_id_str, manager_id_int,
+                manager_id_int,
+                manager_id_str, manager_id_str,
+                manager_id_str, manager_id_str,
+                manager_id_str, manager_id_str,
+            ]
+        )
+
+    cursor.execute(
+        f"""
+        SELECT
+            u.user_id,
+            u.user_name,
+            t.team_id,
+            t.team_name,
+            DATE(rd.roster_date) AS work_date,
+            DAYNAME(rd.roster_date) AS day,
+            COALESCE(rd.shift, 'DAY') AS shift,
+            rd.day_type,
+            COALESCE(rd.working_type, 'Full') AS working_type,
+            COALESCE(rl.is_half_day, 0) AS is_half_day,
+            tqc.assigned_hours,
+            tqc.qc_score,
+            umt.user_monthly_tracker_id,
+            COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0) AS monthly_target,
+            COALESCE(umt.extra_assigned_hours, 0) AS extra_assigned_hours,
+            (
+              COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0)
+              + COALESCE(umt.extra_assigned_hours, 0)
+            ) AS monthly_total_target,
+            CAST(umt.working_days AS DECIMAL(10,2)) AS working_days
+        FROM roster_month rm
+        JOIN roster_day rd
+          ON rd.roster_month_id = rm.roster_month_id
+         AND rd.is_active = 1
+        JOIN tfs_user u ON u.user_id = rm.user_id
+        JOIN user_role ur ON ur.role_id = u.role_id
+        LEFT JOIN team t ON t.team_id = u.team_id
+        LEFT JOIN roster_leave rl
+          ON rl.leave_id = rd.leave_id AND rl.is_active = 1
+        LEFT JOIN temp_qc tqc
+          ON tqc.user_id = u.user_id
+         AND tqc.date = DATE_FORMAT(rd.roster_date, '%%Y-%%m-%%d')
+        LEFT JOIN user_monthly_tracker umt
+          ON umt.user_id = u.user_id
+         AND umt.is_active = 1
+         AND UPPER(umt.month_year) = UPPER(%s)
+        WHERE rm.is_active = 1
+          AND UPPER(rm.month_year) = UPPER(%s)
+          AND rd.day_type IN ('Leave', 'WeekOff', 'Holiday', 'Left')
+          AND DATE(rd.roster_date) BETWEEN DATE(%s) AND DATE(%s)
+          {user_sql}
+        """,
+        tuple([month_year] + params),
+    )
+    off_days = cursor.fetchall() or []
+    existing = {
+        (int(r["user_id"]), str(r.get("work_date") or "")[:10])
+        for r in rows
+        if r.get("user_id") is not None
+    }
+    by_user: dict = {}
+    for r in rows:
+        uid = r.get("user_id")
+        if uid is None:
+            continue
+        by_user.setdefault(int(uid), []).append(r)
+    for lst in by_user.values():
+        lst.sort(key=lambda x: str(x.get("work_date") or ""))
+
+    extra = []
+    for off in off_days:
+        uid = int(off["user_id"])
+        wd = off.get("work_date")
+        wd_str = wd.strftime("%Y-%m-%d") if hasattr(wd, "strftime") else str(wd)[:10]
+        if (uid, wd_str) in existing:
+            continue
+        priors = [r for r in by_user.get(uid, []) if str(r.get("work_date") or "")[:10] < wd_str]
+        last = priors[-1] if priors else None
+        working_days = off.get("working_days")
+        monthly_total = float(off.get("monthly_total_target") or 0)
+        if last:
+            cumulative = last.get("cumulative_billable_hours_till_day") or 0
+            pending_days = last.get("pending_days_after_this_day")
+            daily_required = last.get("daily_required_hours")
+        else:
+            cumulative = 0
+            pending_days = working_days
+            try:
+                wd_val = float(working_days) if working_days is not None else 0
+            except (TypeError, ValueError):
+                wd_val = 0
+            daily_required = (monthly_total / wd_val) if wd_val else monthly_total
+        assigned = off.get("assigned_hours")
+        if assigned is None:
+            assigned = 0
+        extra.append(
+            {
+                "user_id": uid,
+                "shift": off.get("shift") or "DAY",
+                "user_name": off.get("user_name"),
+                "team_id": off.get("team_id"),
+                "team_name": off.get("team_name"),
+                "assistant_manager_id": (last or {}).get("assistant_manager_id"),
+                "assistant_manager_name": (last or {}).get("assistant_manager_name"),
+                "work_date": wd_str,
+                "day": off.get("day"),
+                "total_billable_hours_day": 0,
+                "trackers_count_day": 0,
+                "cumulative_billable_hours_till_day": cumulative,
+                "qc_score": off.get("qc_score"),
+                "can_manual_qc": 0,
+                "assigned_hours": assigned,
+                "working_type": off.get("working_type") or "Full",
+                "day_type": off.get("day_type") or "",
+                "is_half_day": off.get("is_half_day") or 0,
+                "roster_status": roster_day_status_label(
+                    off.get("day_type"),
+                    off.get("working_type"),
+                    off.get("is_half_day"),
+                ),
+                "user_monthly_tracker_id": off.get("user_monthly_tracker_id"),
+                "monthly_target": off.get("monthly_target") or 0,
+                "extra_assigned_hours": off.get("extra_assigned_hours") or 0,
+                "monthly_total_target": monthly_total,
+                "working_days": working_days,
+                "pending_days_after_this_day": pending_days,
+                "daily_required_hours": daily_required,
+            }
+        )
+        existing.add((uid, wd_str))
+
+    if not extra:
+        return rows
+    merged = list(rows) + extra
+    merged.sort(
+        key=lambda r: (str(r.get("work_date") or ""), str(r.get("user_name") or "")),
+        reverse=True,
+    )
+    return merged
 
 
 def normalize_month_year(month_year: str) -> str:
@@ -1298,6 +1528,22 @@ def view_daily_trackers():
                     r.get("working_type"),
                     r.get("is_half_day"),
                 )
+
+        # Leave / Week Off / Holiday / Left have no tracker, so they never appear
+        # unless we merge roster-only days. Skip when filtering by project/task.
+        if not data.get("project_id") and not data.get("task_id"):
+            rows = _merge_roster_leave_weekoff_days(
+                cursor,
+                rows,
+                month_year=month_year,
+                date_from=data.get("date_from"),
+                date_to=data.get("date_to"),
+                user_id=data.get("user_id"),
+                team_id=data.get("team_id"),
+                logged_in_user_id=logged_in_user_id,
+                role_name=role_name,
+                shift=data.get("shift"),
+            )
 
         # -------- month_summary
         user_ids = sorted({r.get("user_id") for r in rows if r.get("user_id") is not None})
