@@ -1515,7 +1515,7 @@ def view_daily_trackers():
         cursor.execute(query, tuple(final_params))
         rows = cursor.fetchall()
 
-        from utils.roster_helpers import fill_team_agent_billable_metrics, roster_day_status_label
+        from utils.roster_helpers import is_team_agent_user, roster_day_status_label
 
         for r in rows:
             if r.get("work_date") is not None:
@@ -1528,6 +1528,8 @@ def view_daily_trackers():
                     r.get("working_type"),
                     r.get("is_half_day"),
                 )
+            if is_team_agent_user(r):
+                r["assigned_hours"] = None
 
         # Leave / Week Off / Holiday / Left have no tracker, so they never appear
         # unless we merge roster-only days. Skip when filtering by project/task.
@@ -1544,8 +1546,9 @@ def view_daily_trackers():
                 role_name=role_name,
                 shift=data.get("shift"),
             )
-
-        fill_team_agent_billable_metrics(rows)
+        for r in rows:
+            if is_team_agent_user(r):
+                r["assigned_hours"] = None
 
         # -------- month_summary
         user_ids = sorted({r.get("user_id") for r in rows if r.get("user_id") is not None})
@@ -1728,7 +1731,7 @@ def view_daily_trackers():
                 LEFT JOIN user_monthly_tracker umt
                   ON umt.user_id = u.user_id
                  AND umt.is_active = 1
-                 AND umt.month_year = m.mon
+                 AND UPPER(umt.month_year) = UPPER(m.mon)
                 WHERE u.user_id IN ({in_ph})
                   -- ✅ team filter applied to summary too
                   AND (%s IS NULL OR u.team_id = %s)
@@ -1738,7 +1741,6 @@ def view_daily_trackers():
             summary_params = [month_year] * 7 + user_ids + [team_id, team_id]
             cursor.execute(summary_query, tuple(summary_params))
             month_summary = cursor.fetchall()
-            fill_team_agent_billable_metrics(month_summary, group_keys=("team_id",))
 
         # -------- Response KEYS SAME AS /view
         return api_response(
