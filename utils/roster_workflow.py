@@ -796,27 +796,38 @@ def apply_day_update(cursor, roster_month: dict, payload: dict) -> None:
                 working_hours = full_hrs
 
     now = now_str()
-    cursor.execute(
-        """
-        UPDATE roster_day
-        SET day_type=%s, shift=%s, shift_start=%s, shift_end=%s,
-            working_type=%s, working_hours=%s,
-            leave_id=%s,
-            updated_date=%s
-        WHERE roster_day_id=%s
-        """,
-        (
-            day_type_norm or day_type,
-            shift,
-            shift_start.strftime("%H:%M:%S") if shift_start else None,
-            shift_end.strftime("%H:%M:%S") if shift_end else None,
-            working_type,
-            working_hours,
-            None if clear_leave else old_leave_id,
-            now,
-            int(day["roster_day_id"]),
-        ),
-    )
+    try:
+        cursor.execute(
+            """
+            UPDATE roster_day
+            SET day_type=%s, shift=%s, shift_start=%s, shift_end=%s,
+                working_type=%s, working_hours=%s,
+                leave_id=%s,
+                updated_date=%s
+            WHERE roster_day_id=%s
+            """,
+            (
+                day_type_norm or day_type,
+                shift,
+                shift_start.strftime("%H:%M:%S") if shift_start else None,
+                shift_end.strftime("%H:%M:%S") if shift_end else None,
+                working_type,
+                working_hours,
+                None if clear_leave else old_leave_id,
+                now,
+                int(day["roster_day_id"]),
+            ),
+        )
+    except Exception as e:
+        raw = str(e).lower()
+        if day_type_norm == "Left" and (
+            "day_type" in raw or "truncated" in raw or "1265" in raw or "data truncated" in raw
+        ):
+            raise ValueError(
+                "Cannot save Left until the database allows that day type. "
+                "Run python scripts/sync_roster_schema.py on the server, then approve again."
+            ) from e
+        raise
 
     if clear_leave:
         _remove_date_from_leave_coverage(
