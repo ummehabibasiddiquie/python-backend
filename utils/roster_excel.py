@@ -297,10 +297,13 @@ def excel_label_to_change(
     }
     kind = alias_map.get(key)
     if not kind:
-        # Fuzzy: contains
+        # Fuzzy: contains. Check Left before Leave — they are different day types.
         lower = raw.lower()
+        tokens = set(re.findall(r"[a-z]+", lower))
         if "week" in lower and "off" in lower:
             kind = "week_off"
+        elif "left" in tokens or key.startswith("left"):
+            kind = "left"
         elif "holiday" in lower:
             kind = "holiday"
         elif "half" in lower and ("affect" in lower or "target" in lower):
@@ -311,7 +314,7 @@ def excel_label_to_change(
             kind = "leave_affect_target"
         elif "leave" in lower:
             kind = "leave"
-        elif lower in ("left", "exit", "exited") or (lower.startswith("left") and "leave" not in lower):
+        elif lower in ("exit", "exited") or "resigned" in lower:
             kind = "left"
         elif "7:30" in lower.replace(" ", "") and ("pm" in lower or "p.m" in lower):
             kind = "night"
@@ -790,7 +793,7 @@ def parse_roster_excel(file_bytes: bytes) -> dict:
     Parse uploaded weekly or multi-week roster workbook.
     Supports single 'Roster' / 'Week N' sheet, or full-month file with Week 1..N sheets.
     """
-    wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
+    wb = load_workbook(io.BytesIO(file_bytes), data_only=False)
     data_sheets = [wb[name] for name in wb.sheetnames if is_roster_data_sheet(name)]
     if not data_sheets:
         for name in wb.sheetnames:

@@ -50,6 +50,22 @@ class RosterExcelHolidayTest(unittest.TestCase):
         day = {"day_type": "Left", "holiday_id": 1}
         self.assertEqual(day_to_excel_label(day), LABEL_LEFT)
 
+    def test_left_is_not_parsed_as_leave(self):
+        from utils.roster_excel import LABEL_LEFT, is_noop_change
+
+        change = excel_label_to_change("LEFT", date(2026, 9, 21))
+        self.assertEqual(change["change_payload"]["day_type"], "Left")
+        working = {
+            "day_type": "Working",
+            "shift": "DAY",
+            "working_type": "Full",
+            "shift_start": "09:00:00",
+        }
+        self.assertFalse(is_noop_change(working, change))
+        already_left = {"day_type": "Left"}
+        self.assertTrue(is_noop_change(already_left, change))
+        self.assertEqual(excel_label_to_change(LABEL_LEFT, date(2026, 9, 21))["label"], LABEL_LEFT)
+
     def test_weekoff_upload_on_holiday_stays_holiday(self):
         day = {"day_type": "Holiday", "holiday_id": 1}
         change = excel_label_to_change(LABEL_WEEK_OFF, date(2026, 9, 7))
