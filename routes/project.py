@@ -421,7 +421,7 @@ def delete_project():
         conn.start_transaction()
 
         cursor.execute(
-            "SELECT project_pprt FROM project WHERE project_id=%s AND is_active=1",
+            "SELECT project_id, project_pprt, is_active FROM project WHERE project_id=%s",
             (project_id,)
         )
 
@@ -432,8 +432,37 @@ def delete_project():
 
         files = parse_db_files(project.get("project_pprt"))
 
-        safe_delete_cloudinary_project_files(files)
+        cursor.execute(
+            "SELECT COUNT(*) AS n FROM task_work_tracker WHERE project_id=%s",
+            (project_id,),
+        )
+        tracker_count = int((cursor.fetchone() or {}).get("n") or 0)
 
+        cursor.execute(
+            "SELECT COUNT(*) AS n FROM project_monthly_tracker WHERE project_id=%s",
+            (project_id,),
+        )
+        monthly_count = int((cursor.fetchone() or {}).get("n") or 0)
+
+        # Empty unused projects (typical duplicate / never-used inactive row)
+        # can be removed from the list. Anything with history stays deactivated.
+        can_remove_row = tracker_count == 0 and monthly_count == 0
+
+        if can_remove_row:
+            safe_delete_cloudinary_project_files(files)
+            cursor.execute("DELETE FROM task WHERE project_id=%s", (project_id,))
+            cursor.execute("DELETE FROM project WHERE project_id=%s", (project_id,))
+            conn.commit()
+            return api_response(200, "Project deleted successfully")
+
+        cursor.execute(
+            """
+            UPDATE task
+            SET is_active = 0, updated_date = NOW()
+            WHERE project_id = %s AND is_active = 1
+            """,
+            (project_id,),
+        )
         cursor.execute(
             """
             UPDATE project
@@ -441,7 +470,7 @@ def delete_project():
                 updated_date = NOW()
             WHERE project_id = %s
             """,
-            (project_id,)
+            (project_id,),
         )
 
         conn.commit()
