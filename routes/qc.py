@@ -242,10 +242,6 @@ def upsert_temp_qc():
             qc_roles = {
                 "qa",
                 "qa agent",
-                "admin",
-                "super admin",
-                "project manager",
-                "assistant manager",
             }
             if role_norm not in qc_roles and "qa" not in role_norm:
                 return response(False, "Permission denied. You cannot update QC score.", None, 403)
