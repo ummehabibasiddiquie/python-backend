@@ -13,21 +13,7 @@ from collections import defaultdict
 # Load .env
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
-RECIPIENTS = [
-    "ummehabiba.siddiquie@transformsolution.net",
-    "dharmesh.jotania@transformsolution.net",
-    "yahya.irani@transformsolution.net",
-    "amit.mandviwala@transformsolution.net",
-    "sriman.narayan@transformsolution.net",
-    "shirin.gafoor@transformsolution.net",
-    "avinash.dwivedi@transformsolution.net",
-    "manas.pradhan@transformsolution.net"
-]
-
-CC_RECIPIENTS = [
-    "ashfaq@transformsolution.com",
-    "seema@transformsolution.com"
-]
+from report_email_recipients import CC_RECIPIENTS, RECIPIENTS
 
 # -------------------------------
 # DB CONNECTION
