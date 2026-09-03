@@ -34,6 +34,9 @@ def assign_daily_hours():
     - Vercel Cron: GET /qc/assign-daily-hours (Vercel always uses GET)
 
     Assigns hours per agent from roster Working/Half + user tenure.
+    Also writes 100% QC for yesterday (from 3 Sep 2026 onward, up to 14 days
+    back) when an agent had 0 production, no tracker file, and the day was
+    not only projects 7/8. Older no-file days are left for Add/Edit QC.
     Optional env CRON_SECRET: require Authorization: Bearer <secret>.
     """
     import os
@@ -95,8 +98,18 @@ def assign_daily_hours():
         )
         agent_rows = cur.fetchall() or []
 
+        from utils.qc_auto_score import apply_pending_auto_qc_scores
+
+        auto_qc_count = apply_pending_auto_qc_scores(cur, today)
+
         if not agent_rows:
-            return response(True, "No active agents found to assign hours.", None, 200)
+            conn.commit()
+            return response(
+                True,
+                f"No active agents found to assign hours. Auto QC applied for {auto_qc_count} day(s).",
+                {"date": today_str, "auto_qc_count": auto_qc_count},
+                200,
+            )
 
         sql = f"""
             INSERT INTO temp_qc (user_id, assigned_hours, {QC_DATE_COL}, updated_date)
@@ -132,12 +145,14 @@ def assign_daily_hours():
             True,
             (
                 f"Assigned roster/tenure-based hours to {len(data_to_insert)} agents for {today_str} "
-                f"(full={summary['full']}, half={summary['half']}, off/leave={summary['zero']})."
+                f"(full={summary['full']}, half={summary['half']}, off/leave={summary['zero']}). "
+                f"Auto QC 100% applied for {auto_qc_count} past day(s)."
             ),
             {
                 "date": today_str,
                 "month_year": month_year,
                 "assigned_count": len(data_to_insert),
+                "auto_qc_count": auto_qc_count,
                 **summary,
             },
             200,
@@ -220,7 +235,7 @@ def upsert_temp_qc():
         try:
             conn = get_db_connection()
             cur = conn.cursor(dictionary=True)
-            from utils.qc_auto_score import day_is_manual_qc_only
+            from utils.qc_auto_score import day_allows_manual_qc
 
             user_role = get_user_role(cur, int(logged_in_user_id))
             role_norm = (user_role or "").replace("_", " ").strip().lower()
@@ -234,10 +249,10 @@ def upsert_temp_qc():
             }
             if role_norm not in qc_roles and "qa" not in role_norm:
                 return response(False, "Permission denied. You cannot update QC score.", None, 403)
-            if not day_is_manual_qc_only(cur, int(user_id), qc_date):
+            if not day_allows_manual_qc(cur, int(user_id), qc_date):
                 return response(
                     False,
-                    "QC score can be entered only when the agent worked only on project 7 and/or 8 that day.",
+                    "QC score can be entered only for Training/Sample-only days, or days with no tracker file.",
                     None,
                     403,
                 )
