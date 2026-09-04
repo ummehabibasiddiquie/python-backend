@@ -12,7 +12,6 @@ from report_email_recipients import (
     lists_from_rows,
     normalize_email,
     normalize_type,
-    seed_defaults_if_empty,
 )
 from utils.response import api_response
 from utils.time_ist import now_str
@@ -56,8 +55,6 @@ def list_report_emails():
         if err:
             return api_response(403 if "Permission" in err else 400, err)
         ensure_table(cursor)
-        seed_defaults_if_empty(cursor, now_str())
-        conn.commit()
         rows = fetch_active_rows(cursor)
         to_list, cc_list = lists_from_rows(rows)
         return api_response(

@@ -54,15 +54,10 @@ class TestReportEmailHelpers(unittest.TestCase):
         self.assertNotIn("seema@transformsolution.com", full_cc)
         self.assertIn("ashfaq@transformsolution.com", tracker_cc)
 
-    def test_fallback_tracker_excludes_seema(self):
-        from report_email_recipients import fallback_lists
-
-        _, billable_cc = fallback_lists("billable")
-        _, tracker_cc = fallback_lists("tracker")
-        _, full_cc = fallback_lists("tracker_full")
-        self.assertIn("seema@transformsolution.com", billable_cc)
-        self.assertNotIn("seema@transformsolution.com", tracker_cc)
-        self.assertNotIn("seema@transformsolution.com", full_cc)
+    def test_empty_db_rows_return_empty_lists(self):
+        to_list, cc_list = lists_from_rows([], "billable")
+        self.assertEqual(to_list, [])
+        self.assertEqual(cc_list, [])
 
 
 if __name__ == "__main__":

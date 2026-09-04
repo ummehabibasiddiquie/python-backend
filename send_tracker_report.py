@@ -184,7 +184,8 @@ def send_email(subject, html_body):
 
     recipients, cc_recipients = get_report_email_lists("tracker")
     if not recipients:
-        raise RuntimeError("No To emails configured for the tracker report")
+        print("[tracker] No To emails in database; email not sent")
+        return False
     print("[tracker] To:", recipients)
     print("[tracker] Cc:", cc_recipients)
 
@@ -206,6 +207,7 @@ def send_email(subject, html_body):
         server.login(user, password)
         server.sendmail(user, all_recipients, msg.as_string())
     print("Email sent successfully")
+    return True
 
 # -------------------------------
 # MAIN
@@ -216,8 +218,11 @@ if __name__ == "__main__":
         data, start_str, end_str = get_daily_tracker_report_till_now()
         html_body = generate_html_report(data, start_str, end_str)
         subject = f"Daily Tracker Report - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        send_email(subject, html_body)
-        print(f"[CRON SUCCESS] Sent {len(data)} records")
+        sent = send_email(subject, html_body)
+        if sent:
+            print(f"[CRON SUCCESS] Sent {len(data)} records")
+        else:
+            print("[CRON SKIPPED] No To emails in database")
     except Exception as e:
         print("[CRON ERROR]", str(e))
         

@@ -1,8 +1,9 @@
 """
 To/CC for billable + tracker reports.
 
-Prefer rows in report_email_recipient (edited in HRMS).
-If the table is empty or DB is down, fall back to the lists below.
+Recipients come only from report_email_recipient (edited in HRMS).
+If there are no To emails or the DB cannot be read, log and return empty lists.
+Do not fall back to hardcoded addresses.
 """
 
 from __future__ import annotations
@@ -17,26 +18,6 @@ REPORT_FLAG_COLUMNS = {
     REPORT_TRACKER: "send_tracker",
     REPORT_TRACKER_FULL: "send_tracker_full",
 }
-
-DEFAULT_RECIPIENTS = [
-    "ummehabiba.siddiquie@transformsolution.net",
-    "dharmesh.jotania@transformsolution.net",
-    "yahya.irani@transformsolution.net",
-    "amit.mandviwala@transformsolution.net",
-    "sriman.narayan@transformsolution.net",
-    "shirin.gafoor@transformsolution.net",
-    "avinash.dwivedi@transformsolution.net",
-    "manas.pradhan@transformsolution.net",
-]
-
-DEFAULT_CC_RECIPIENTS = [
-    "ashfaq@transformsolution.com",
-    "seema@transformsolution.com",
-]
-# Used only if the DB list cannot be read. Seema is billable-only in production.
-DEFAULT_CC_TRACKER = [
-    "ashfaq@transformsolution.com",
-]
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -92,10 +73,6 @@ def flag_int(value, default=1) -> int:
         return 1 if int(float(value)) else 0
     except (TypeError, ValueError):
         return default
-
-
-def default_report_flags() -> dict[str, int]:
-    return {"send_billable": 1, "send_tracker": 1, "send_tracker_full": 1}
 
 
 def ensure_table(cursor) -> None:
@@ -161,68 +138,6 @@ def find_row_by_email(cursor, email: str):
     return cursor.fetchone()
 
 
-def seed_defaults_if_empty(cursor, now_str: str) -> None:
-    cursor.execute(
-        "SELECT COUNT(*) AS n FROM report_email_recipient WHERE is_active = 1"
-    )
-    row = cursor.fetchone() or {}
-    n = int((row.get("n") if isinstance(row, dict) else row[0]) or 0)
-    if n > 0:
-        return
-    for email in DEFAULT_RECIPIENTS:
-        flags = default_report_flags()
-        cursor.execute(
-            """
-            INSERT INTO report_email_recipient (
-                email, recipient_type, is_active,
-                send_billable, send_tracker, send_tracker_full,
-                created_date, updated_date
-            )
-            SELECT %s, 'to', 1, %s, %s, %s, %s, %s
-            FROM DUAL
-            WHERE NOT EXISTS (
-                SELECT 1 FROM report_email_recipient
-                WHERE LOWER(email) = %s AND is_active = 1
-            )
-            """,
-            (
-                normalize_email(email),
-                flags["send_billable"],
-                flags["send_tracker"],
-                flags["send_tracker_full"],
-                now_str,
-                now_str,
-                normalize_email(email),
-            ),
-        )
-    for email in DEFAULT_CC_RECIPIENTS:
-        flags = default_report_flags()
-        cursor.execute(
-            """
-            INSERT INTO report_email_recipient (
-                email, recipient_type, is_active,
-                send_billable, send_tracker, send_tracker_full,
-                created_date, updated_date
-            )
-            SELECT %s, 'cc', 1, %s, %s, %s, %s, %s
-            FROM DUAL
-            WHERE NOT EXISTS (
-                SELECT 1 FROM report_email_recipient
-                WHERE LOWER(email) = %s AND is_active = 1
-            )
-            """,
-            (
-                normalize_email(email),
-                flags["send_billable"],
-                flags["send_tracker"],
-                flags["send_tracker_full"],
-                now_str,
-                now_str,
-                normalize_email(email),
-            ),
-        )
-
-
 def fetch_active_rows(cursor) -> list[dict]:
     cursor.execute(
         """
@@ -282,36 +197,32 @@ def lists_from_rows(rows, report: str | None = None) -> tuple[list[str], list[st
     return to_list, cc_list
 
 
-def fallback_lists(report: str) -> tuple[list[str], list[str]]:
-    report_key = normalize_report(report)
-    cc = list(DEFAULT_CC_RECIPIENTS) if report_key == REPORT_BILLABLE else list(DEFAULT_CC_TRACKER)
-    return list(DEFAULT_RECIPIENTS), cc
-
-
 def get_report_email_lists(report: str = REPORT_BILLABLE) -> tuple[list[str], list[str]]:
-    """Used by cron senders. Never raises for DB issues — falls back to defaults."""
+    """Cron senders: database only. Empty lists if missing or DB error."""
     report_key = normalize_report(report)
     try:
         from config import get_db_connection
-        from utils.time_ist import now_str
 
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         try:
             ensure_table(cursor)
-            seed_defaults_if_empty(cursor, now_str())
-            conn.commit()
             to_list, cc_list = lists_from_rows(fetch_active_rows(cursor), report_key)
-            if to_list:
+            if not to_list:
                 print(
-                    f"[report_email_recipients] {report_key} from DB "
-                    f"to={len(to_list)} cc={cc_list}"
+                    f"[report_email_recipients] {report_key} no To emails in database; skip send"
                 )
-                return to_list, cc_list
-            print(f"[report_email_recipients] {report_key} DB To list empty; using file defaults")
+                return [], []
+            print(
+                f"[report_email_recipients] {report_key} from DB "
+                f"to={len(to_list)} cc={cc_list}"
+            )
+            return to_list, cc_list
         finally:
             cursor.close()
             conn.close()
     except Exception as e:
-        print(f"[report_email_recipients] Using file defaults ({e})")
-    return fallback_lists(report_key)
+        print(
+            f"[report_email_recipients] {report_key} database lookup failed; skip send ({e})"
+        )
+        return [], []

@@ -599,7 +599,8 @@ def send_email(report_date, html_body):
 
     recipients, cc_recipients = get_report_email_lists("billable")
     if not recipients:
-        raise RuntimeError("No To emails configured for the billable report")
+        print("[billable] No To emails in database; email not sent")
+        return False
     print("[billable] To:", recipients)
     print("[billable] Cc:", cc_recipients)
 
@@ -617,6 +618,7 @@ def send_email(report_date, html_body):
         server.starttls()
         server.login(user, password)
         server.sendmail(user, all_recipients, msg.as_string())
+    return True
 
 
 # -------------------------------
@@ -634,9 +636,11 @@ if __name__ == "__main__":
 
         html = generate_html(report_date, data)
 
-        send_email(report_date, html)
-
-        logging.info("Report sent successfully")
+        sent = send_email(report_date, html)
+        if sent:
+            logging.info("Report sent successfully")
+        else:
+            logging.info("Report not sent: no To emails in database")
 
     except Exception as e:
         print("Error:", str(e))

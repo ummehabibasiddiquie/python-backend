@@ -221,7 +221,8 @@ def send_email(subject, html_body):
     msg = MIMEMultipart("alternative")
     recipients, cc_recipients = get_report_email_lists("tracker_full")
     if not recipients:
-        raise RuntimeError("No To emails configured for the tracker report")
+        print("[tracker_full] No To emails in database; email not sent")
+        return False
     print("[tracker_full] To:", recipients)
     print("[tracker_full] Cc:", cc_recipients)
 
@@ -238,6 +239,7 @@ def send_email(subject, html_body):
         server.starttls()
         server.login(user, password)
         server.sendmail(user, all_recipients, msg.as_string())
+    return True
 
 # -------------------------------
 # MAIN
@@ -249,9 +251,11 @@ if __name__ == "__main__":
         html_body = generate_html(report_date, all_users, tracker_data)
 
         subject = f"{report_date.strftime('%d %B %Y')} Production Report"
-        send_email(subject, html_body)
-
-        print("[SUCCESS] Full day production report sent")
+        sent = send_email(subject, html_body)
+        if sent:
+            print("[SUCCESS] Full day production report sent")
+        else:
+            print("[SKIPPED] No To emails in database")
 
     except Exception as e:
         print("[ERROR]", str(e))
