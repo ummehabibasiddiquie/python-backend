@@ -106,6 +106,7 @@ def user_handler():
                 LEFT JOIN user_permission p ON u.user_id = p.user_id
                 WHERE u.user_email = %s
                   AND u.is_delete != 0
+                ORDER BY u.is_active DESC, u.user_id DESC
                 LIMIT 1
             """, (user_email,))
             user = cursor.fetchone()
@@ -113,7 +114,11 @@ def user_handler():
             if not user:
                 return api_response(401, "Invalid email or password")
 
-            if user.get("is_active") != 1:
+            try:
+                is_active = int(user.get("is_active") or 0)
+            except (TypeError, ValueError):
+                is_active = 0
+            if is_active != 1:
                 return api_response(403, "User account is inactive")
 
             stored_password = user.get("user_password")
@@ -231,12 +236,24 @@ def user_handler():
         conn.start_transaction()
 
         cursor.execute(
-            "SELECT user_id FROM tfs_user WHERE user_email=%s and is_active != 0 and is_delete != 0",
+            """
+            SELECT user_id, is_active
+            FROM tfs_user
+            WHERE user_email=%s AND is_delete != 0
+            ORDER BY is_active DESC, user_id DESC
+            LIMIT 1
+            """,
             (user_email,)
         )
-        if cursor.fetchone():
+        existing = cursor.fetchone()
+        if existing:
             conn.rollback()
-            return api_response(409, "User already exists")
+            if int(existing.get("is_active") or 0) == 1:
+                return api_response(409, "User already exists")
+            return api_response(
+                409,
+                "An inactive user already exists with this email. Reactivate that account instead of creating a new one.",
+            )
 
         cursor.execute("""
             INSERT INTO tfs_user (
