@@ -852,6 +852,44 @@ def sync_tracker_extra_hours_to_roster(
     return int(cursor.rowcount or 0)
 
 
+def sync_tracker_monthly_target_to_roster(
+    cursor,
+    user_id: int,
+    month_year: str,
+    monthly_target_hours: float | None = None,
+) -> int:
+    """
+    Push monthly_target from user_monthly_tracker to roster_month.monthly_target_hours.
+    Used when managers reduce or raise the monthly goal (e.g. no work for a few days).
+    """
+    if monthly_target_hours is None:
+        tracker = load_user_monthly_tracker_baseline(cursor, int(user_id), month_year)
+        monthly_target_hours = float(tracker.get("monthly_target") or 0)
+
+    cursor.execute(
+        """
+        SELECT status
+        FROM roster_month
+        WHERE user_id=%s AND month_year=%s AND is_active=1
+        LIMIT 1
+        """,
+        (int(user_id), str(month_year).strip()),
+    )
+    row = cursor.fetchone()
+    if row and (row.get("status") or "").strip() == "Locked":
+        return 0
+
+    cursor.execute(
+        """
+        UPDATE roster_month
+        SET monthly_target_hours=%s, updated_date=%s
+        WHERE user_id=%s AND month_year=%s AND is_active=1 AND status != 'Locked'
+        """,
+        (float(monthly_target_hours), now_str(), int(user_id), str(month_year).strip()),
+    )
+    return int(cursor.rowcount or 0)
+
+
 def is_calendar_working_day(day: dict) -> bool:
     """Business rule: only day_type=Working counts as a scheduled working day."""
     return day.get("day_type") == "Working"

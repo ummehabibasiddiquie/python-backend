@@ -3,7 +3,11 @@
 from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
-from utils.roster_helpers import sync_tracker_extra_hours_to_roster
+from utils.roster_helpers import (
+    can_manage_roster_employees,
+    sync_tracker_extra_hours_to_roster,
+    sync_tracker_monthly_target_to_roster,
+)
 from utils.qc_auto_score import AUTO_QC_DAYS_WITHOUT_EXISTING_SCORE_SQL
 from utils.time_ist import now_str
 from datetime import datetime, timedelta
@@ -226,6 +230,7 @@ def update_user_monthly_target():
         return api_response(400, "user_monthly_tracker_id is required")
 
     umt_id = int(data["user_monthly_tracker_id"])
+    logged_in_user_id = data.get("logged_in_user_id")
 
     updates = []
     params = []
@@ -238,9 +243,16 @@ def update_user_monthly_target():
         updates.append("month_year=%s")
         params.append(str(data["month_year"]).strip())  # keep as-is (MONYYYY)
 
+    parsed_monthly_target = None
     if "monthly_target" in data and data["monthly_target"] not in [None, ""]:
+        try:
+            parsed_monthly_target = float(str(data["monthly_target"]).strip())
+        except (TypeError, ValueError):
+            return api_response(400, "monthly_target must be a number")
+        if parsed_monthly_target < 0:
+            return api_response(400, "monthly_target cannot be negative")
         updates.append("monthly_target=%s")
-        params.append(str(data["monthly_target"]).strip())
+        params.append(str(parsed_monthly_target))
 
     if "extra_assigned_hours" in data and data["extra_assigned_hours"] not in [None, ""]:
         updates.append("extra_assigned_hours=%s")
@@ -269,6 +281,14 @@ def update_user_monthly_target():
         current = cursor.fetchone()
         if not current:
             return api_response(404, "Active record not found")
+
+        if logged_in_user_id not in [None, ""]:
+            ctx = get_role_context(cursor, int(logged_in_user_id))
+            if not can_manage_roster_employees(ctx.get("user_role_name") or ""):
+                return api_response(
+                    403,
+                    "Only Assistant Manager, Project Manager, Admin, or Super Admin can update monthly target",
+                )
 
         # Validate user if updating it
         if "user_id" in data and data["user_id"] not in [None, ""]:
@@ -320,18 +340,27 @@ def update_user_monthly_target():
         """
         cursor.execute(query, tuple(params))
 
+        final_user_id = int(
+            data["user_id"] if data.get("user_id") not in [None, ""] else current["user_id"]
+        )
+        final_month_year = str(
+            data["month_year"] if data.get("month_year") not in [None, ""] else current["month_year"]
+        ).strip()
+
         if "extra_assigned_hours" in data and data["extra_assigned_hours"] not in [None, ""]:
-            final_user_id = int(
-                data["user_id"] if data.get("user_id") not in [None, ""] else current["user_id"]
-            )
-            final_month_year = str(
-                data["month_year"] if data.get("month_year") not in [None, ""] else current["month_year"]
-            ).strip()
             sync_tracker_extra_hours_to_roster(
                 cursor,
                 final_user_id,
                 final_month_year,
                 float(data["extra_assigned_hours"]),
+            )
+
+        if parsed_monthly_target is not None:
+            sync_tracker_monthly_target_to_roster(
+                cursor,
+                final_user_id,
+                final_month_year,
+                parsed_monthly_target,
             )
 
         conn.commit()
