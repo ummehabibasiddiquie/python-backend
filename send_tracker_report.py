@@ -177,7 +177,7 @@ def send_email(subject, html_body):
     user = os.getenv("SMTP_USER")
     password = os.getenv("SMTP_PASS")
     from_name = os.getenv("SMTP_FROM_NAME", "No-Reply")
-    print(host, port, user, password)
+    print(host, port, user)
     
     print("EMAIL:", os.getenv("SMTP_USER"))
     print("PASSWORD LENGTH:", len(os.getenv("SMTP_PASS") or ""))

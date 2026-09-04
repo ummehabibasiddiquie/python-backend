@@ -8,7 +8,12 @@ Do not fall back to hardcoded addresses.
 
 from __future__ import annotations
 
+import os
 import re
+
+import mysql.connector
+from dotenv import load_dotenv
+from pathlib import Path
 
 REPORT_BILLABLE = "billable"
 REPORT_TRACKER = "tracker"
@@ -197,13 +202,23 @@ def lists_from_rows(rows, report: str | None = None) -> tuple[list[str], list[st
     return to_list, cc_list
 
 
+def _db_connection():
+    """MySQL only — do not import config.py (that requires cloudinary for Flask)."""
+    load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
+    return mysql.connector.connect(
+        host=os.getenv("DB_HOST"),
+        port=int(os.getenv("DB_PORT", 3306)),
+        user=os.getenv("DB_USERNAME"),
+        password=os.getenv("DB_PASSWORD"),
+        database=os.getenv("DB_DATABASE", "tfs_hrms"),
+    )
+
+
 def get_report_email_lists(report: str = REPORT_BILLABLE) -> tuple[list[str], list[str]]:
     """Cron senders: database only. Empty lists if missing or DB error."""
     report_key = normalize_report(report)
     try:
-        from config import get_db_connection
-
-        conn = get_db_connection()
+        conn = _db_connection()
         cursor = conn.cursor(dictionary=True)
         try:
             ensure_table(cursor)
