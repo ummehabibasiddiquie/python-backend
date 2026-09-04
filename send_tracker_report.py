@@ -185,6 +185,8 @@ def send_email(subject, html_body):
     recipients, cc_recipients = get_report_email_lists("tracker")
     if not recipients:
         raise RuntimeError("No To emails configured for the tracker report")
+    print("[tracker] To:", recipients)
+    print("[tracker] Cc:", cc_recipients)
 
     msg = MIMEMultipart("alternative")
     msg["From"] = f"{from_name} <{user}>"

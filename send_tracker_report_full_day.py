@@ -222,6 +222,8 @@ def send_email(subject, html_body):
     recipients, cc_recipients = get_report_email_lists("tracker_full")
     if not recipients:
         raise RuntimeError("No To emails configured for the tracker report")
+    print("[tracker_full] To:", recipients)
+    print("[tracker_full] Cc:", cc_recipients)
 
     msg["From"] = user
     msg["To"] = ", ".join(recipients)

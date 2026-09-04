@@ -600,6 +600,8 @@ def send_email(report_date, html_body):
     recipients, cc_recipients = get_report_email_lists("billable")
     if not recipients:
         raise RuntimeError("No To emails configured for the billable report")
+    print("[billable] To:", recipients)
+    print("[billable] Cc:", cc_recipients)
 
     msg["From"] = user
     msg["To"] = ", ".join(recipients)

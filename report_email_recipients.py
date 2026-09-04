@@ -33,6 +33,10 @@ DEFAULT_CC_RECIPIENTS = [
     "ashfaq@transformsolution.com",
     "seema@transformsolution.com",
 ]
+# Used only if the DB list cannot be read. Seema is billable-only in production.
+DEFAULT_CC_TRACKER = [
+    "ashfaq@transformsolution.com",
+]
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -279,7 +283,9 @@ def lists_from_rows(rows, report: str | None = None) -> tuple[list[str], list[st
 
 
 def fallback_lists(report: str) -> tuple[list[str], list[str]]:
-    return list(DEFAULT_RECIPIENTS), list(DEFAULT_CC_RECIPIENTS)
+    report_key = normalize_report(report)
+    cc = list(DEFAULT_CC_RECIPIENTS) if report_key == REPORT_BILLABLE else list(DEFAULT_CC_TRACKER)
+    return list(DEFAULT_RECIPIENTS), cc
 
 
 def get_report_email_lists(report: str = REPORT_BILLABLE) -> tuple[list[str], list[str]]:
@@ -297,7 +303,12 @@ def get_report_email_lists(report: str = REPORT_BILLABLE) -> tuple[list[str], li
             conn.commit()
             to_list, cc_list = lists_from_rows(fetch_active_rows(cursor), report_key)
             if to_list:
+                print(
+                    f"[report_email_recipients] {report_key} from DB "
+                    f"to={len(to_list)} cc={cc_list}"
+                )
                 return to_list, cc_list
+            print(f"[report_email_recipients] {report_key} DB To list empty; using file defaults")
         finally:
             cursor.close()
             conn.close()
