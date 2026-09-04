@@ -368,8 +368,10 @@ def update_user():
         if form.get("user_tenure") is not None:
             user_fields["user_tenure"] = form.get("user_tenure")
 
-        if form.get("team_id") is not None:
-            user_fields["team_id"] = form.get("team_id")
+        if form.get("team_id") is not None or form.get("team") is not None:
+            raw_team = form.get("team_id") if form.get("team_id") is not None else form.get("team")
+            s = str(raw_team or "").strip()
+            user_fields["team_id"] = int(s) if s.isdigit() else None
 
         if form.get("project_manager_id") is not None:
             user_fields["project_manager_id"] = to_db_json(form.get("project_manager_id"), allow_single=True)

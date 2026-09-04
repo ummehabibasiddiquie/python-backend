@@ -163,8 +163,24 @@ def user_handler():
     role_id = str(form["role_id"]).strip().lower()
 
     designation_id = form.get("designation_id")
-    team = form.get("team")
+    team = form.get("team") or form.get("team_id")
     user_tenure = form.get("user_tenure")
+
+    def _optional_int(val):
+        if val is None:
+            return None
+        s = str(val).strip()
+        if not s or s.lower() in ("null", "none"):
+            return None
+        try:
+            return int(s)
+        except ValueError:
+            return None
+
+    designation_id = _optional_int(designation_id)
+    team = _optional_int(team)
+    user_tenure = _optional_int(user_tenure)
+    role_id = _optional_int(role_id) or role_id
 
     user_number = form.get("user_number")
     user_address = form.get("user_address")
