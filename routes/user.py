@@ -195,6 +195,7 @@ def list_users():
                 u.project_manager_id,
                 u.asst_manager_id,
                 u.qa_id,
+                u.role_id,
                 r.role_name AS role,
                 t.team_name,
                 d.designation_id,
