@@ -17,7 +17,7 @@ from collections import defaultdict
 # -------------------------------
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
-from report_email_recipients import CC_RECIPIENTS, RECIPIENTS
+from report_email_recipients import get_report_email_lists
 
 
 LOG_FILE = Path(__file__).resolve().parent / "daily_tracker_report.log"
@@ -597,14 +597,19 @@ def send_email(report_date, html_body):
 
     msg = MIMEMultipart("alternative")
 
+    recipients, cc_recipients = get_report_email_lists("billable")
+    if not recipients:
+        raise RuntimeError("No To emails configured for the billable report")
+
     msg["From"] = user
-    msg["To"] = ", ".join(RECIPIENTS)
-    msg["Cc"] = ", ".join(CC_RECIPIENTS) 
+    msg["To"] = ", ".join(recipients)
+    if cc_recipients:
+        msg["Cc"] = ", ".join(cc_recipients)
     msg["Subject"] = f"Delivered billable hours on {report_date.strftime('%dth %B %Y')}"
 
     msg.attach(MIMEText(html_body, "html"))
 
-    all_recipients = RECIPIENTS + CC_RECIPIENTS
+    all_recipients = recipients + cc_recipients
     
     with smtplib.SMTP(host, port) as server:
         server.starttls()

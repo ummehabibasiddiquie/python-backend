@@ -125,7 +125,7 @@ def add_holiday():
     try:
         ctx = get_role_context(cursor, logged_in_user_id)
         if not can_modify_holiday_master(ctx.get("user_role_name", "")):
-            return api_response(403, "Only Super Admin can modify the Holiday Master")
+            return api_response(403, "Only Admin or Super Admin can modify the Holiday Master")
 
         cursor.execute(
             """
@@ -166,7 +166,7 @@ def update_holiday():
     try:
         ctx = get_role_context(cursor, logged_in_user_id)
         if not can_modify_holiday_master(ctx.get("user_role_name", "")):
-            return api_response(403, "Only Super Admin can modify the Holiday Master")
+            return api_response(403, "Only Admin or Super Admin can modify the Holiday Master")
 
         updates = []
         params: list = []
@@ -224,7 +224,7 @@ def deactivate_holiday():
     try:
         ctx = get_role_context(cursor, logged_in_user_id)
         if not can_modify_holiday_master(ctx.get("user_role_name", "")):
-            return api_response(403, "Only Super Admin can modify the Holiday Master")
+            return api_response(403, "Only Admin or Super Admin can modify the Holiday Master")
 
         cursor.execute(
             "UPDATE org_holiday SET is_active=0, updated_date=%s WHERE holiday_id=%s",
@@ -263,7 +263,7 @@ def upload_holiday_excel():
   try:
       ctx = get_role_context(cursor, int(logged_in_user_id))
       if not can_modify_holiday_master(ctx.get("user_role_name", "")):
-          return api_response(403, "Only Super Admin can modify the Holiday Master")
+          return api_response(403, "Only Admin or Super Admin can modify the Holiday Master")
 
       file_bytes = uploaded.read()
       df = pd.read_excel(io.BytesIO(file_bytes))

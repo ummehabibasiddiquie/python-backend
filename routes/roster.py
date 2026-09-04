@@ -22,7 +22,7 @@ from utils.roster_helpers import (
     is_admin_or_super_admin,
     is_last_week_of_month,
     is_self_read_only_roster_role,
-    is_super_admin,
+    can_reset_regenerate_roster,
     load_active_holidays,
     load_tracker_baselines_map,
     fill_missing_umt_for_roster_month,
@@ -332,8 +332,8 @@ def reset_regenerate_roster():
     try:
         ctx = get_role_context(cursor, logged_in_user_id)
         role_name = ctx.get("user_role_name", "")
-        if not is_super_admin(role_name):
-            return api_response(403, "Only Super Admin can reset and regenerate a roster month")
+        if not can_reset_regenerate_roster(role_name):
+            return api_response(403, "Only Admin or Super Admin can reset and regenerate a roster month")
 
         employees = get_eligible_employees(
             cursor, logged_in_user_id, role_name, target_year, target_month
@@ -465,8 +465,8 @@ def reset_regenerate_employee_roster():
     try:
         ctx = get_role_context(cursor, logged_in_user_id)
         role_name = ctx.get("user_role_name", "")
-        if not is_super_admin(role_name):
-            return api_response(403, "Only Super Admin can reset and regenerate a roster")
+        if not can_reset_regenerate_roster(role_name):
+            return api_response(403, "Only Admin or Super Admin can reset and regenerate a roster")
 
         employees = get_eligible_employees(
             cursor,

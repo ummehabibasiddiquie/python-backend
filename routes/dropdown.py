@@ -229,7 +229,7 @@ def get():
                 clean_qa = "REPLACE(REPLACE(REPLACE(REPLACE(u.qa_id,'[',''),']',''), '\"',''),' ','')"
 
                 # ---------------- ADMIN / SUPER ADMIN ---------------- #
-                if user_role in ["admin", "super admin"]:
+                if user_role in ["admin", "super admin", "project manager"]:
                     query = f"""
                         SELECT u.user_id, u.user_name AS label, u.user_tenure
                         FROM tfs_user u
@@ -255,7 +255,7 @@ def get():
                     query += " ORDER BY u.user_name"
 
                 # ---------------- PROJECT MANAGER ---------------- #
-                elif user_role in ["project manager", "manager"]:
+                elif user_role in ["manager"]:
                     query = f"""
                         SELECT u.user_id, u.user_name AS label, u.user_tenure
                         FROM tfs_user u
@@ -406,13 +406,13 @@ def get():
                     return api_response(404, "User not found")
                 params: list = []
                 where_sql = "WHERE p.is_active = 1"
-                if user_role in ["admin", "super admin"]:
+                if user_role in ["admin", "super admin", "project manager"]:
                     pass
                 elif user_role == "qa":
                     v = str(filter_id)
                     where_sql += " AND " + multi_id_match_sql("p.project_qa_id")
                     params.extend([v, v])
-                elif user_role in ["project manager", "manager"]:
+                elif user_role in ["manager"]:
                     v = str(filter_id)
                     where_sql += " AND " + multi_id_match_sql("p.project_manager_id")
                     params.extend([v, v])

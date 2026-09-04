@@ -11,7 +11,7 @@ from email.mime.multipart import MIMEMultipart
 # Load environment variables from .env in the same folder
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
-from report_email_recipients import CC_RECIPIENTS, RECIPIENTS
+from report_email_recipients import get_report_email_lists
 # -------------------------------
 # DATABASE CONNECTION
 # -------------------------------
@@ -171,7 +171,7 @@ def generate_html_report(data, start_str, end_str):
 # -------------------------------
 # SEND EMAIL
 # -------------------------------
-def send_email(to_emails, subject, html_body):
+def send_email(subject, html_body):
     host = os.getenv("SMTP_HOST")
     port = int(os.getenv("SMTP_PORT", "587"))
     user = os.getenv("SMTP_USER")
@@ -182,19 +182,19 @@ def send_email(to_emails, subject, html_body):
     print("EMAIL:", os.getenv("SMTP_USER"))
     print("PASSWORD LENGTH:", len(os.getenv("SMTP_PASS") or ""))
 
-    if isinstance(to_emails, str):
-        recipients = [to_emails]
-    else:
-        recipients = to_emails
+    recipients, cc_recipients = get_report_email_lists("tracker")
+    if not recipients:
+        raise RuntimeError("No To emails configured for the tracker report")
 
     msg = MIMEMultipart("alternative")
     msg["From"] = f"{from_name} <{user}>"
     msg["To"] = ", ".join(recipients)
-    msg["Cc"] = ", ".join(CC_RECIPIENTS) 
+    if cc_recipients:
+        msg["Cc"] = ", ".join(cc_recipients)
     msg["Subject"] = subject
     msg.attach(MIMEText(html_body, "html"))
     
-    all_recipients = RECIPIENTS + CC_RECIPIENTS
+    all_recipients = recipients + cc_recipients
 
     print(f"Connecting to SMTP: {host}:{port}")
     with smtplib.SMTP(host, port) as server:
@@ -214,7 +214,7 @@ if __name__ == "__main__":
         data, start_str, end_str = get_daily_tracker_report_till_now()
         html_body = generate_html_report(data, start_str, end_str)
         subject = f"Daily Tracker Report - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        send_email(RECIPIENTS, subject, html_body)
+        send_email(subject, html_body)
         print(f"[CRON SUCCESS] Sent {len(data)} records")
     except Exception as e:
         print("[CRON ERROR]", str(e))

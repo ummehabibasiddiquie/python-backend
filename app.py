@@ -20,6 +20,7 @@ from routes.qc_history_user_based import qc_history_user_bp
 from routes.user_monthly_report import user_monthly_report_bp
 from routes.holiday import holiday_bp
 from routes.roster import roster_bp
+from routes.report_email import report_email_bp
 import routes.roster_workflow  # Import workflow routes BEFORE registering blueprint
 
 from scheduler import start_scheduler
@@ -56,6 +57,7 @@ app.register_blueprint(qc_history_user_bp, url_prefix="/qc_history_user")
 app.register_blueprint(user_monthly_report_bp, url_prefix="/user_monthly_report")
 app.register_blueprint(holiday_bp, url_prefix="/holiday")
 app.register_blueprint(roster_bp, url_prefix="/roster")
+app.register_blueprint(report_email_bp, url_prefix="/report_email")
 
 # print("\n==== REGISTERED ROUTES ====")
 # for r in app.url_map.iter_rules():
@@ -78,4 +80,6 @@ def health():
 if __name__ == "__main__":
     # Start the scheduler
     start_scheduler()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # Reloader watches AppData/site-packages on Windows and restarts mid-request,
+    # which drops frontend calls (OPTIONS succeeds, POST never hits).
+    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)

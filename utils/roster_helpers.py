@@ -265,8 +265,9 @@ def is_super_admin(role_name: str) -> bool:
 
 
 def is_admin_or_super_admin(role_name: str) -> bool:
+    """Org-wide admin-level access: Admin, Super Admin, and Project Manager."""
     r = (role_name or "").strip().lower()
-    return r in ("admin", "super admin")
+    return r in ("admin", "super admin", "project manager")
 
 
 def is_self_read_only_roster_role(role_name: str) -> bool:
@@ -285,7 +286,12 @@ def can_manage_roster_employees(role_name: str) -> bool:
 
 
 def can_modify_holiday_master(role_name: str) -> bool:
-    return is_super_admin(role_name)
+    r = (role_name or "").strip().lower()
+    return r in ("admin", "super admin")
+
+
+def can_reset_regenerate_roster(role_name: str) -> bool:
+    return can_modify_holiday_master(role_name)
 
 
 def require_logged_in_user(data: dict) -> tuple[int | None, dict | None]:
@@ -318,7 +324,7 @@ def _employee_scope_sql(role_name: str, logged_in_user_id: int) -> tuple[str, li
     Reuses the same assignment filter pattern as user_monthly_report/list_users.
     """
     role_name = (role_name or "").strip().lower()
-    if role_name in ("admin", "super admin"):
+    if role_name in ("admin", "super admin", "project manager"):
         return "", []
     if role_name in ("agent", "qa"):
         return " AND u.user_id = %s", [int(logged_in_user_id)]

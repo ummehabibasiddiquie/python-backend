@@ -146,7 +146,7 @@ def get_subordinate_user_ids(cursor, role: str, logged_in_user_id: int) -> list[
     role = (role or "").strip().lower()
     v = str(logged_in_user_id)
 
-    if role in ["admin", "super admin"]:
+    if role in ["admin", "super admin", "project manager"]:
         return None
 
     if role == "agent":
@@ -239,7 +239,7 @@ def get_projects_for_role(cursor, role: str, logged_in_user_id: int) -> list[dic
     role = (role or "").strip().lower()
     v = str(logged_in_user_id)
 
-    if role in ["admin", "super admin"]:
+    if role in ["admin", "super admin", "project manager"]:
         cursor.execute(
             """
             SELECT project_id, project_name, project_code, project_description,
@@ -251,7 +251,7 @@ def get_projects_for_role(cursor, role: str, logged_in_user_id: int) -> list[dic
         )
         return cursor.fetchall() or []
 
-    if role in ["manager", "project manager", "product manager"]:
+    if role in ["manager", "product manager"]:
         cursor.execute(
             f"""
             SELECT project_id, project_name, project_code, project_description,

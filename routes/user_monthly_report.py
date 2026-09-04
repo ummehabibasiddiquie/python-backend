@@ -136,7 +136,7 @@ def list_users_for_monthly_tracker():
             user_where += " AND u.team_id=%s"
             user_params.append(int(filter_team_id))
 
-        if my_role_name in ("admin", "super admin"):
+        if my_role_name in ("admin", "super admin", "project manager"):
             pass
         elif my_role_name == "agent":
             user_where += " AND u.user_id=%s"
@@ -271,7 +271,7 @@ def list_user_monthly_targets():
             user_where += " AND u.team_id=%s"
             user_params.append(int(filter_team_id))
 
-        if my_role_name in ("admin", "super admin"):
+        if my_role_name in ("admin", "super admin", "project manager"):
             pass
         elif my_role_name == "agent":
             user_where += " AND u.user_id=%s"

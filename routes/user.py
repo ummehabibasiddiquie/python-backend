@@ -251,19 +251,6 @@ def list_users():
             params.append(str(int(user_id)))   # exact match
             params.append(str(int(user_id)))   # FIND_IN_SET
 
-        elif role in ["manager", "project manager"]:
-            query += """
-                AND (
-                    TRIM(COALESCE(u.project_manager_id, '')) = %s
-                    OR FIND_IN_SET(
-                        %s,
-                        REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(u.project_manager_id,''), '[',''), ']',''), '"',''), ' ', '')
-                    ) > 0
-                )
-            """
-            params.append(str(int(user_id)))   # exact match
-            params.append(str(int(user_id)))   # FIND_IN_SET
-
         if data.get("is_active") is not None:
             query += " AND u.is_active = %s"
             params.append(data.get("is_active"))

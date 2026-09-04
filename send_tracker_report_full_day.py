@@ -13,7 +13,7 @@ from collections import defaultdict
 # Load .env
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
-from report_email_recipients import CC_RECIPIENTS, RECIPIENTS
+from report_email_recipients import get_report_email_lists
 
 # -------------------------------
 # DB CONNECTION
@@ -219,13 +219,18 @@ def send_email(subject, html_body):
     password = os.getenv("SMTP_PASS")
 
     msg = MIMEMultipart("alternative")
+    recipients, cc_recipients = get_report_email_lists("tracker_full")
+    if not recipients:
+        raise RuntimeError("No To emails configured for the tracker report")
+
     msg["From"] = user
-    msg["To"] = ", ".join(RECIPIENTS)
-    msg["Cc"] = ", ".join(CC_RECIPIENTS) 
+    msg["To"] = ", ".join(recipients)
+    if cc_recipients:
+        msg["Cc"] = ", ".join(cc_recipients)
     msg["Subject"] = subject
     msg.attach(MIMEText(html_body, "html"))
     
-    all_recipients = RECIPIENTS + CC_RECIPIENTS
+    all_recipients = recipients + cc_recipients
 
     with smtplib.SMTP(host, port) as server:
         server.starttls()
