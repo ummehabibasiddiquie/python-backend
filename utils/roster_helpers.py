@@ -294,6 +294,11 @@ def can_reset_regenerate_roster(role_name: str) -> bool:
     return can_modify_holiday_master(role_name)
 
 
+def can_lock_unlock_roster(role_name: str) -> bool:
+    """Month/week lock and unlock: Admin and Super Admin only."""
+    return can_modify_holiday_master(role_name)
+
+
 def require_logged_in_user(data: dict) -> tuple[int | None, dict | None]:
     """Shared helper for extracting logged_in_user_id from request data."""
     logged_in_user_id = data.get("logged_in_user_id")

@@ -37,6 +37,7 @@ from utils.roster_helpers import (
     get_role_context,
     is_admin_or_super_admin,
     is_self_read_only_roster_role,
+    can_lock_unlock_roster,
     month_year_label,
     parse_date,
     parse_month_year,
@@ -1350,7 +1351,7 @@ def roster_lock_month():
     cursor = conn.cursor(dictionary=True)
     try:
         ctx = get_role_context(cursor, logged_in_user_id)
-        if not is_admin_or_super_admin(ctx.get("user_role_name", "")):
+        if not can_lock_unlock_roster(ctx.get("user_role_name", "")):
             return api_response(403, "Only Admin or Super Admin can lock roster months")
 
         if not can_lock_roster_month(month_year):
@@ -1429,7 +1430,7 @@ def roster_unlock_month():
     cursor = conn.cursor(dictionary=True)
     try:
         ctx = get_role_context(cursor, logged_in_user_id)
-        if not is_admin_or_super_admin(ctx.get("user_role_name", "")):
+        if not can_lock_unlock_roster(ctx.get("user_role_name", "")):
             return api_response(403, "Only Admin or Super Admin can unlock roster months")
 
         # Month-wide unlock (same scope as Lock)
@@ -1535,7 +1536,7 @@ def roster_lock_week():
     cursor = conn.cursor(dictionary=True)
     try:
         ctx = get_role_context(cursor, logged_in_user_id)
-        if not is_admin_or_super_admin(ctx.get("user_role_name", "")):
+        if not can_lock_unlock_roster(ctx.get("user_role_name", "")):
             return api_response(403, "Only Admin or Super Admin can lock roster weeks")
 
         meta = week_meta_for_number(month_year, week_number)
@@ -1630,7 +1631,7 @@ def roster_unlock_week():
     cursor = conn.cursor(dictionary=True)
     try:
         ctx = get_role_context(cursor, logged_in_user_id)
-        if not is_admin_or_super_admin(ctx.get("user_role_name", "")):
+        if not can_lock_unlock_roster(ctx.get("user_role_name", "")):
             return api_response(403, "Only Admin or Super Admin can unlock roster weeks")
 
         existing = get_week_lock(cursor, month_year, week_number)
