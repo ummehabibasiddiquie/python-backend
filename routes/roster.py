@@ -671,6 +671,7 @@ def list_rosters():
             if not is_admin_or_super_admin(role_name) and role_name not in (
                 "project manager",
                 "assistant manager",
+                "assistant team leader",
                 "team leader",
             ):
                 return api_response(403, "You do not have permission to list rosters")

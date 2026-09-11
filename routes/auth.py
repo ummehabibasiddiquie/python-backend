@@ -330,7 +330,7 @@ def user_handler():
         cursor.execute("""SELECT role_name FROM user_role WHERE role_id=%s""", (role_id,))
         role = cursor.fetchone()
 
-        if role and role.get("role_name") in ["qa", "agent", "team leader"]:
+        if role and role.get("role_name") in ["qa", "agent", "assistant team leader", "team leader"]:
             project_creation_permission = 0
             user_creation_permission = 0
         else:

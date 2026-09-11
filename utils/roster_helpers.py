@@ -275,16 +275,17 @@ def _norm_role(role_name: str) -> str:
 
 
 def is_team_leader(role_name: str, role_id=None) -> bool:
+    """Assistant Team Leader (role_id 7). Also accepts legacy name 'team leader'."""
     try:
         if int(role_id) == 7:
             return True
     except (TypeError, ValueError):
         pass
-    return _norm_role(role_name) == "team leader"
+    return _norm_role(role_name) in ("assistant team leader", "team leader")
 
 
 def is_read_only_role(role_name: str, role_id=None) -> bool:
-    """Team Leader cannot add/edit users, trackers, projects (roster edits are allowed separately)."""
+    """Assistant Team Leader cannot add/edit users, trackers, projects (roster edits are allowed separately)."""
     return is_team_leader(role_name, role_id)
 
 
@@ -299,7 +300,7 @@ def can_view_as_assistant_manager(role_name: str, role_id=None) -> bool:
             return True
     except (TypeError, ValueError):
         pass
-    return _norm_role(role_name) in ("assistant manager", "team leader")
+    return _norm_role(role_name) in ("assistant manager", "assistant team leader", "team leader")
 
 
 def can_manage_roster_employees(role_name: str) -> bool:
@@ -309,7 +310,8 @@ def can_manage_roster_employees(role_name: str) -> bool:
         "admin",
         "project manager",
         "assistant manager",
-        "team leader",
+        "assistant team leader",
+        "team leader",  # legacy
     )
 
 
@@ -323,11 +325,11 @@ def reject_if_read_only(role_name: str, role_id=None):
     if not is_read_only_role(role_name, role_id):
         return None
     from utils.response import api_response
-    return api_response(403, "Team Leader has view-only access")
+    return api_response(403, "Assistant Team Leader has view-only access")
 
 
 def reject_read_only_actor(cursor, user_id):
-    """Look up actor role and reject Team Leader writes."""
+    """Look up actor role and reject Assistant Team Leader non-roster writes."""
     if not user_id:
         return None
     ctx = get_role_context(cursor, int(user_id))
@@ -420,7 +422,7 @@ def _employee_scope_sql(role_name: str, logged_in_user_id: int) -> tuple[str, li
         return " AND u.user_id = %s", [int(logged_in_user_id)]
 
     mid = str(logged_in_user_id)
-    if role_name == "team leader":
+    if is_team_leader(role_name):
         return (
             f" AND {team_leader_scope_sql('u')}",
             team_leader_scope_params(logged_in_user_id),

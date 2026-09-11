@@ -200,7 +200,7 @@ def get_subordinate_user_ids(cursor, role: str, logged_in_user_id: int) -> list[
         return ids
 
     # ✅ Team Leader: team_leader_id assignees OR same team (view-only)
-    if role == "team leader":
+    if role in ("assistant team leader", "team leader"):
         from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
         cursor.execute(
             f"""
@@ -295,7 +295,7 @@ def get_projects_for_role(cursor, role: str, logged_in_user_id: int) -> list[dic
         )
         return cursor.fetchall() or []
 
-    if role == "team leader":
+    if role in ("assistant team leader", "team leader"):
         from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
         clean_team = "REPLACE(REPLACE(REPLACE(REPLACE(p.project_team_id,'[',''),']',''),'\"',''),' ','')"
         cursor.execute(

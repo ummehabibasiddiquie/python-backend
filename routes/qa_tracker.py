@@ -149,7 +149,7 @@ def _ctx_can_view_as_manager(ctx: dict) -> bool:
         return True
     if _int(ctx.get("user_role_id")) == 7:
         return True
-    return (ctx.get("user_role_name") or "").strip().lower() == "team leader"
+    return (ctx.get("user_role_name") or "").strip().lower() in ("assistant team leader", "team leader")
 
 
 def _is_qa_role(role_name: str, role_id=None) -> bool:

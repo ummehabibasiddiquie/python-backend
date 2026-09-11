@@ -141,7 +141,7 @@ def list_users_for_monthly_tracker():
         elif my_role_name == "agent":
             user_where += " AND u.user_id=%s"
             user_params.append(int(logged_in_user_id))
-        elif my_role_name == "team leader":
+        elif my_role_name in ("assistant team leader", "team leader"):
             from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
             user_where += f" AND {team_leader_scope_sql('u')}"
             user_params.extend(team_leader_scope_params(logged_in_user_id))
@@ -280,7 +280,7 @@ def list_user_monthly_targets():
         elif my_role_name == "agent":
             user_where += " AND u.user_id=%s"
             user_params.append(int(logged_in_user_id))
-        elif my_role_name == "team leader":
+        elif my_role_name in ("assistant team leader", "team leader"):
             from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
             user_where += f" AND {team_leader_scope_sql('u')}"
             user_params.extend(team_leader_scope_params(logged_in_user_id))

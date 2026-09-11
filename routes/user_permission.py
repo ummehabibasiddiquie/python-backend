@@ -33,7 +33,7 @@ def user_list_with_permissions():
         role = (role_row["role_name"] or "").lower()
 
         # 2) Block QA, Agent, and Team Leader (view-only)
-        if role in ["qa", "agent", "team leader"]:
+        if role in ["qa", "agent", "assistant team leader", "team leader"]:
             return api_response(403, "You are not allowed to view user permissions", [])
 
         # 3) Base query: user details + role + designation + permissions

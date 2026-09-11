@@ -10,7 +10,8 @@ ROLE_BASED_USER_DROPDOWNS = (
     "admin",
     "project manager",
     "assistant manager",
-    "team leader",
+    "assistant team leader",
+    "team leader",  # legacy alias → treated as assistant team leader
     "qa",
     "agent"
 )
@@ -22,6 +23,7 @@ ACTIVE_ONLY_USER_DROPDOWNS = (
     "super admin",
     "admin",
     "project manager",
+    "assistant team leader",
     "team leader",
 )
 
@@ -52,6 +54,8 @@ def get():
         return api_response(400, "dropdown_type is required")
 
     dropdown_type = (data["dropdown_type"] or "").strip().lower()
+    if dropdown_type == "team leader":
+        dropdown_type = "assistant team leader"
 
     # Calculate 2-month window for deactivated_at logic
     # If current month is June, show users deactivated from May 1st to June 30th
@@ -308,7 +312,7 @@ def get():
                     params = (month_start, month_end, logged_in_user_id)
 
                 # ---------------- TEAM LEADER (assignees OR same team, view-only) ---------------- #
-                elif user_role == "team leader":
+                elif user_role in ("assistant team leader", "team leader"):
                     from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
                     query = f"""
                         SELECT u.user_id, u.user_name AS label, u.user_tenure
@@ -462,7 +466,7 @@ def get():
                     v = str(filter_id)
                     where_sql += " AND " + multi_id_match_sql("p.asst_project_manager_id")
                     params.extend([v, v])
-                elif user_role == "team leader":
+                elif user_role in ("assistant team leader", "team leader"):
                     from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
                     v = str(filter_id)
                     clean_team = "REPLACE(REPLACE(REPLACE(REPLACE(p.project_team_id,'[',''),']',''),'\"',''),' ','')"

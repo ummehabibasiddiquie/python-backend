@@ -254,7 +254,7 @@ def list_users():
             params.append(str(int(user_id)))   # exact match
             params.append(str(int(user_id)))   # FIND_IN_SET
 
-        elif role == "team leader":
+        elif role in ("assistant team leader", "team leader"):
             from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
             query += f" AND {team_leader_scope_sql('u')}"
             params.extend(team_leader_scope_params(user_id))

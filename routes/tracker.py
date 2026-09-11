@@ -865,7 +865,7 @@ def view_trackers():
             placeholders = ",".join(["%s"] * len(user_ids_filter))
             where_clauses.append(f"twt.user_id IN ({placeholders})")
             params.extend(user_ids_filter)
-        elif role_name == "team leader":
+        elif role_name in ("assistant team leader", "team leader"):
             where_clauses.append(team_leader_scope_sql("u"))
             params.extend(team_leader_scope_params(logged_in_user_id))
         elif role_name not in ("admin", "super admin", "project manager"):
@@ -1191,7 +1191,7 @@ def view_daily_trackers():
             where += " AND twt.user_id=%s"
             params.append(data["user_id"])
         else:
-            if role_name == "team leader":
+            if role_name in ("assistant team leader", "team leader"):
                 where += f" AND {team_leader_scope_sql('u')}"
                 params.extend(team_leader_scope_params(logged_in_user_id))
             elif "admin" not in role_name and "project manager" not in role_name:

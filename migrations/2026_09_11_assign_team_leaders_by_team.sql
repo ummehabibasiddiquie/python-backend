@@ -1,4 +1,4 @@
--- Deploy step: assign Team Leaders by team (agents only)
+-- Deploy step: assign Assistant Team Leaders by team (agents only)
 -- Prerequisites (run first if not already applied):
 --   1) migrations/2026_09_11_team_leader_role.sql
 --   2) migrations/2026_09_11_tfs_user_team_leader_id.sql

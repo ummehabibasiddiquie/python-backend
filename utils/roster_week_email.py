@@ -34,6 +34,7 @@ APPROVER_ROLES = ("admin", "super admin")
 WEEKLY_ROSTER_ROLES = (
     "qa",
     "assistant manager",
+    "assistant team leader",
     "team leader",
     "project manager",
     "admin",
@@ -74,7 +75,7 @@ def get_admin_super_admin_emails(cursor) -> list[str]:
 
 
 def roster_weekly_recipients(cursor) -> tuple[list[str], list[str]]:
-    """Active QA, AM, Team Leader, PM, Admin, Super Admin — weekly roster To list."""
+    """Active QA, AM, Assistant Team Leader, PM, Admin, Super Admin — weekly roster To list."""
     return _active_emails_for_roles(cursor, WEEKLY_ROSTER_ROLES), []
 
 
