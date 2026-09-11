@@ -6,6 +6,7 @@ from utils.cloudinary_utils import upload_to_cloudinary, delete_from_cloudinary,
 from datetime import datetime, timedelta, date
 from collections import defaultdict
 from utils.qc_auto_score import AUTO_QC_DAYS_SQL, MANUAL_QC_DAYS_SQL, sync_auto_qc_score_for_day
+from utils.time_ist import today_str as ist_today_str
 import logging
 import re
 import os
@@ -289,11 +290,32 @@ def _parse_tracker_date_source(date_time_value):
     if not s:
         return None
 
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
         try:
             return datetime.strptime(s, fmt)
         except Exception:
             continue
+    return None
+
+
+def _tracker_work_date(value) -> str | None:
+    parsed = _parse_tracker_date_source(value)
+    if parsed:
+        return parsed.strftime("%Y-%m-%d")
+    raw = str(value or "").strip()[:10]
+    if not raw:
+        return None
+    try:
+        datetime.strptime(raw, "%Y-%m-%d")
+        return raw
+    except ValueError:
+        return None
+
+
+def _reject_future_tracker_date(value):
+    work_date = _tracker_work_date(value)
+    if work_date and work_date > ist_today_str():
+        return api_response(400, "Tracker cannot be added for a future date")
     return None
 
 
@@ -343,6 +365,9 @@ def add_tracker():
     production = float(form["production"])
     shift = form.get("shift", "DAY").upper()
     now_str = form.get("date")
+    future_err = _reject_future_tracker_date(now_str)
+    if future_err:
+        return future_err
     print(now_str)
 
     conn = get_db_connection()
@@ -424,6 +449,12 @@ def add_tracker():
                 adjusted_datetime = now
                 
             now_str = adjusted_datetime.strftime("%Y-%m-%d %H:%M:%S")
+
+        future_err = _reject_future_tracker_date(now_str)
+        if future_err:
+            if new_file_saved:
+                safe_delete_cloudinary_tracker(new_file_saved)
+            return future_err
         
         tracker_note = form.get("tracker_note")  # optional, can be null
 
@@ -491,6 +522,9 @@ def update_tracker():
         date_time = form.get("date_time", tracker["date_time"])
         project_id = form.get("project_id", tracker["project_id"])
         task_id = form.get("task_id", tracker["task_id"])
+        future_err = _reject_future_tracker_date(date_time)
+        if future_err:
+            return future_err
         print(date_time)
 
         # tenure + user_name

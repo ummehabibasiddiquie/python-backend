@@ -124,14 +124,27 @@ def _resolve_sync_user_ids(cursor, manager: bool, logged_in_user_id: int, reques
     return _active_qa_user_ids(cursor)
 
 
-def _is_manager(role_name: str) -> bool:
+def _is_manager(role_name: str, role_id=None) -> bool:
+    if _int(role_id) in (1, 2, 3, 4):
+        return True
     r = (role_name or "").strip().lower()
     return r in ("admin", "super admin", "project manager", "assistant manager")
 
 
-def _is_qa_role(role_name: str) -> bool:
+def _ctx_is_manager(ctx: dict) -> bool:
+    return _is_manager(ctx.get("user_role_name") or "", ctx.get("user_role_id"))
+
+
+def _is_qa_role(role_name: str, role_id=None) -> bool:
+    if _int(role_id) == 5:
+        return True
     r = (role_name or "").strip().lower()
     return r == "qa" or "qa" in r
+
+
+def _user_is_qa(cursor, user_id: int) -> bool:
+    ctx = get_role_context(cursor, int(user_id))
+    return _is_qa_role(ctx.get("user_role_name") or "", ctx.get("user_role_id"))
 
 
 def _float(value, default=0.0) -> float:
@@ -255,7 +268,7 @@ def _resolve_target_qa(cursor, logged_in_user_id: int, requested_qa_user_id) -> 
         target_id = logged_in_user_id
     else:
         target_id = int(requested_qa_user_id)
-        if target_id != logged_in_user_id and not _is_manager(role_name):
+        if target_id != logged_in_user_id and not _ctx_is_manager(ctx):
             return None, ctx, api_response(403, "Not authorized to view another user's QA tracker")
     return target_id, ctx, None
 
@@ -770,10 +783,9 @@ def qa_tracker_add_entry():
         return err
 
     today = today_str()
-    requested_date = _parse_date(data.get("work_date"))
-    if requested_date and requested_date != today:
-        return api_response(400, "Tracker can only be added for today")
-    work_date = today
+    requested_date = _parse_date(data.get("work_date")) or today
+    if requested_date > today:
+        return api_response(400, "Tracker cannot be added for a future date")
     activity_type = str(data.get("activity_type") or "").strip().lower()
     if activity_type not in MANUAL_ACTIVITIES:
         return api_response(400, "Select Feedback & Training or Reporting & Other")
@@ -791,12 +803,20 @@ def qa_tracker_add_entry():
         target_id, ctx, auth_err = _resolve_target_qa(cursor, logged_in_user_id, requested_qa)
         if auth_err:
             return auth_err
-        role_name = ctx.get("user_role_name") or ""
-        manager = _is_manager(role_name)
-        if manager and requested_qa in (None, "", 0, "0"):
-            return api_response(400, "Select a QA to add hours for")
-        if target_id != logged_in_user_id and not manager:
-            return api_response(403, "Not authorized to add hours for another user")
+        manager = _ctx_is_manager(ctx)
+        if manager:
+            if requested_qa in (None, "", 0, "0"):
+                return api_response(400, "Select a QA to add hours for")
+            if not _user_is_qa(cursor, target_id):
+                return api_response(400, "Tracker can only be added for a QA")
+        else:
+            if not _user_is_qa(cursor, logged_in_user_id):
+                return api_response(403, "Only QA can add this tracker")
+            if target_id != logged_in_user_id:
+                return api_response(403, "Not authorized to add hours for another user")
+            if requested_date != today:
+                return api_response(400, "Tracker can only be added for today")
+        work_date = requested_date if manager else today
 
         now = now_str()
         temp_source_id = (uuid.uuid4().int % 2147483646) + 1
@@ -857,9 +877,8 @@ def qa_tracker_delete_entry():
             return api_response(400, "Only Feedback and Reporting entries can be deleted")
 
         ctx = get_role_context(cursor, logged_in_user_id)
-        role_name = ctx.get("user_role_name") or ""
         owner_id = int(row["qa_user_id"])
-        manager = _is_manager(role_name)
+        manager = _ctx_is_manager(ctx)
         if owner_id != logged_in_user_id and not manager:
             return api_response(403, "Not authorized to delete this entry")
         if not manager and not _within_delete_window(row.get("created_at")):
@@ -896,8 +915,7 @@ def qa_tracker_update_entry():
     cursor = conn.cursor(dictionary=True)
     try:
         ctx = get_role_context(cursor, logged_in_user_id)
-        role_name = ctx.get("user_role_name") or ""
-        if not _is_manager(role_name):
+        if not _ctx_is_manager(ctx):
             return api_response(403, "Only managers can update Feedback and Reporting entries")
 
         cursor.execute(
@@ -914,11 +932,15 @@ def qa_tracker_update_entry():
             return api_response(404, "Entry not found")
         if row.get("activity_type") not in MANUAL_ACTIVITIES:
             return api_response(400, "Only Feedback and Reporting entries can be updated")
+        if not _user_is_qa(cursor, int(row["qa_user_id"])):
+            return api_response(400, "Tracker can only be updated for a QA")
 
         activity_type = str(data.get("activity_type") or row.get("activity_type") or "").strip().lower()
         if activity_type not in MANUAL_ACTIVITIES:
             return api_response(400, "Select Feedback & Training or Reporting & Other")
         work_date = _parse_date(data.get("work_date")) or _date_str(row.get("work_date"))
+        if work_date > today_str():
+            return api_response(400, "Tracker cannot be added for a future date")
         hours = _round4(data.get("hours") if data.get("hours") is not None else row.get("hours"))
         if hours <= 0:
             return api_response(400, "Hours must be greater than 0")
@@ -980,7 +1002,7 @@ def qa_tracker_entries():
         role_name = ctx.get("user_role_name") or ""
         if not role_name:
             return api_response(404, "User not found")
-        manager = _is_manager(role_name)
+        manager = _ctx_is_manager(ctx)
         requested = data.get("qa_user_id")
         _deactivate_zero_manual_rows(cursor)
         conn.commit()
@@ -1068,7 +1090,7 @@ def qa_tracker_day():
         conn.commit()
         ctx = get_role_context(cursor, logged_in_user_id)
         payload = _fetch_day_payload(
-            cursor, target_id, work_date, logged_in_user_id, _is_manager(ctx.get("user_role_name") or "")
+            cursor, target_id, work_date, logged_in_user_id, _ctx_is_manager(ctx)
         )
         return api_response(200, "QA tracker day fetched", payload)
     except Exception as e:
@@ -1081,7 +1103,7 @@ def qa_tracker_day():
                     target_id,
                     work_date,
                     logged_in_user_id,
-                    _is_manager(ctx.get("user_role_name") or ""),
+                    _ctx_is_manager(ctx),
                 )
                 return api_response(200, "QA tracker day fetched", payload)
             except Exception:
@@ -1116,7 +1138,7 @@ def qa_tracker_list():
         if not role_name:
             return api_response(404, "User not found")
 
-        manager = _is_manager(role_name)
+        manager = _ctx_is_manager(ctx)
         requested = data.get("qa_user_id")
         params = [start_date, end_date]
         where = """
@@ -1301,7 +1323,7 @@ def qa_tracker_monthly():
         if not role_name:
             return api_response(404, "User not found")
 
-        manager = _is_manager(role_name)
+        manager = _ctx_is_manager(ctx)
         requested = data.get("qa_user_id")
         params = [start_date, end_date]
         where = """
