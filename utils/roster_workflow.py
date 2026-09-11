@@ -144,7 +144,8 @@ def is_month_locked(status: str) -> bool:
 
 
 def can_approve_reject(role_name: str) -> bool:
-    return is_admin_or_super_admin(role_name)
+    """Roster approval/reject: Admin and Super Admin only (not PM / AM / TL)."""
+    return (role_name or "").strip().lower() in ("admin", "super admin")
 
 
 def get_roster_month(cursor, roster_month_id: int, active_only: bool = True) -> dict | None:

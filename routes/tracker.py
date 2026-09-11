@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, date
 from collections import defaultdict
 from utils.qc_auto_score import AUTO_QC_DAYS_SQL, MANUAL_QC_DAYS_SQL, sync_auto_qc_score_for_day
 from utils.time_ist import today_str as ist_today_str
+from utils.roster_helpers import reject_if_read_only, team_leader_scope_sql, team_leader_scope_params
 import logging
 import re
 import os
@@ -374,6 +375,14 @@ def add_tracker():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        actor_id = form.get("logged_in_user_id")
+        if actor_id:
+            actor_ctx = get_role_context(cursor, int(actor_id))
+            read_only_err = reject_if_read_only(
+                actor_ctx.get("user_role_name"), actor_ctx.get("user_role_id")
+            )
+            if read_only_err:
+                return read_only_err
         # --- validate task + get task_target
         cursor.execute("SELECT task_target, task_name FROM task WHERE task_id=%s", (task_id,))
         task_row = cursor.fetchone()
@@ -514,6 +523,15 @@ def update_tracker():
         tracker = cursor.fetchone()
         if not tracker:
             return api_response(404, "Tracker not found")
+
+        actor_id = form.get("logged_in_user_id")
+        if actor_id:
+            actor_ctx = get_role_context(cursor, int(actor_id))
+            read_only_err = reject_if_read_only(
+                actor_ctx.get("user_role_name"), actor_ctx.get("user_role_id")
+            )
+            if read_only_err:
+                return read_only_err
 
         old_file = tracker.get("tracker_file")  # may be filename OR url/path
 
@@ -735,6 +753,15 @@ def delete_tracker():
         if not tracker:
             return api_response(404, "Tracker not found")
 
+        actor_id = data.get("logged_in_user_id")
+        if actor_id:
+            actor_ctx = get_role_context(cursor, int(actor_id))
+            read_only_err = reject_if_read_only(
+                actor_ctx.get("user_role_name"), actor_ctx.get("user_role_id")
+            )
+            if read_only_err:
+                return read_only_err
+
         # ✅ soft delete DB
         cursor.execute(
             "UPDATE task_work_tracker SET is_active = 0 WHERE tracker_id = %s",
@@ -838,6 +865,9 @@ def view_trackers():
             placeholders = ",".join(["%s"] * len(user_ids_filter))
             where_clauses.append(f"twt.user_id IN ({placeholders})")
             params.extend(user_ids_filter)
+        elif role_name == "team leader":
+            where_clauses.append(team_leader_scope_sql("u"))
+            params.extend(team_leader_scope_params(logged_in_user_id))
         elif role_name not in ("admin", "super admin", "project manager"):
             manager_id_str = str(logged_in_user_id)
             manager_id_int = int(logged_in_user_id)
@@ -1161,7 +1191,10 @@ def view_daily_trackers():
             where += " AND twt.user_id=%s"
             params.append(data["user_id"])
         else:
-            if "admin" not in role_name and "project manager" not in role_name:
+            if role_name == "team leader":
+                where += f" AND {team_leader_scope_sql('u')}"
+                params.extend(team_leader_scope_params(logged_in_user_id))
+            elif "admin" not in role_name and "project manager" not in role_name:
                 manager_id_str = str(logged_in_user_id)
                 manager_id_int = int(logged_in_user_id)
                 where += f"""

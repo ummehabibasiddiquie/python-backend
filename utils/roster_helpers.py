@@ -270,19 +270,103 @@ def is_admin_or_super_admin(role_name: str) -> bool:
     return r in ("admin", "super admin", "project manager")
 
 
+def _norm_role(role_name: str) -> str:
+    return (role_name or "").strip().lower().replace("_", " ")
+
+
+def is_team_leader(role_name: str, role_id=None) -> bool:
+    try:
+        if int(role_id) == 7:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return _norm_role(role_name) == "team leader"
+
+
+def is_read_only_role(role_name: str, role_id=None) -> bool:
+    """Team Leader cannot add/edit users, trackers, projects (roster edits are allowed separately)."""
+    return is_team_leader(role_name, role_id)
+
+
 def is_self_read_only_roster_role(role_name: str) -> bool:
     """Agent and QA may view only their own roster; no edits."""
-    return (role_name or "").strip().lower() in ("agent", "qa")
+    return _norm_role(role_name) in ("agent", "qa")
+
+
+def can_view_as_assistant_manager(role_name: str, role_id=None) -> bool:
+    try:
+        if int(role_id) in (4, 7):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return _norm_role(role_name) in ("assistant manager", "team leader")
 
 
 def can_manage_roster_employees(role_name: str) -> bool:
-    """Roles that can generate or manage rosters for employees in their scope."""
-    return (role_name or "").strip().lower() in (
+    """Roles that can generate or edit rosters (change requests / submit) in their scope."""
+    return _norm_role(role_name) in (
         "super admin",
         "admin",
         "project manager",
         "assistant manager",
+        "team leader",
     )
+
+
+def can_view_roster_employees(role_name: str) -> bool:
+    """Roles that can list/view employee rosters in their scope."""
+    return can_manage_roster_employees(role_name)
+
+
+def reject_if_read_only(role_name: str, role_id=None):
+    """Block Team Leader on non-roster writes (users, trackers, etc.). Roster uses can_manage_roster_employees."""
+    if not is_read_only_role(role_name, role_id):
+        return None
+    from utils.response import api_response
+    return api_response(403, "Team Leader has view-only access")
+
+
+def reject_read_only_actor(cursor, user_id):
+    """Look up actor role and reject Team Leader writes."""
+    if not user_id:
+        return None
+    ctx = get_role_context(cursor, int(user_id))
+    return reject_if_read_only(ctx.get("user_role_name"), ctx.get("user_role_id"))
+
+
+def same_team_sql(user_alias: str = "u") -> str:
+    """Restrict rows to the actor's team_id. Bind the actor user_id once."""
+    return (
+        f"{user_alias}.team_id = (SELECT team_id FROM tfs_user WHERE user_id=%s LIMIT 1) "
+        f"AND {user_alias}.team_id IS NOT NULL"
+    )
+
+
+def team_leader_scope_sql(user_alias: str = "u") -> str:
+    """
+    Team Leader visibility:
+    - users with this TL in team_leader_id, OR
+    - users on the same team_id as the TL
+    Bind the TL user_id three times: (id_str, id_str, id_int_for_team_subquery).
+    """
+    clean_tl = (
+        f"REPLACE(REPLACE(REPLACE(REPLACE(COALESCE({user_alias}.team_leader_id,''),"
+        f"'[',''),']',''),'\"',''),' ','')"
+    )
+    return f"""(
+        TRIM(COALESCE({user_alias}.team_leader_id, '')) = %s
+        OR FIND_IN_SET(%s, {clean_tl}) > 0
+        OR (
+            {user_alias}.team_id IS NOT NULL
+            AND {user_alias}.team_id = (SELECT team_id FROM tfs_user WHERE user_id = %s LIMIT 1)
+        )
+    )"""
+
+
+def team_leader_scope_params(logged_in_user_id: int) -> list:
+    mid = str(int(logged_in_user_id))
+    uid = int(logged_in_user_id)
+    return [mid, mid, uid]
 
 
 def can_modify_holiday_master(role_name: str) -> bool:
@@ -327,6 +411,7 @@ def get_roster_role_ids(cursor) -> dict[str, int | None]:
 def _employee_scope_sql(role_name: str, logged_in_user_id: int) -> tuple[str, list]:
     """
     Reuses the same assignment filter pattern as user_monthly_report/list_users.
+    Team Leader: team_leader_id assignees OR same team.
     """
     role_name = (role_name or "").strip().lower()
     if role_name in ("admin", "super admin", "project manager"):
@@ -335,6 +420,12 @@ def _employee_scope_sql(role_name: str, logged_in_user_id: int) -> tuple[str, li
         return " AND u.user_id = %s", [int(logged_in_user_id)]
 
     mid = str(logged_in_user_id)
+    if role_name == "team leader":
+        return (
+            f" AND {team_leader_scope_sql('u')}",
+            team_leader_scope_params(logged_in_user_id),
+        )
+
     return (
         """
         AND (

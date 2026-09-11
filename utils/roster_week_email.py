@@ -34,6 +34,7 @@ APPROVER_ROLES = ("admin", "super admin")
 WEEKLY_ROSTER_ROLES = (
     "qa",
     "assistant manager",
+    "team leader",
     "project manager",
     "admin",
     "super admin",
@@ -73,7 +74,7 @@ def get_admin_super_admin_emails(cursor) -> list[str]:
 
 
 def roster_weekly_recipients(cursor) -> tuple[list[str], list[str]]:
-    """Active QA, AM, PM, Admin, Super Admin — weekly roster To list."""
+    """Active QA, AM, Team Leader, PM, Admin, Super Admin — weekly roster To list."""
     return _active_emails_for_roles(cursor, WEEKLY_ROSTER_ROLES), []
 
 
@@ -312,7 +313,7 @@ def send_weekly_roster_after_approval(
     """
     to_list, cc_list = roster_weekly_recipients(cursor)
     if not to_list:
-        print("[roster weekly email] no active QA/AM/PM/Admin emails; skip send", flush=True)
+        print("[roster weekly email] no active QA/AM/TL/PM/Admin emails; skip send", flush=True)
         return [{"skipped": True, "reason": "No active QA, Assistant Manager, Project Manager, Admin, or Super Admin emails found"}]
 
     week_labels = [

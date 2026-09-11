@@ -2,6 +2,7 @@ from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
 from utils.time_ist import now_str
+from utils.roster_helpers import reject_read_only_actor
 from datetime import datetime
 
 project_monthly_tracker_bp = Blueprint("project_monthly_tracker",__name__)
@@ -125,6 +126,15 @@ def add_project_monthly_tracker():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        actor_id = None
+        if isinstance(raw_data, dict):
+            actor_id = raw_data.get("logged_in_user_id")
+        elif isinstance(raw_data, list) and raw_data and isinstance(raw_data[0], dict):
+            actor_id = raw_data[0].get("logged_in_user_id")
+        deny = reject_read_only_actor(cursor, actor_id)
+        if deny:
+            return deny
+
         inserted_ids = []
         skipped = []
 
@@ -231,6 +241,10 @@ def update_project_monthly_tracker():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        deny = reject_read_only_actor(cursor, data.get("logged_in_user_id"))
+        if deny:
+            return deny
+
         cursor.execute(
             """
             SELECT project_id, month_year
@@ -302,6 +316,10 @@ def delete_project_monthly_tracker():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        deny = reject_read_only_actor(cursor, data.get("logged_in_user_id"))
+        if deny:
+            return deny
+
         cursor.execute(
             """
             SELECT project_monthly_tracker_id

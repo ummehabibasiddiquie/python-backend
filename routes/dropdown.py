@@ -10,8 +10,19 @@ ROLE_BASED_USER_DROPDOWNS = (
     "admin",
     "project manager",
     "assistant manager",
+    "team leader",
     "qa",
     "agent"
+)
+
+# These role dropdowns list only active users (no 2-month deactivated window).
+# Assistant Manager keeps the 2-month deactivated window so assignment stays possible
+# when current AMs were recently deactivated (Reporting To still hides inactive names).
+ACTIVE_ONLY_USER_DROPDOWNS = (
+    "super admin",
+    "admin",
+    "project manager",
+    "team leader",
 )
 
 def get_user_role(cursor, user_id: int) -> str | None:
@@ -181,8 +192,7 @@ def get():
                         item["label"] = item["label"].title()
                 return api_response(200, "Dropdown data fetched successfully", result)
             elif dropdown_type == "assistant manager" and project_id:
-                # Only return assistant managers assigned to this project (robust for all formats)
-                v = str(project_id)
+                # Only return assistant managers assigned to this project (active only)
                 query = f"""
                     SELECT
                         u.user_id,
@@ -193,20 +203,13 @@ def get():
                     WHERE u.is_delete = 1
                       AND r.is_active = 1
                       AND LOWER(r.role_name) = %s
-                      AND (
-                        u.is_active = 1
-                        OR (
-                            u.is_active = 0
-                            AND u.deactivated_at IS NOT NULL
-                            AND u.deactivated_at BETWEEN %s AND %s
-                        )
-                      )
+                      AND u.is_active = 1
                       AND (
                         FIND_IN_SET(CAST(u.user_id AS CHAR), REPLACE(REPLACE(REPLACE(REPLACE(p.asst_project_manager_id,'[',''),']',''), '"', ''),' ','')) > 0
                       )
                     ORDER BY u.user_name
                 """
-                params = (project_id, dropdown_type, month_start, month_end)
+                params = (project_id, dropdown_type)
                 cursor.execute(query, params)
                 result = cursor.fetchall()
                 for item in result:
@@ -304,6 +307,29 @@ def get():
                     """
                     params = (month_start, month_end, logged_in_user_id)
 
+                # ---------------- TEAM LEADER (assignees OR same team, view-only) ---------------- #
+                elif user_role == "team leader":
+                    from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
+                    query = f"""
+                        SELECT u.user_id, u.user_name AS label, u.user_tenure
+                        FROM tfs_user u
+                        JOIN user_role r ON r.role_id = u.role_id
+                        WHERE u.is_delete = 1
+                        AND r.is_active = 1
+                        AND LOWER(r.role_name) = 'agent'
+                        AND (
+                            u.is_active = 1
+                            OR (
+                                u.is_active = 0
+                                AND u.deactivated_at IS NOT NULL
+                                AND u.deactivated_at BETWEEN %s AND %s
+                            )
+                        )
+                        AND {team_leader_scope_sql("u")}
+                        ORDER BY u.user_name
+                    """
+                    params = (month_start, month_end, *team_leader_scope_params(logged_in_user_id))
+
                 # ---------------- QA ---------------- #
                 elif user_role == "qa":
                     query = f"""
@@ -338,27 +364,43 @@ def get():
 
                 return api_response(200, "Dropdown data fetched successfully", result)
             else:
-                # All other roles
-                query = """
-                    SELECT
-                        u.user_id,
-                        u.user_name AS label
-                    FROM tfs_user u
-                    JOIN user_role r ON r.role_id = u.role_id
-                    WHERE u.is_delete = 1
-                      AND r.is_active = 1
-                      AND LOWER(r.role_name) = %s
-                      AND (
-                        u.is_active = 1
-                        OR (
-                            u.is_active = 0
-                            AND u.deactivated_at IS NOT NULL
-                            AND u.deactivated_at BETWEEN %s AND %s
-                        )
-                      )
-                    ORDER BY u.user_name
-                """
-                params = (dropdown_type, month_start, month_end)
+                # Admin / Super Admin / Project Manager / Assistant Manager: active only.
+                # QA / Team Leader / others: keep 2-month deactivated window.
+                if dropdown_type in ACTIVE_ONLY_USER_DROPDOWNS:
+                    query = """
+                        SELECT
+                            u.user_id,
+                            u.user_name AS label
+                        FROM tfs_user u
+                        JOIN user_role r ON r.role_id = u.role_id
+                        WHERE u.is_delete = 1
+                          AND r.is_active = 1
+                          AND LOWER(r.role_name) = %s
+                          AND u.is_active = 1
+                        ORDER BY u.user_name
+                    """
+                    params = (dropdown_type,)
+                else:
+                    query = """
+                        SELECT
+                            u.user_id,
+                            u.user_name AS label
+                        FROM tfs_user u
+                        JOIN user_role r ON r.role_id = u.role_id
+                        WHERE u.is_delete = 1
+                          AND r.is_active = 1
+                          AND LOWER(r.role_name) = %s
+                          AND (
+                            u.is_active = 1
+                            OR (
+                                u.is_active = 0
+                                AND u.deactivated_at IS NOT NULL
+                                AND u.deactivated_at BETWEEN %s AND %s
+                            )
+                          )
+                        ORDER BY u.user_name
+                    """
+                    params = (dropdown_type, month_start, month_end)
                 cursor.execute(query, params)
                 result = cursor.fetchall()
                 for item in result:
@@ -420,6 +462,17 @@ def get():
                     v = str(filter_id)
                     where_sql += " AND " + multi_id_match_sql("p.asst_project_manager_id")
                     params.extend([v, v])
+                elif user_role == "team leader":
+                    from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
+                    v = str(filter_id)
+                    clean_team = "REPLACE(REPLACE(REPLACE(REPLACE(p.project_team_id,'[',''),']',''),'\"',''),' ','')"
+                    where_sql += f""" AND EXISTS (
+                        SELECT 1 FROM tfs_user tu
+                        WHERE tu.is_delete = 1
+                          AND {team_leader_scope_sql("tu")}
+                          AND FIND_IN_SET(CAST(tu.user_id AS CHAR), {clean_team}) > 0
+                    )"""
+                    params.extend(team_leader_scope_params(filter_id))
                 elif user_role == "agent":
                     v = str(filter_id)
                     where_sql += " AND " + multi_id_match_sql("p.project_team_id")

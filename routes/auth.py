@@ -161,6 +161,25 @@ def user_handler():
         if not form.get(f):
             return api_response(400, f"{f} is required")
 
+    actor_id = form.get("logged_in_user_id") or form.get("created_by") or form.get("user_id")
+    if actor_id:
+        conn_chk = get_db_connection()
+        cursor_chk = conn_chk.cursor(dictionary=True)
+        try:
+            from utils.roster_helpers import reject_read_only_actor
+            deny = reject_read_only_actor(cursor_chk, actor_id)
+            if deny:
+                return deny
+        finally:
+            try:
+                cursor_chk.close()
+            except Exception:
+                pass
+            try:
+                conn_chk.close()
+            except Exception:
+                pass
+
     user_name = form["user_name"].strip()
     user_email = form["user_email"].strip().lower()
     # user_password = form["user_password"]
@@ -194,6 +213,7 @@ def user_handler():
 
     project_manager = _to_id_array_json(form.get("project_manager"))
     assistant_manager = _to_id_array_json(form.get("assistant_manager"))
+    team_leader = _to_id_array_json(form.get("team_leader") or form.get("team_leader_id"))
     qa = _to_id_array_json(form.get("qa"))
 
     joining_date_raw = (form.get("joining_date") or "").strip()
@@ -271,6 +291,7 @@ def user_handler():
                 user_tenure,
                 project_manager_id,
                 asst_manager_id,
+                team_leader_id,
                 qa_id,
                 team_id,
                 device_id,
@@ -278,7 +299,7 @@ def user_handler():
                 joining_date,
                 created_date,
                 updated_date
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             user_name,
             profile_picture,
@@ -294,6 +315,7 @@ def user_handler():
             user_tenure,
             project_manager,
             assistant_manager,
+            team_leader,
             qa,
             team,
             device_id,
@@ -308,7 +330,7 @@ def user_handler():
         cursor.execute("""SELECT role_name FROM user_role WHERE role_id=%s""", (role_id,))
         role = cursor.fetchone()
 
-        if role and role.get("role_name") in ["qa", "agent"]:
+        if role and role.get("role_name") in ["qa", "agent", "team leader"]:
             project_creation_permission = 0
             user_creation_permission = 0
         else:

@@ -98,6 +98,16 @@ def can_generate_roster():
         ctx = get_role_context(cursor, logged_in_user_id)
         if not ctx.get("user_role_name"):
             return api_response(404, "User not found")
+        if not can_manage_roster_employees(ctx.get("user_role_name")):
+            return api_response(
+                200,
+                "Generate availability checked",
+                {
+                    "can_generate": False,
+                    "target_month_year": None,
+                    "reason": "Not authorized to generate roster",
+                },
+            )
 
         explicit_month = bool((data.get("month_year") or "").strip())
         target_year, target_month, target_month_year, month_err = _resolve_target_month(
@@ -661,6 +671,7 @@ def list_rosters():
             if not is_admin_or_super_admin(role_name) and role_name not in (
                 "project manager",
                 "assistant manager",
+                "team leader",
             ):
                 return api_response(403, "You do not have permission to list rosters")
 

@@ -73,6 +73,13 @@ def view_qc_history_user_based():
             where_clauses.append("(JSON_CONTAINS(u.asst_manager_id, %s) OR u.user_id = %s)")
             params.extend([f"{logged_in_user_id}", logged_in_user_id])
 
+        elif "team leader" in role:
+            from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
+            where_clauses.append(
+                f"({team_leader_scope_sql('u')} OR u.user_id = %s)"
+            )
+            params.extend([*team_leader_scope_params(logged_in_user_id), logged_in_user_id])
+
         else:   
             where_clauses.append("u.user_id = %s")
             params.append(logged_in_user_id)
@@ -237,6 +244,13 @@ def consolidated_qc_report():
         elif "assistant manager" in role:
             where_clauses.append("(JSON_CONTAINS(u.asst_manager_id, %s) OR u.user_id = %s)")
             params.extend([f"{logged_in_user_id}", logged_in_user_id])
+
+        elif "team leader" in role:
+            from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
+            where_clauses.append(
+                f"({team_leader_scope_sql('u')} OR u.user_id = %s)"
+            )
+            params.extend([*team_leader_scope_params(logged_in_user_id), logged_in_user_id])
 
         else:
             where_clauses.append("u.user_id = %s")

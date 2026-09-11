@@ -169,7 +169,7 @@ def get_subordinate_user_ids(cursor, role: str, logged_in_user_id: int) -> list[
             ids.append(logged_in_user_id)
         return ids
 
-    # ✅ Assistant Manager: MUST come from tfs_user mapping (NOT project table)
+    # ✅ Assistant Manager: asst_manager_id mapping
     if role == "assistant manager":
         col = detect_existing_column(
             cursor,
@@ -192,6 +192,24 @@ def get_subordinate_user_ids(cursor, role: str, logged_in_user_id: int) -> list[
               AND {multi_id_match_sql(f"tu.{col}")}
             """,
             (v, v),
+        )
+        rows = cursor.fetchall() or []
+        ids = [int(r["user_id"]) for r in rows if r.get("user_id") is not None]
+        if logged_in_user_id not in ids:
+            ids.append(logged_in_user_id)
+        return ids
+
+    # ✅ Team Leader: team_leader_id assignees OR same team (view-only)
+    if role == "team leader":
+        from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
+        cursor.execute(
+            f"""
+            SELECT tu.user_id
+            FROM tfs_user tu
+            WHERE tu.is_active=1 AND tu.is_delete=1
+              AND {team_leader_scope_sql("tu")}
+            """,
+            tuple(team_leader_scope_params(logged_in_user_id)),
         )
         rows = cursor.fetchall() or []
         ids = [int(r["user_id"]) for r in rows if r.get("user_id") is not None]
@@ -274,6 +292,28 @@ def get_projects_for_role(cursor, role: str, logged_in_user_id: int) -> list[dic
             ORDER BY project_id DESC
             """,
             (v, v),
+        )
+        return cursor.fetchall() or []
+
+    if role == "team leader":
+        from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
+        clean_team = "REPLACE(REPLACE(REPLACE(REPLACE(p.project_team_id,'[',''),']',''),'\"',''),' ','')"
+        cursor.execute(
+            f"""
+            SELECT DISTINCT p.project_id, p.project_name, p.project_code, p.project_description,
+                   p.project_manager_id, p.asst_project_manager_id, p.project_qa_id, p.project_team_id
+            FROM project p
+            WHERE p.is_active=1
+              AND EXISTS (
+                    SELECT 1
+                    FROM tfs_user tu
+                    WHERE tu.is_delete=1
+                      AND {team_leader_scope_sql("tu")}
+                      AND FIND_IN_SET(CAST(tu.user_id AS CHAR), {clean_team}) > 0
+              )
+            ORDER BY p.project_id DESC
+            """,
+            tuple(team_leader_scope_params(logged_in_user_id)),
         )
         return cursor.fetchall() or []
 

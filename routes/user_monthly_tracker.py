@@ -5,6 +5,8 @@ from config import get_db_connection
 from utils.response import api_response
 from utils.roster_helpers import (
     can_manage_roster_employees,
+    get_role_context,
+    reject_if_read_only,
     sync_tracker_extra_hours_to_roster,
     sync_tracker_monthly_target_to_roster,
 )
@@ -129,6 +131,19 @@ def add_user_monthly_target():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        actor_id = None
+        if isinstance(raw, dict):
+            actor_id = raw.get("logged_in_user_id")
+        elif isinstance(raw, list) and raw and isinstance(raw[0], dict):
+            actor_id = raw[0].get("logged_in_user_id")
+        if actor_id:
+            ctx = get_role_context(cursor, int(actor_id))
+            if not can_manage_roster_employees(ctx.get("user_role_name") or ""):
+                return api_response(403, "Not authorized to add monthly targets")
+            deny = reject_if_read_only(ctx.get("user_role_name"), ctx.get("user_role_id"))
+            if deny:
+                return deny
+
         inserted_ids = []
         skipped = []
 
@@ -506,6 +521,10 @@ def list_user_monthly_targets():
         elif my_role_name == "agent":
             user_where += " AND u.user_id=%s"
             user_params.append(int(logged_in_user_id))
+        elif my_role_name == "team leader":
+            from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
+            user_where += f" AND {team_leader_scope_sql('u')}"
+            user_params.extend(team_leader_scope_params(logged_in_user_id))
         else:
             mid = str(logged_in_user_id)
             user_where += """

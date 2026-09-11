@@ -4,6 +4,7 @@ from utils.response import api_response
 from config import get_db_connection, UPLOAD_SUBDIRS, BASE_UPLOAD_URL, UPLOAD_FOLDER
 from utils.security import decrypt_password, encrypt_password, safe_decrypt_password
 from utils.validators import validate_request
+from utils.roster_helpers import reject_read_only_actor
 from utils.json_utils import to_db_json
 from utils.time_ist import now_ist, now_str as ist_now_str
 from datetime import datetime,timedelta
@@ -194,6 +195,7 @@ def list_users():
                 u.joining_date,
                 u.project_manager_id,
                 u.asst_manager_id,
+                u.team_leader_id,
                 u.qa_id,
                 u.role_id,
                 r.role_name AS role,
@@ -252,6 +254,11 @@ def list_users():
             params.append(str(int(user_id)))   # exact match
             params.append(str(int(user_id)))   # FIND_IN_SET
 
+        elif role == "team leader":
+            from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
+            query += f" AND {team_leader_scope_sql('u')}"
+            params.extend(team_leader_scope_params(user_id))
+
         if data.get("is_active") is not None:
             query += " AND u.is_active = %s"
             params.append(data.get("is_active"))
@@ -266,13 +273,21 @@ def list_users():
         for u in users:
             all_ref_ids.update(_safe_json_list(u.get("project_manager_id")))
             all_ref_ids.update(_safe_json_list(u.get("asst_manager_id")))
+            all_ref_ids.update(_safe_json_list(u.get("team_leader_id")))
             all_ref_ids.update(_safe_json_list(u.get("qa_id")))
 
         id_to_user = {}
         if all_ref_ids:
             placeholders = ", ".join(["%s"] * len(all_ref_ids))
+            # Reporting display: only active managers/QAs (hide deactivated)
             cursor.execute(
-                f"SELECT user_id, user_name FROM tfs_user WHERE user_id IN ({placeholders})",
+                f"""
+                SELECT user_id, user_name
+                FROM tfs_user
+                WHERE user_id IN ({placeholders})
+                  AND is_active = 1
+                  AND is_delete = 1
+                """,
                 tuple(all_ref_ids)
             )
             rows = cursor.fetchall() or []
@@ -281,15 +296,26 @@ def list_users():
         for u in users:
             pm_ids = _safe_json_list(u.get("project_manager_id"))
             am_ids = _safe_json_list(u.get("asst_manager_id"))
+            tl_ids = _safe_json_list(u.get("team_leader_id"))
             qa_ids = _safe_json_list(u.get("qa_id"))
 
-            u["project_managers"] = [{"user_id": i, "user_name": id_to_user.get(i)} for i in pm_ids]
-            u["asst_managers"] = [{"user_id": i, "user_name": id_to_user.get(i)} for i in am_ids]
-            u["qas"] = [{"user_id": i, "user_name": id_to_user.get(i)} for i in qa_ids]
+            u["project_managers"] = [
+                {"user_id": i, "user_name": id_to_user[i]} for i in pm_ids if i in id_to_user
+            ]
+            u["asst_managers"] = [
+                {"user_id": i, "user_name": id_to_user[i]} for i in am_ids if i in id_to_user
+            ]
+            u["team_leaders"] = [
+                {"user_id": i, "user_name": id_to_user[i]} for i in tl_ids if i in id_to_user
+            ]
+            u["qas"] = [
+                {"user_id": i, "user_name": id_to_user[i]} for i in qa_ids if i in id_to_user
+            ]
 
-            u["project_manager_names"] = ", ".join([id_to_user.get(i) for i in pm_ids if id_to_user.get(i)]) or None
-            u["asst_manager_names"] = ", ".join([id_to_user.get(i) for i in am_ids if id_to_user.get(i)]) or None
-            u["qa_names"] = ", ".join([id_to_user.get(i) for i in qa_ids if id_to_user.get(i)]) or None
+            u["project_manager_names"] = ", ".join([id_to_user[i] for i in pm_ids if i in id_to_user]) or None
+            u["asst_manager_names"] = ", ".join([id_to_user[i] for i in am_ids if i in id_to_user]) or None
+            u["team_leader_names"] = ", ".join([id_to_user[i] for i in tl_ids if i in id_to_user]) or None
+            u["qa_names"] = ", ".join([id_to_user[i] for i in qa_ids if i in id_to_user]) or None
 
         # ✅ absolute url
         _attach_profile_picture_url(users)
@@ -333,6 +359,11 @@ def update_user():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        actor_id = form.get("logged_in_user_id")
+        if actor_id:
+            read_only_err = reject_read_only_actor(cursor, actor_id)
+            if read_only_err:
+                return read_only_err
         cursor.execute("SELECT user_id, user_name, profile_picture, is_active FROM tfs_user WHERE user_id=%s", (user_id,))
         existing = cursor.fetchone()
         if not existing:
@@ -378,6 +409,9 @@ def update_user():
 
         if form.get("asst_manager_id") is not None:
             user_fields["asst_manager_id"] = to_db_json(form.get("asst_manager_id"), allow_single=True)
+
+        if form.get("team_leader_id") is not None:
+            user_fields["team_leader_id"] = to_db_json(form.get("team_leader_id"), allow_single=True)
 
         if form.get("qa_id") is not None:
             user_fields["qa_id"] = to_db_json(form.get("qa_id"), allow_single=True)
@@ -490,6 +524,11 @@ def delete_user():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        actor_id = data.get("logged_in_user_id")
+        if actor_id:
+            read_only_err = reject_read_only_actor(cursor, actor_id)
+            if read_only_err:
+                return read_only_err
         cursor.execute("SELECT profile_picture FROM tfs_user WHERE user_id=%s", (user_id,))
         row = cursor.fetchone()
         if not row:

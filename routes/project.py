@@ -3,10 +3,32 @@ from utils.response import api_response
 from config import get_db_connection
 from utils.cloudinary_utils import upload_to_cloudinary, delete_from_cloudinary, FOLDER_PROJECT
 from utils.file_utils import is_allowed_file
+from utils.roster_helpers import reject_read_only_actor
 import json
 from datetime import datetime
 
 project_bp = Blueprint("project", __name__)
+
+
+def _reject_read_only_from_request(form_or_data) -> object | None:
+    actor_id = None
+    if form_or_data is not None:
+        actor_id = form_or_data.get("logged_in_user_id") or form_or_data.get("user_id")
+    if not actor_id:
+        return None
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        return reject_read_only_actor(cursor, actor_id)
+    finally:
+        try:
+            cursor.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 # ---------------- HELPERS ---------------- #
 
@@ -84,6 +106,9 @@ def _get_uploaded_files():
 def create_project():
 
     form = request.form
+    deny = _reject_read_only_from_request(form)
+    if deny:
+        return deny
 
     required_fields = ["project_name", "project_code"]
 
@@ -223,6 +248,9 @@ def create_project():
 def update_project():
 
     form = request.form
+    deny = _reject_read_only_from_request(form)
+    if deny:
+        return deny
     project_id = form.get("project_id")
 
     if not project_id:
@@ -407,6 +435,9 @@ def list_projects():
 def delete_project():
 
     data = request.get_json() or {}
+    deny = _reject_read_only_from_request(data)
+    if deny:
+        return deny
 
     project_id = data.get("project_id")
 

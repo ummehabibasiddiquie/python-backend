@@ -27,6 +27,13 @@ EXPECTED_HOURS = {
 EXPECTED_TOTAL = 9.0
 MONTH_ABBR = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 MANUAL_ACTIVITIES = ("feedback", "reporting")
+MANUAL_KINDS = ("feedback", "training", "reporting", "other")
+MANUAL_KIND_TO_ACTIVITY = {
+    "feedback": "feedback",
+    "training": "feedback",
+    "reporting": "reporting",
+    "other": "reporting",
+}
 QC_ACTIVITIES = ("qc_tasks", "rework_qc")
 QA_DELETE_WINDOW_HOURS = 24
 
@@ -125,6 +132,8 @@ def _resolve_sync_user_ids(cursor, manager: bool, logged_in_user_id: int, reques
 
 
 def _is_manager(role_name: str, role_id=None) -> bool:
+    if _int(role_id) == 7:
+        return False
     if _int(role_id) in (1, 2, 3, 4):
         return True
     r = (role_name or "").strip().lower()
@@ -133,6 +142,14 @@ def _is_manager(role_name: str, role_id=None) -> bool:
 
 def _ctx_is_manager(ctx: dict) -> bool:
     return _is_manager(ctx.get("user_role_name") or "", ctx.get("user_role_id"))
+
+
+def _ctx_can_view_as_manager(ctx: dict) -> bool:
+    if _ctx_is_manager(ctx):
+        return True
+    if _int(ctx.get("user_role_id")) == 7:
+        return True
+    return (ctx.get("user_role_name") or "").strip().lower() == "team leader"
 
 
 def _is_qa_role(role_name: str, role_id=None) -> bool:
@@ -194,6 +211,81 @@ def _within_delete_window(created_at) -> bool:
     return (now_ist() - dt) <= timedelta(hours=QA_DELETE_WINDOW_HOURS)
 
 
+def _manual_detail_text(sub_activity: str, agent_name: str, project_name: str, notes: str) -> str:
+    if sub_activity in ("feedback", "training"):
+        return agent_name or ""
+    if sub_activity == "reporting":
+        return project_name or ""
+    if sub_activity == "other":
+        return notes or ""
+    return notes or ""
+
+
+def _resolve_manual_kind(data: dict, existing: dict | None = None) -> str:
+    existing = existing or {}
+    for key in ("sub_activity", "activity_type"):
+        raw = data.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        kind = str(raw).strip().lower()
+        if kind in MANUAL_KINDS:
+            return kind
+    existing_sub = str(existing.get("sub_activity") or "").strip().lower()
+    if existing_sub in MANUAL_KINDS:
+        return existing_sub
+    existing_activity = str(existing.get("activity_type") or "").strip().lower()
+    if existing_activity in MANUAL_KINDS:
+        return existing_activity
+    return ""
+
+
+def _validate_manual_details(data: dict, existing: dict | None = None):
+    existing = existing or {}
+    kind = _resolve_manual_kind(data, existing)
+    if kind not in MANUAL_KINDS:
+        return None, api_response(400, "Select Feedback, Training, Reporting, or Other")
+
+    activity_type = MANUAL_KIND_TO_ACTIVITY[kind]
+    sub_activity = kind
+
+    if "agent_id" in data:
+        agent_id = _int(data.get("agent_id"))
+    else:
+        agent_id = _int(existing.get("agent_id"))
+    if "project_id" in data:
+        project_id = _int(data.get("project_id"))
+    else:
+        project_id = _int(existing.get("project_id"))
+
+    if "notes" in data:
+        notes_in = data.get("notes")
+    else:
+        notes_in = existing.get("notes")
+    notes = (str(notes_in).strip() or None) if notes_in is not None else None
+
+    if kind in ("feedback", "training"):
+        if not agent_id:
+            return None, api_response(400, "Select an agent")
+        project_id = None
+    elif kind == "reporting":
+        agent_id = None
+        if not project_id:
+            return None, api_response(400, "Select a project")
+    else:
+        agent_id = None
+        project_id = None
+        if not notes:
+            return None, api_response(400, "Enter what you did")
+
+    return {
+        "activity_type": activity_type,
+        "sub_activity": sub_activity,
+        "agent_id": agent_id or None,
+        "project_id": project_id or None,
+        "notes": notes,
+    }, None
+
+
 def _manual_entry_dict(row: dict, viewer_id=None, viewer_is_manager: bool = False) -> dict:
     owner_id = _int(row.get("qa_user_id"))
     created = row.get("created_at")
@@ -201,14 +293,24 @@ def _manual_entry_dict(row: dict, viewer_id=None, viewer_is_manager: bool = Fals
     can_delete = bool(viewer_is_manager) or (
         viewer_id is not None and owner_id == int(viewer_id) and _within_delete_window(created)
     )
+    sub_activity = str(row.get("sub_activity") or "").strip().lower() or None
+    agent_name = row.get("related_agent_name") or ""
+    project_name = row.get("project_name") or ""
+    notes = row.get("notes") or ""
     return {
         "qa_tracker_id": row.get("qa_tracker_id"),
         "qa_user_id": owner_id,
         "qa_user_name": row.get("qa_user_name") or row.get("user_name") or "",
         "work_date": _date_str(row.get("work_date")),
         "activity_type": row.get("activity_type"),
+        "sub_activity": sub_activity,
+        "agent_id": _int(row.get("agent_id")) or None,
+        "agent_name": agent_name,
+        "project_id": _int(row.get("project_id")) or None,
+        "project_name": project_name,
+        "detail": _manual_detail_text(sub_activity or "", agent_name, project_name, notes),
         "hours": _round4(row.get("hours")),
-        "notes": row.get("notes") or "",
+        "notes": notes,
         "created_at": _fmt_dt(created),
         "updated_at": _fmt_dt(row.get("updated_at")),
         "can_delete": can_delete,
@@ -239,12 +341,19 @@ def _fetch_manual_detail_rows(cursor, where: str, params: list) -> list[dict]:
             qa.user_name AS qa_user_name,
             qwt.work_date,
             qwt.activity_type,
+            qwt.sub_activity,
             qwt.hours,
             qwt.notes,
+            qwt.project_id,
+            p.project_name,
+            qwt.agent_id,
+            fb_agent.user_name AS related_agent_name,
             qwt.created_at,
             qwt.updated_at
         FROM qa_work_tracker qwt
         LEFT JOIN tfs_user qa ON qa.user_id = qwt.qa_user_id
+        LEFT JOIN project p ON p.project_id = qwt.project_id
+        LEFT JOIN tfs_user fb_agent ON fb_agent.user_id = qwt.agent_id
         WHERE {where}
           AND qwt.activity_type IN ('feedback','reporting')
           AND qwt.hours > 0
@@ -297,7 +406,7 @@ def _resolve_target_qa(cursor, logged_in_user_id: int, requested_qa_user_id) -> 
         target_id = logged_in_user_id
     else:
         target_id = int(requested_qa_user_id)
-        if target_id != logged_in_user_id and not _ctx_is_manager(ctx):
+        if target_id != logged_in_user_id and not _ctx_can_view_as_manager(ctx):
             return None, ctx, api_response(403, "Not authorized to view another user's QA tracker")
     return target_id, ctx, None
 
@@ -657,6 +766,7 @@ def _fetch_day_payload(
             p.project_name,
             t.task_name,
             agent.user_name AS agent_name,
+            fb_agent.user_name AS related_agent_name,
             COALESCE(
                 NULLIF(TRIM(CAST(twt.date_time AS CHAR)), ''),
                 CAST(qr.date_of_file_submission AS CHAR),
@@ -672,6 +782,7 @@ def _fetch_day_payload(
               IF(qwt.source_table = 'qc_records', qwt.source_id, NULL)
           )
         LEFT JOIN tfs_user agent ON agent.user_id = qr.agent_id
+        LEFT JOIN tfs_user fb_agent ON fb_agent.user_id = qwt.agent_id
         LEFT JOIN task_work_tracker twt
           ON twt.tracker_id = COALESCE(qwt.tracker_id, qr.tracker_id)
         WHERE qwt.qa_user_id=%s
@@ -815,20 +926,23 @@ def qa_tracker_add_entry():
     requested_date = _parse_date(data.get("work_date")) or today
     if requested_date > today:
         return api_response(400, "Tracker cannot be added for a future date")
-    activity_type = str(data.get("activity_type") or "").strip().lower()
-    if activity_type not in MANUAL_ACTIVITIES:
-        return api_response(400, "Select Feedback & Training or Reporting & Other")
+    details, detail_err = _validate_manual_details(data)
+    if detail_err:
+        return detail_err
     hours = _round4(data.get("hours"))
     if hours <= 0:
         return api_response(400, "Hours must be greater than 0")
     if hours > 24:
         return api_response(400, "Hours cannot be more than 24 in one entry")
-    notes = (data.get("notes") or "").strip() or None
     requested_qa = data.get("qa_user_id")
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        from utils.roster_helpers import reject_read_only_actor
+        deny = reject_read_only_actor(cursor, logged_in_user_id)
+        if deny:
+            return deny
         target_id, ctx, auth_err = _resolve_target_qa(cursor, logged_in_user_id, requested_qa)
         if auth_err:
             return auth_err
@@ -852,11 +966,23 @@ def qa_tracker_add_entry():
         cursor.execute(
             """
             INSERT INTO qa_work_tracker (
-                qa_user_id, work_date, activity_type, source_table, source_id,
-                hours, notes, is_active, created_at, updated_at
-            ) VALUES (%s,%s,%s,'manual',%s,%s,%s,1,%s,%s)
+                qa_user_id, work_date, activity_type, sub_activity, project_id, agent_id,
+                source_table, source_id, hours, notes, is_active, created_at, updated_at
+            ) VALUES (%s,%s,%s,%s,%s,%s,'manual',%s,%s,%s,1,%s,%s)
             """,
-            (target_id, work_date, activity_type, temp_source_id, hours, notes, now, now),
+            (
+                target_id,
+                work_date,
+                details["activity_type"],
+                details["sub_activity"],
+                details["project_id"],
+                details["agent_id"],
+                temp_source_id,
+                hours,
+                details["notes"],
+                now,
+                now,
+            ),
         )
         new_id = int(cursor.lastrowid)
         cursor.execute(
@@ -890,6 +1016,10 @@ def qa_tracker_delete_entry():
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        from utils.roster_helpers import reject_read_only_actor
+        deny = reject_read_only_actor(cursor, logged_in_user_id)
+        if deny:
+            return deny
         cursor.execute(
             """
             SELECT qa_tracker_id, qa_user_id, work_date, activity_type, created_at
@@ -943,13 +1073,18 @@ def qa_tracker_update_entry():
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        from utils.roster_helpers import reject_read_only_actor
+        deny = reject_read_only_actor(cursor, logged_in_user_id)
+        if deny:
+            return deny
         ctx = get_role_context(cursor, logged_in_user_id)
         if not _ctx_is_manager(ctx):
             return api_response(403, "Only managers can update Feedback and Reporting entries")
 
         cursor.execute(
             """
-            SELECT qa_tracker_id, qa_user_id, work_date, activity_type, hours, notes
+            SELECT qa_tracker_id, qa_user_id, work_date, activity_type, sub_activity,
+                   hours, notes, project_id, agent_id
             FROM qa_work_tracker
             WHERE qa_tracker_id=%s AND is_active=1
             LIMIT 1
@@ -964,9 +1099,9 @@ def qa_tracker_update_entry():
         if not _user_is_qa(cursor, int(row["qa_user_id"])):
             return api_response(400, "Tracker can only be updated for a QA")
 
-        activity_type = str(data.get("activity_type") or row.get("activity_type") or "").strip().lower()
-        if activity_type not in MANUAL_ACTIVITIES:
-            return api_response(400, "Select Feedback & Training or Reporting & Other")
+        details, detail_err = _validate_manual_details(data, row)
+        if detail_err:
+            return detail_err
         work_date = _parse_date(data.get("work_date")) or _date_str(row.get("work_date"))
         if work_date > today_str():
             return api_response(400, "Tracker cannot be added for a future date")
@@ -975,34 +1110,57 @@ def qa_tracker_update_entry():
             return api_response(400, "Hours must be greater than 0")
         if hours > 24:
             return api_response(400, "Hours cannot be more than 24 in one entry")
-        notes = data.get("notes")
-        if notes is None:
-            notes = row.get("notes")
-        notes = (str(notes).strip() or None) if notes is not None else None
 
         cursor.execute(
             """
             UPDATE qa_work_tracker
-            SET work_date=%s, activity_type=%s, hours=%s, notes=%s, updated_at=%s
+            SET work_date=%s, activity_type=%s, sub_activity=%s, project_id=%s, agent_id=%s,
+                hours=%s, notes=%s, updated_at=%s
             WHERE qa_tracker_id=%s
             """,
-            (work_date, activity_type, hours, notes, now_str(), qa_tracker_id),
+            (
+                work_date,
+                details["activity_type"],
+                details["sub_activity"],
+                details["project_id"],
+                details["agent_id"],
+                hours,
+                details["notes"],
+                now_str(),
+                qa_tracker_id,
+            ),
         )
         conn.commit()
         owner_id = int(row["qa_user_id"])
         payload = _fetch_day_payload(cursor, owner_id, work_date, logged_in_user_id, True)
-        payload["entry"] = _manual_entry_dict(
-            {
-                **row,
-                "work_date": work_date,
-                "activity_type": activity_type,
-                "hours": hours,
-                "notes": notes or "",
-                "updated_at": now_str(),
-            },
-            logged_in_user_id,
-            True,
+        cursor.execute(
+            """
+            SELECT
+                qwt.qa_tracker_id,
+                qwt.qa_user_id,
+                qa.user_name AS qa_user_name,
+                qwt.work_date,
+                qwt.activity_type,
+                qwt.sub_activity,
+                qwt.hours,
+                qwt.notes,
+                qwt.project_id,
+                p.project_name,
+                qwt.agent_id,
+                fb_agent.user_name AS related_agent_name,
+                qwt.created_at,
+                qwt.updated_at
+            FROM qa_work_tracker qwt
+            LEFT JOIN tfs_user qa ON qa.user_id = qwt.qa_user_id
+            LEFT JOIN project p ON p.project_id = qwt.project_id
+            LEFT JOIN tfs_user fb_agent ON fb_agent.user_id = qwt.agent_id
+            WHERE qwt.qa_tracker_id=%s
+            LIMIT 1
+            """,
+            (qa_tracker_id,),
         )
+        updated = cursor.fetchone() or {**row, **details, "work_date": work_date, "hours": hours}
+        payload["entry"] = _manual_entry_dict(updated, logged_in_user_id, True)
         return api_response(200, "Entry updated", payload)
     except Exception as e:
         conn.rollback()
@@ -1031,7 +1189,8 @@ def qa_tracker_entries():
         role_name = ctx.get("user_role_name") or ""
         if not role_name:
             return api_response(404, "User not found")
-        manager = _ctx_is_manager(ctx)
+        manager = _ctx_can_view_as_manager(ctx)
+        can_write = _ctx_is_manager(ctx)
         requested = data.get("qa_user_id")
         _deactivate_zero_manual_rows(cursor)
         conn.commit()
@@ -1064,19 +1223,26 @@ def qa_tracker_entries():
                 qa.user_name AS qa_user_name,
                 qwt.work_date,
                 qwt.activity_type,
+                qwt.sub_activity,
                 qwt.hours,
                 qwt.notes,
+                qwt.project_id,
+                p.project_name,
+                qwt.agent_id,
+                fb_agent.user_name AS related_agent_name,
                 qwt.created_at,
                 qwt.updated_at
             FROM qa_work_tracker qwt
             LEFT JOIN tfs_user qa ON qa.user_id = qwt.qa_user_id
+            LEFT JOIN project p ON p.project_id = qwt.project_id
+            LEFT JOIN tfs_user fb_agent ON fb_agent.user_id = qwt.agent_id
             WHERE {where}
             ORDER BY qwt.work_date DESC, qwt.created_at DESC, qwt.qa_tracker_id DESC
             """,
             tuple(params),
         )
         rows = cursor.fetchall() or []
-        entries = [_manual_entry_dict(r, logged_in_user_id, manager) for r in rows]
+        entries = [_manual_entry_dict(r, logged_in_user_id, can_write) for r in rows]
         qa_users = _qa_users_list(cursor) if manager else []
         return api_response(
             200,
@@ -1167,7 +1333,7 @@ def qa_tracker_list():
         if not role_name:
             return api_response(404, "User not found")
 
-        manager = _ctx_is_manager(ctx)
+        manager = _ctx_can_view_as_manager(ctx)
         requested = data.get("qa_user_id")
         params = [start_date, end_date]
         where = """
@@ -1360,7 +1526,7 @@ def qa_tracker_monthly():
         if not role_name:
             return api_response(404, "User not found")
 
-        manager = _ctx_is_manager(ctx)
+        manager = _ctx_can_view_as_manager(ctx)
         requested = data.get("qa_user_id")
         params = [start_date, end_date]
         where = """
