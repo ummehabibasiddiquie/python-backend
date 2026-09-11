@@ -230,6 +230,35 @@ def _qa_users_list(cursor) -> list:
     return cursor.fetchall() or []
 
 
+def _fetch_manual_detail_rows(cursor, where: str, params: list) -> list[dict]:
+    cursor.execute(
+        f"""
+        SELECT
+            qwt.qa_tracker_id,
+            qwt.qa_user_id,
+            qa.user_name AS qa_user_name,
+            qwt.work_date,
+            qwt.activity_type,
+            qwt.hours,
+            qwt.notes,
+            qwt.created_at,
+            qwt.updated_at
+        FROM qa_work_tracker qwt
+        LEFT JOIN tfs_user qa ON qa.user_id = qwt.qa_user_id
+        WHERE {where}
+          AND qwt.activity_type IN ('feedback','reporting')
+          AND qwt.hours > 0
+        ORDER BY qwt.work_date DESC, qwt.created_at ASC, qwt.qa_tracker_id
+        """,
+        tuple(params),
+    )
+    return [
+        _manual_entry_dict(r)
+        for r in (cursor.fetchall() or [])
+        if _round4(r.get("hours")) > 0
+    ]
+
+
 def _deactivate_zero_manual_rows(cursor) -> None:
     cursor.execute(
         """
@@ -1212,6 +1241,7 @@ def qa_tracker_list():
                     "file_records": 0,
                     "expected_total": EXPECTED_TOTAL,
                     "projects": {},
+                    "manual_entries": [],
                 }
             day = days[key]
             activity = r.get("activity_type")
@@ -1252,6 +1282,13 @@ def qa_tracker_list():
                 proj["files"] += _int(r.get("files"))
                 proj["file_records"] += _int(r.get("file_records"))
                 proj["qc_records"] += _int(r.get("qc_records"))
+
+        for entry in _fetch_manual_detail_rows(cursor, where, params):
+            wd = entry.get("work_date") or ""
+            qa_id = _int(entry.get("qa_user_id"))
+            key = (qa_id, wd)
+            if key in days:
+                days[key].setdefault("manual_entries", []).append(entry)
 
         result = []
         for day in days.values():
@@ -1396,6 +1433,7 @@ def qa_tracker_monthly():
                     "expected_hours": 0.0,
                     "pending_hours": 0.0,
                     "projects": {},
+                    "manual_entries": [],
                     "_dates": set(),
                 }
             row = users[qa_id]
@@ -1437,6 +1475,11 @@ def qa_tracker_monthly():
                 proj["files"] += _int(r.get("files"))
                 proj["file_records"] += _int(r.get("file_records"))
                 proj["qc_records"] += _int(r.get("qc_records"))
+
+        for entry in _fetch_manual_detail_rows(cursor, where, params):
+            qa_id = _int(entry.get("qa_user_id"))
+            if qa_id in users:
+                users[qa_id].setdefault("manual_entries", []).append(entry)
 
         cursor.execute(
             f"""
