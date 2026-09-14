@@ -14,10 +14,12 @@ from config import get_db_connection
 from utils.response import api_response
 from utils.roster_helpers import get_role_context
 from utils.qc_sla import (
+    QC_FORM_SLA_EFFECTIVE_FROM_SQL,
     is_qc_late,
     load_holidays_around,
     parse_dt,
     qc_deadline,
+    sla_applies_to_submission,
 )
 from utils.time_ist import IST, now_ist, now_str, today_str
 
@@ -857,11 +859,17 @@ def _fetch_day_payload(
             qc_done = qc_created
             if activity == "rework_qc" and qc_updated and (not qc_done or qc_updated > qc_done):
                 qc_done = qc_updated
-            deadline = qc_deadline(submitted_at, holidays)
-            late = is_qc_late(
-                submitted_at,
-                qc_done.strftime("%Y-%m-%d %H:%M:%S") if qc_done else None,
-                holidays,
+            # Late QC SLA only from Sep 2026 (old temp_qc months excluded)
+            applies = sla_applies_to_submission(submitted_at)
+            deadline = qc_deadline(submitted_at, holidays) if applies else None
+            late = (
+                is_qc_late(
+                    submitted_at,
+                    qc_done.strftime("%Y-%m-%d %H:%M:%S") if qc_done else None,
+                    holidays,
+                )
+                if applies
+                else False
             )
             if late:
                 late_files += 1
@@ -881,6 +889,7 @@ def _fetch_day_payload(
                 "qc_done_at": qc_done.strftime("%Y-%m-%d %H:%M:%S") if qc_done else "",
                 "qc_deadline": deadline.strftime("%Y-%m-%d %H:%M:%S") if deadline else "",
                 "is_late": bool(late),
+                "sla_applies": bool(applies),
                 "qc_status": r.get("qc_status"),
                 "file_record_count": _int(r.get("file_record_count")),
                 "qc_generated_count": _int(r.get("qc_generated_count")),
@@ -936,7 +945,10 @@ def _fetch_day_payload(
 
 
 def _qc_file_sla_rows(cursor, where: str, params: list) -> list[dict]:
-    """Per QC/rework file timestamps for late counting (same WHERE as list/monthly)."""
+    """Per QC/rework file timestamps for late counting (same WHERE as list/monthly).
+
+    Only includes submissions from QC_FORM_SLA_EFFECTIVE_FROM (Sep 2026) onward.
+    """
     cursor.execute(
         f"""
         SELECT
@@ -961,14 +973,23 @@ def _qc_file_sla_rows(cursor, where: str, params: list) -> list[dict]:
           ON twt.tracker_id = COALESCE(qwt.tracker_id, qr.tracker_id)
         WHERE {where}
           AND qwt.activity_type IN ('qc_tasks', 'rework_qc')
+          AND DATE(
+            COALESCE(
+              NULLIF(TRIM(CAST(twt.date_time AS CHAR)), ''),
+              CAST(qr.date_of_file_submission AS CHAR)
+            )
+          ) >= %s
         """,
-        tuple(params),
+        tuple([*params, QC_FORM_SLA_EFFECTIVE_FROM_SQL]),
     )
     return cursor.fetchall() or []
 
 
 def _annotate_late_counts(cursor, rows: list[dict], where: str, params: list, *, by_day: bool) -> None:
-    """Mutate day or monthly rows in-place with late_files (and project late_files)."""
+    """Mutate day or monthly rows in-place with late_files (and project late_files).
+
+    Pre-Sep 2026 submissions are excluded (old temp_qc flow).
+    """
     if not rows:
         return
     sla_rows = _qc_file_sla_rows(cursor, where, params)
@@ -985,6 +1006,8 @@ def _annotate_late_counts(cursor, rows: list[dict], where: str, params: list, *,
 
     for r in sla_rows:
         submitted_at = r.get("file_submitted_at")
+        if not sla_applies_to_submission(submitted_at):
+            continue
         qc_created = parse_dt(r.get("qc_created_at"))
         qc_updated = parse_dt(r.get("qc_updated_at"))
         qc_done = qc_created

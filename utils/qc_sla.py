@@ -16,9 +16,9 @@ from utils.roster_helpers import load_active_holidays, parse_date
 from utils.time_ist import IST, now_ist
 
 QC_SLA_WORKING_HOURS = 24.0
-# Per-file QC form + 24h urgent SLA apply from this date onward.
+# Per-file QC form + 24h urgent SLA apply from this month onward.
 # Earlier months used temp_qc daily average scores only.
-QC_FORM_SLA_EFFECTIVE_FROM = date(2026, 6, 1)
+QC_FORM_SLA_EFFECTIVE_FROM = date(2026, 9, 1)
 QC_FORM_SLA_EFFECTIVE_FROM_SQL = QC_FORM_SLA_EFFECTIVE_FROM.isoformat()
 
 
@@ -129,6 +129,53 @@ def add_working_hours(
     return current
 
 
+def working_hours_between(
+    start_dt: datetime | None,
+    end_dt: datetime | None,
+    holidays: Iterable[date] | None = None,
+) -> float | None:
+    """
+    Signed working hours from start → end (weekends/holidays paused).
+    Positive = end is after start in working time; negative = end is before start.
+    """
+    if start_dt is None or end_dt is None:
+        return None
+    start = ensure_aware(start_dt)
+    end = ensure_aware(end_dt)
+    if end == start:
+        return 0.0
+    sign = 1.0
+    if end < start:
+        start, end = end, start
+        sign = -1.0
+
+    holiday_set = set(holidays or [])
+    current = start
+    total = timedelta(0)
+
+    if not is_working_day(current.date(), holiday_set):
+        current = _next_working_day_start(current.date() + timedelta(days=1), holiday_set)
+        if current >= end:
+            return 0.0 * sign
+
+    for _ in range(10000):
+        if current >= end:
+            break
+        if not is_working_day(current.date(), holiday_set):
+            current = _next_working_day_start(current.date() + timedelta(days=1), holiday_set)
+            continue
+        next_midnight = datetime.combine(
+            current.date() + timedelta(days=1), time(0, 0, 0), tzinfo=IST
+        )
+        slice_end = end if end < next_midnight else next_midnight
+        if slice_end > current:
+            total += slice_end - current
+        current = slice_end if slice_end < next_midnight else _next_working_day_start(
+            current.date() + timedelta(days=1), holiday_set
+        )
+    return sign * round(total.total_seconds() / 3600.0, 2)
+
+
 def ensure_aware(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=IST)
@@ -188,12 +235,12 @@ def sla_fields(
             "hours_remaining": None,
             "sla_applies": True,
         }
-    remaining_sec = (deadline - current).total_seconds()
+    remaining = working_hours_between(current, deadline, holidays)
     return {
         "file_submitted_at": submitted.strftime("%Y-%m-%d %H:%M:%S") if submitted else "",
         "qc_deadline": deadline.strftime("%Y-%m-%d %H:%M:%S"),
-        "is_overdue": remaining_sec < 0,
-        "hours_remaining": round(remaining_sec / 3600.0, 2),
+        "is_overdue": bool(remaining is not None and remaining < 0),
+        "hours_remaining": remaining,
         "sla_applies": True,
     }
 
