@@ -118,7 +118,8 @@ def user_handler():
                 is_active = int(user.get("is_active") or 0)
             except (TypeError, ValueError):
                 is_active = 0
-            if is_active != 1:
+            from utils.user_status import can_user_login
+            if not can_user_login(is_active, user.get("deactivated_at")):
                 return api_response(403, "User account is inactive")
 
             stored_password = user.get("user_password")

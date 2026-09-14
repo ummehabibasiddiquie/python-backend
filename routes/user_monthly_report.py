@@ -5,6 +5,7 @@ from config import get_db_connection
 from utils.response import api_response
 from utils.qc_auto_score import AUTO_QC_DAYS_WITHOUT_EXISTING_SCORE_SQL
 from utils.time_ist import now_str
+from utils.user_status import sql_listing_leaver_clause
 from datetime import datetime, timedelta
 
 user_monthly_report_bp = Blueprint("user_monthly_report", __name__)
@@ -116,21 +117,21 @@ def list_users_for_monthly_tracker():
             is_current_month = True  # Default to current month
 
         # ---------------- Base WHERE: only agent rows ----------------
-        if is_current_month:
-            # For current month: show only active users
+        # Current month / default listing: active + deactivated within last 3 months.
+        # Past month: anyone with monthly targets for that month (historical data kept).
+        if month_year and not is_current_month:
             user_where = """
                 WHERE u.is_delete=1
-                AND u.is_active=1
                 AND u.role_id=%s
             """
+            user_params = [agent_role_id]
         else:
-            # For past months: show users based on tracker data (no is_active check)
-            user_where = """
+            user_where = f"""
                 WHERE u.is_delete=1
                 AND u.role_id=%s
+                AND {sql_listing_leaver_clause("u", months=3)}
             """
-
-        user_params = [agent_role_id]
+            user_params = [agent_role_id]
 
         if filter_team_id:
             user_where += " AND u.team_id=%s"

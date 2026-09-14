@@ -145,14 +145,19 @@ def forgot_password():
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT user_id, user_email, is_active, is_delete, updated_date
+            SELECT user_id, user_email, is_active, is_delete, updated_date, deactivated_at
             FROM tfs_user
             WHERE user_email=%s
             LIMIT 1
         """, (user_email,))
         user = cursor.fetchone()
 
-        if not user or user.get("is_delete") == 0 or user.get("is_active") != 1:
+        from utils.user_status import can_user_login
+        if (
+            not user
+            or user.get("is_delete") == 0
+            or not can_user_login(user.get("is_active"), user.get("deactivated_at"))
+        ):
             return api_response(200, response_data["message"], response_data)
 
         payload = {
@@ -211,14 +216,19 @@ def verify_reset_token():
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT user_id, is_active, is_delete, updated_date
+            SELECT user_id, is_active, is_delete, updated_date, deactivated_at
             FROM tfs_user
             WHERE user_id=%s AND user_email=%s
             LIMIT 1
         """, (user_id, user_email))
         user = cursor.fetchone()
 
-        if not user or user.get("is_delete") == 0 or user.get("is_active") != 1:
+        from utils.user_status import can_user_login
+        if (
+            not user
+            or user.get("is_delete") == 0
+            or not can_user_login(user.get("is_active"), user.get("deactivated_at"))
+        ):
             return api_response(400, "Invalid token")
 
         if str(user.get("updated_date") or "") != token_pwd_updated:
@@ -264,14 +274,19 @@ def reset_password():
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT user_id, is_active, is_delete, updated_date
+            SELECT user_id, is_active, is_delete, updated_date, deactivated_at
             FROM tfs_user
             WHERE user_id=%s AND user_email=%s
             LIMIT 1
         """, (user_id, user_email))
         user = cursor.fetchone()
 
-        if not user or user.get("is_delete") == 0 or user.get("is_active") != 1:
+        from utils.user_status import can_user_login
+        if (
+            not user
+            or user.get("is_delete") == 0
+            or not can_user_login(user.get("is_active"), user.get("deactivated_at"))
+        ):
             return api_response(400, "Invalid token")
 
         if str(user.get("updated_date") or "") != token_pwd_updated:

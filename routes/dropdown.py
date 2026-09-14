@@ -2,6 +2,11 @@ from flask import Blueprint, request
 from utils.response import api_response
 from config import get_db_connection
 from datetime import datetime, timedelta
+from utils.user_status import (
+    resolve_dropdown_period_start,
+    sql_listing_leaver_clause,
+    sql_visible_user_clause,
+)
 
 dropdown_bp = Blueprint("dropdown", __name__)
 
@@ -16,8 +21,8 @@ ROLE_BASED_USER_DROPDOWNS = (
     "agent"
 )
 
-# These role dropdowns list only active users (no 2-month deactivated window).
-# Assistant Manager keeps the 2-month deactivated window so assignment stays possible
+# These role dropdowns list only active users (no leaver visibility window).
+# Assistant Manager keeps leaver visibility so assignment stays possible
 # when current AMs were recently deactivated (Reporting To still hides inactive names).
 ACTIVE_ONLY_USER_DROPDOWNS = (
     "super admin",
@@ -57,11 +62,21 @@ def get():
     if dropdown_type == "team leader":
         dropdown_type = "assistant team leader"
 
-    # Calculate 2-month window for deactivated_at logic
-    # If current month is June, show users deactivated from May 1st to June 30th
-    current_month_start = datetime.now().replace(day=1)
-    month_start = (current_month_start - timedelta(days=32)).replace(day=1)  # Previous month start
-    month_end = (current_month_start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(seconds=1)  # Current month end
+    # Agent lists (no period): rolling 3-month leaver window.
+    # With date_from / month_year: period-based (past-month history).
+    period_start = resolve_dropdown_period_start(data)
+    has_period = bool(
+        data.get("date_from")
+        or data.get("start_date")
+        or data.get("from_date")
+        or data.get("month_year")
+    )
+    if has_period:
+        visible_users_sql = sql_visible_user_clause("u")
+        visible_users_params: list = [period_start]
+    else:
+        visible_users_sql = sql_listing_leaver_clause("u", months=3)
+        visible_users_params = []
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -69,7 +84,7 @@ def get():
     try:
         # -------------------- DESIGNATIONS -------------------- #
         if dropdown_type == "designations":
-            query = """
+            query = f"""
                 SELECT designation_id, designation AS label
                 FROM user_designation
                 WHERE is_active = 1
@@ -175,20 +190,13 @@ def get():
                     WHERE u.is_delete = 1
                       AND r.is_active = 1
                       AND LOWER(r.role_name) = %s
-                      AND (
-                        u.is_active = 1
-                        OR (
-                            u.is_active = 0
-                            AND u.deactivated_at IS NOT NULL
-                            AND u.deactivated_at BETWEEN %s AND %s
-                        )
-                      )
+                      AND {visible_users_sql}
                       AND (
                         FIND_IN_SET(CAST(u.user_id AS CHAR), REPLACE(REPLACE(REPLACE(REPLACE(p.project_team_id,'[',''),']',''), '"', ''),' ','')) > 0
                       )
                     ORDER BY u.user_name
                 """
-                params = (project_id, dropdown_type, month_start, month_end)
+                params = (project_id, dropdown_type, *visible_users_params)
                 cursor.execute(query, params)
                 result = cursor.fetchall()
                 for item in result:
@@ -244,16 +252,9 @@ def get():
                         WHERE u.is_delete = 1
                         AND r.is_active = 1
                         AND LOWER(r.role_name) = 'agent'
-                        AND (
-                            u.is_active = 1
-                            OR (
-                                u.is_active = 0
-                                AND u.deactivated_at IS NOT NULL
-                                AND u.deactivated_at BETWEEN %s AND %s
-                            )
-                        )
+                        AND {visible_users_sql}
                     """
-                    params = [month_start, month_end]
+                    params = list(visible_users_params)
 
                     if team_id:
                         query += f" AND FIND_IN_SET(%s, {clean_team})"
@@ -270,18 +271,11 @@ def get():
                         WHERE u.is_delete = 1
                         AND r.is_active = 1
                         AND LOWER(r.role_name) = 'agent'
-                        AND (
-                            u.is_active = 1
-                            OR (
-                                u.is_active = 0
-                                AND u.deactivated_at IS NOT NULL
-                                AND u.deactivated_at BETWEEN %s AND %s
-                            )
-                        )
+                        AND {visible_users_sql}
                         AND FIND_IN_SET(%s, {clean_pm})
                     """
 
-                    params = [month_start, month_end, logged_in_user_id]
+                    params = [*visible_users_params, logged_in_user_id]
 
                     if team_id:
                         query += f" AND FIND_IN_SET(%s, {clean_team})"
@@ -298,18 +292,11 @@ def get():
                         WHERE u.is_delete = 1
                         AND r.is_active = 1
                         AND LOWER(r.role_name) = 'agent'
-                        AND (
-                            u.is_active = 1
-                            OR (
-                                u.is_active = 0
-                                AND u.deactivated_at IS NOT NULL
-                                AND u.deactivated_at BETWEEN %s AND %s
-                            )
-                        )
+                        AND {visible_users_sql}
                         AND FIND_IN_SET(%s, {clean_am})
                         ORDER BY u.user_name
                     """
-                    params = (month_start, month_end, logged_in_user_id)
+                    params = (*visible_users_params, logged_in_user_id)
 
                 # ---------------- TEAM LEADER (assignees OR same team, view-only) ---------------- #
                 elif user_role in ("assistant team leader", "team leader"):
@@ -321,18 +308,11 @@ def get():
                         WHERE u.is_delete = 1
                         AND r.is_active = 1
                         AND LOWER(r.role_name) = 'agent'
-                        AND (
-                            u.is_active = 1
-                            OR (
-                                u.is_active = 0
-                                AND u.deactivated_at IS NOT NULL
-                                AND u.deactivated_at BETWEEN %s AND %s
-                            )
-                        )
+                        AND {visible_users_sql}
                         AND {team_leader_scope_sql("u")}
                         ORDER BY u.user_name
                     """
-                    params = (month_start, month_end, *team_leader_scope_params(logged_in_user_id))
+                    params = (*visible_users_params, *team_leader_scope_params(logged_in_user_id))
 
                 # ---------------- QA ---------------- #
                 elif user_role == "qa":
@@ -343,18 +323,11 @@ def get():
                         WHERE u.is_delete = 1
                         AND r.is_active = 1
                         AND LOWER(r.role_name) = 'agent'
-                        AND (
-                            u.is_active = 1
-                            OR (
-                                u.is_active = 0
-                                AND u.deactivated_at IS NOT NULL
-                                AND u.deactivated_at BETWEEN %s AND %s
-                            )
-                        )
+                        AND {visible_users_sql}
                         AND FIND_IN_SET(%s, {clean_qa})
                         ORDER BY u.user_name
                     """
-                    params = (month_start, month_end, logged_in_user_id)
+                    params = (*visible_users_params, logged_in_user_id)
 
                 else:
                     return api_response(403, "Not allowed")
@@ -369,9 +342,9 @@ def get():
                 return api_response(200, "Dropdown data fetched successfully", result)
             else:
                 # Admin / Super Admin / Project Manager / Assistant Manager: active only.
-                # QA / Team Leader / others: keep 2-month deactivated window.
+                # QA / other role dropdowns: include leavers while leave date >= period start.
                 if dropdown_type in ACTIVE_ONLY_USER_DROPDOWNS:
-                    query = """
+                    query = f"""
                         SELECT
                             u.user_id,
                             u.user_name AS label
@@ -385,7 +358,7 @@ def get():
                     """
                     params = (dropdown_type,)
                 else:
-                    query = """
+                    query = f"""
                         SELECT
                             u.user_id,
                             u.user_name AS label
@@ -394,17 +367,10 @@ def get():
                         WHERE u.is_delete = 1
                           AND r.is_active = 1
                           AND LOWER(r.role_name) = %s
-                          AND (
-                            u.is_active = 1
-                            OR (
-                                u.is_active = 0
-                                AND u.deactivated_at IS NOT NULL
-                                AND u.deactivated_at BETWEEN %s AND %s
-                            )
-                          )
+                          AND {visible_users_sql}
                         ORDER BY u.user_name
                     """
-                    params = (dropdown_type, month_start, month_end)
+                    params = (dropdown_type, *visible_users_params)
                 cursor.execute(query, params)
                 result = cursor.fetchall()
                 for item in result:

@@ -401,12 +401,24 @@ def add_tracker():
         proj_row = cursor.fetchone() or {}
         project_code = proj_row.get("project_code") or "PROJECT"
 
-        # --- get user_name + tenure (if tenure < 1 → use 1)
+        # --- get user_name + tenure; block writes after leave day
         cursor.execute(
-            "SELECT user_name, user_tenure FROM tfs_user WHERE user_id=%s",
+            "SELECT user_name, user_tenure, is_active, deactivated_at, is_delete FROM tfs_user WHERE user_id=%s",
             (user_id,),
         )
         usr_row = cursor.fetchone() or {}
+        if not usr_row or int(usr_row.get("is_delete") or 0) != 1:
+            return api_response(404, "User not found")
+        from utils.user_status import can_user_write_tracker
+        if not can_user_write_tracker(
+            usr_row.get("is_active"),
+            usr_row.get("deactivated_at"),
+            work_date=now_str,
+        ):
+            return api_response(
+                403,
+                "This user has left the organization and can no longer add tracker entries",
+            )
         user_name = usr_row.get("user_name") or "USER"
         try:
             user_tenure = float(usr_row.get("user_tenure") or 1)
@@ -523,6 +535,24 @@ def update_tracker():
         tracker = cursor.fetchone()
         if not tracker:
             return api_response(404, "Tracker not found")
+
+        agent_user_id = tracker.get("user_id")
+        cursor.execute(
+            "SELECT is_active, deactivated_at, is_delete FROM tfs_user WHERE user_id=%s",
+            (agent_user_id,),
+        )
+        agent_row = cursor.fetchone() or {}
+        from utils.user_status import can_user_write_tracker
+        work_dt = form.get("date_time", tracker.get("date_time"))
+        if not can_user_write_tracker(
+            agent_row.get("is_active"),
+            agent_row.get("deactivated_at"),
+            work_date=work_dt,
+        ):
+            return api_response(
+                403,
+                "This user has left the organization and can no longer edit tracker entries",
+            )
 
         actor_id = form.get("logged_in_user_id")
         if actor_id:
@@ -958,6 +988,7 @@ def view_trackers():
         query = f"""
         SELECT 
             twt.*, u.user_id, u.user_id AS agent_id, u.user_name, u.user_email, u.user_tenure,
+            u.is_active AS user_is_active, u.deactivated_at AS user_deactivated_at,
             (SELECT GROUP_CONCAT(DISTINCT am.user_id) 
              FROM tfs_user am 
              WHERE u.asst_manager_id = am.user_id 
@@ -1001,6 +1032,18 @@ def view_trackers():
 
             else:
                 t["tracker_file"] = file_path
+
+        # Pending QC urgency: 24 working hours from submission (pauses Sat/Sun/holidays)
+        if data.get("qc_pending") is not None and trackers:
+            from utils.qc_sla import load_holidays_around, sla_fields
+
+            holidays = load_holidays_around(
+                cursor,
+                *[t.get("date_time") for t in trackers],
+            )
+            for t in trackers:
+                fields = sla_fields(t.get("date_time"), holidays)
+                t.update(fields)
 
         totals_query = f"""
             SELECT

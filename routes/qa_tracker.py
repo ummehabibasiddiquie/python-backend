@@ -13,6 +13,12 @@ from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
 from utils.roster_helpers import get_role_context
+from utils.qc_sla import (
+    is_qc_late,
+    load_holidays_around,
+    parse_dt,
+    qc_deadline,
+)
 from utils.time_ist import IST, now_ist, now_str, today_str
 
 qa_tracker_bp = Blueprint("qa_tracker", __name__)
@@ -769,6 +775,12 @@ def _fetch_day_payload(
             fb_agent.user_name AS related_agent_name,
             COALESCE(
                 NULLIF(TRIM(CAST(twt.date_time AS CHAR)), ''),
+                CAST(qr.date_of_file_submission AS CHAR)
+            ) AS file_submitted_at,
+            CAST(qr.created_at AS CHAR) AS qc_created_at,
+            CAST(qr.updated_at AS CHAR) AS qc_updated_at,
+            COALESCE(
+                NULLIF(TRIM(CAST(twt.date_time AS CHAR)), ''),
                 CAST(qr.date_of_file_submission AS CHAR),
                 CAST(qr.created_at AS CHAR),
                 CAST(qwt.created_at AS CHAR)
@@ -794,6 +806,14 @@ def _fetch_day_payload(
     )
     rows = cursor.fetchall() or []
 
+    holidays = load_holidays_around(
+        cursor,
+        work_date,
+        *[r.get("file_submitted_at") for r in rows],
+        *[r.get("qc_created_at") for r in rows],
+        *[r.get("qc_updated_at") for r in rows],
+    )
+
     buckets = {
         "qc_tasks": {"hours": 0.0, "expected": EXPECTED_HOURS["qc_tasks"], "files": 0, "file_records": 0, "qc_records": 0},
         "rework_qc": {"hours": 0.0, "expected": EXPECTED_HOURS["rework_qc"], "files": 0, "file_records": 0, "qc_records": 0},
@@ -801,6 +821,7 @@ def _fetch_day_payload(
         "reporting": {"hours": 0.0, "expected": EXPECTED_HOURS["reporting"]},
     }
     files = []
+    late_files = 0
     projects_map = defaultdict(
         lambda: {
             "project_id": None,
@@ -813,6 +834,7 @@ def _fetch_day_payload(
             "rework_files": 0,
             "file_records": 0,
             "qc_records": 0,
+            "late_files": 0,
             "actual_target": 0.0,
             "qa_target": 0.0,
             "files": [],
@@ -828,6 +850,22 @@ def _fetch_day_payload(
             buckets[activity]["files"] += 1
             buckets[activity]["file_records"] += _int(r.get("file_record_count"))
             buckets[activity]["qc_records"] += _int(r.get("qc_generated_count"))
+
+            submitted_at = r.get("file_submitted_at")
+            qc_created = parse_dt(r.get("qc_created_at"))
+            qc_updated = parse_dt(r.get("qc_updated_at"))
+            qc_done = qc_created
+            if activity == "rework_qc" and qc_updated and (not qc_done or qc_updated > qc_done):
+                qc_done = qc_updated
+            deadline = qc_deadline(submitted_at, holidays)
+            late = is_qc_late(
+                submitted_at,
+                qc_done.strftime("%Y-%m-%d %H:%M:%S") if qc_done else None,
+                holidays,
+            )
+            if late:
+                late_files += 1
+
             file_row = {
                 "qa_tracker_id": r.get("qa_tracker_id"),
                 "activity_type": activity,
@@ -839,6 +877,10 @@ def _fetch_day_payload(
                 "qc_record_id": r.get("qc_record_id"),
                 "tracker_id": r.get("tracker_id"),
                 "tracker_time": _fmt_dt(r.get("tracker_time")) or _fmt_dt(r.get("created_at")),
+                "file_submitted_at": _fmt_dt(submitted_at),
+                "qc_done_at": qc_done.strftime("%Y-%m-%d %H:%M:%S") if qc_done else "",
+                "qc_deadline": deadline.strftime("%Y-%m-%d %H:%M:%S") if deadline else "",
+                "is_late": bool(late),
                 "qc_status": r.get("qc_status"),
                 "file_record_count": _int(r.get("file_record_count")),
                 "qc_generated_count": _int(r.get("qc_generated_count")),
@@ -857,6 +899,8 @@ def _fetch_day_payload(
             proj["qa_target"] = _round4(r.get("qa_target"))
             proj["file_records"] += _int(r.get("file_record_count"))
             proj["qc_records"] += _int(r.get("qc_generated_count"))
+            if late:
+                proj["late_files"] += 1
             proj["files"].append(file_row)
             if activity == "qc_tasks":
                 proj["qc_hours"] = _round4(proj["qc_hours"] + hours)
@@ -880,6 +924,7 @@ def _fetch_day_payload(
         "expected": {**EXPECTED_HOURS, "total": EXPECTED_TOTAL},
         "buckets": buckets,
         "total_hours": total_hours,
+        "late_files": late_files,
         "projects": list(projects_map.values()),
         "files": files,
         "feedback_hours": buckets["feedback"]["hours"],
@@ -888,6 +933,93 @@ def _fetch_day_payload(
         "notes": next((r.get("notes") or "" for r in rows if r.get("activity_type") in MANUAL_ACTIVITIES and r.get("notes")), "")
         or next((r.get("notes") or "" for r in rows if r.get("notes")), ""),
     }
+
+
+def _qc_file_sla_rows(cursor, where: str, params: list) -> list[dict]:
+    """Per QC/rework file timestamps for late counting (same WHERE as list/monthly)."""
+    cursor.execute(
+        f"""
+        SELECT
+            qwt.qa_user_id,
+            qwt.work_date,
+            qwt.project_id,
+            qwt.task_id,
+            qwt.activity_type,
+            COALESCE(
+                NULLIF(TRIM(CAST(twt.date_time AS CHAR)), ''),
+                CAST(qr.date_of_file_submission AS CHAR)
+            ) AS file_submitted_at,
+            CAST(qr.created_at AS CHAR) AS qc_created_at,
+            CAST(qr.updated_at AS CHAR) AS qc_updated_at
+        FROM qa_work_tracker qwt
+        LEFT JOIN qc_records qr
+          ON qr.id = COALESCE(
+              qwt.qc_record_id,
+              IF(qwt.source_table = 'qc_records', qwt.source_id, NULL)
+          )
+        LEFT JOIN task_work_tracker twt
+          ON twt.tracker_id = COALESCE(qwt.tracker_id, qr.tracker_id)
+        WHERE {where}
+          AND qwt.activity_type IN ('qc_tasks', 'rework_qc')
+        """,
+        tuple(params),
+    )
+    return cursor.fetchall() or []
+
+
+def _annotate_late_counts(cursor, rows: list[dict], where: str, params: list, *, by_day: bool) -> None:
+    """Mutate day or monthly rows in-place with late_files (and project late_files)."""
+    if not rows:
+        return
+    sla_rows = _qc_file_sla_rows(cursor, where, params)
+    holidays = load_holidays_around(
+        cursor,
+        *[r.get("work_date") for r in sla_rows],
+        *[r.get("file_submitted_at") for r in sla_rows],
+        *[r.get("qc_created_at") for r in sla_rows],
+    )
+
+    # key -> late count; project key -> late count
+    late_by_key: dict = defaultdict(int)
+    late_by_proj: dict = defaultdict(int)
+
+    for r in sla_rows:
+        submitted_at = r.get("file_submitted_at")
+        qc_created = parse_dt(r.get("qc_created_at"))
+        qc_updated = parse_dt(r.get("qc_updated_at"))
+        qc_done = qc_created
+        if r.get("activity_type") == "rework_qc" and qc_updated and (not qc_done or qc_updated > qc_done):
+            qc_done = qc_updated
+        if not is_qc_late(
+            submitted_at,
+            qc_done.strftime("%Y-%m-%d %H:%M:%S") if qc_done else None,
+            holidays,
+        ):
+            continue
+        qa_id = _int(r.get("qa_user_id"))
+        wd = _date_str(r.get("work_date"))
+        if by_day:
+            late_by_key[(qa_id, wd)] += 1
+            late_by_proj[(qa_id, wd, r.get("project_id"), r.get("task_id"))] += 1
+        else:
+            late_by_key[qa_id] += 1
+            late_by_proj[(qa_id, r.get("project_id"), r.get("task_id"))] += 1
+
+    for row in rows:
+        qa_id = _int(row.get("qa_user_id"))
+        if by_day:
+            wd = row.get("work_date") or ""
+            row["late_files"] = late_by_key.get((qa_id, wd), 0)
+            for p in row.get("projects") or []:
+                p["late_files"] = late_by_proj.get(
+                    (qa_id, wd, p.get("project_id"), p.get("task_id")), 0
+                )
+        else:
+            row["late_files"] = late_by_key.get(qa_id, 0)
+            for p in row.get("projects") or []:
+                p["late_files"] = late_by_proj.get(
+                    (qa_id, p.get("project_id"), p.get("task_id")), 0
+                )
 
 
 @qa_tracker_bp.route("/sync", methods=["POST"])
@@ -1405,6 +1537,7 @@ def qa_tracker_list():
                     "rework_files": 0,
                     "qc_records": 0,
                     "file_records": 0,
+                    "late_files": 0,
                     "expected_total": EXPECTED_TOTAL,
                     "projects": {},
                     "manual_entries": [],
@@ -1439,6 +1572,7 @@ def qa_tracker_list():
                         "files": 0,
                         "file_records": 0,
                         "qc_records": 0,
+                        "late_files": 0,
                     },
                 )
                 if activity == "qc_tasks":
@@ -1469,6 +1603,8 @@ def qa_tracker_list():
                 continue
             day["projects"] = list(day["projects"].values())
             result.append(day)
+
+        _annotate_late_counts(cursor, result, where, params, by_day=True)
 
         qa_users = []
         if manager:
@@ -1595,6 +1731,7 @@ def qa_tracker_monthly():
                     "rework_files": 0,
                     "qc_records": 0,
                     "file_records": 0,
+                    "late_files": 0,
                     "days_worked": 0,
                     "expected_hours": 0.0,
                     "pending_hours": 0.0,
@@ -1632,6 +1769,7 @@ def qa_tracker_monthly():
                         "files": 0,
                         "file_records": 0,
                         "qc_records": 0,
+                        "late_files": 0,
                     },
                 )
                 if activity == "qc_tasks":
@@ -1676,6 +1814,8 @@ def qa_tracker_monthly():
             ):
                 continue
             result.append(row)
+
+        _annotate_late_counts(cursor, result, where, params, by_day=False)
 
         qa_users = []
         if manager:

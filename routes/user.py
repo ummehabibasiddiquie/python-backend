@@ -153,13 +153,32 @@ def list_users():
 
     month_start = None
     month_end = None
+    # When a period is requested (past/current month reports), use period-based
+    # leaver visibility. Otherwise (Users listing page) use a rolling 3-month window.
+    period_mode = False
 
     if date_from or date_to:
         ref_date = date_to or date_from
-        dt = datetime.strptime(ref_date[:10], "%Y-%m-%d")
+        dt = datetime.strptime(str(ref_date)[:10], "%Y-%m-%d")
         month_start = dt.replace(day=1)
         next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
         month_end = next_month - timedelta(seconds=1)
+        period_mode = True
+    elif month_year:
+        raw = str(month_year).strip()
+        dt = None
+        try:
+            if len(raw) >= 7 and raw[4] == "-":
+                dt = datetime.strptime(raw[:7] + "-01", "%Y-%m-%d")
+            else:
+                dt = datetime.strptime(raw.replace(" ", ""), "%b%Y")
+        except ValueError:
+            dt = None
+        if dt:
+            month_start = dt.replace(day=1)
+            next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+            month_end = next_month - timedelta(seconds=1)
+            period_mode = True
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -181,7 +200,30 @@ def list_users():
         if role == "agent":
             return api_response(200, "No users available", [])
 
-        query = """
+        params: list = []
+        if period_mode and month_start:
+            # Past/selected month reports: keep leavers visible for that month
+            # (leave date on or after month start).
+            period_start_sql = month_start.strftime("%Y-%m-%d")
+            leaver_clause = """
+            AND (
+                u.is_active = 1
+                OR (
+                    u.is_active = 0
+                    AND u.deactivated_at IS NOT NULL
+                    AND DATE(u.deactivated_at) >= %s
+                )
+            )
+            """
+            params.append(period_start_sql)
+        else:
+            # Manage → Users: show all non-deleted users (active + any leaver)
+            # so admins can still find/reactivate people who left >3 months ago.
+            # Rolling 3-month cutoff applies only to agent-list pages (dropdown,
+            # monthly tracker, agent files, tracker filter) — not here.
+            leaver_clause = ""
+
+        query = f"""
             SELECT
                 u.user_id,
                 u.user_name,
@@ -207,24 +249,8 @@ def list_users():
             LEFT JOIN user_designation d ON d.designation_id = u.designation_id
             LEFT JOIN team t ON u.team_id = t.team_id
             WHERE u.is_delete = 1
-            AND (
-            u.is_active = 1
-            OR (
-                u.is_active = 0
-                AND u.deactivated_at IS NOT NULL
-                AND u.deactivated_at >= DATE_SUB(%s, INTERVAL 2 MONTH)
-            )
-        )
+            {leaver_clause}
         """
-
-        params: list = []
-        
-        if month_start:
-            current_date = month_start
-        else:
-            current_date = now_ist()
-            
-        params.append(current_date)
 
         # ✅ Role-based filtering (MariaDB-safe; supports BOTH JSON arrays and comma/bracket strings)
         # This avoids: invalid JSON errors + missing matches when stored value isn't valid JSON
