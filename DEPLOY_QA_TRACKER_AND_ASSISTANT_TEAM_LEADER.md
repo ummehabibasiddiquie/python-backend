@@ -107,26 +107,61 @@ USE mytfs;
 SHOW COLUMNS FROM tfs_user LIKE 'team_leader_id';
 ```
 
-### 2E. Bulk assign agents to Assistant Team Leaders (optional)
+### 2D2. Designation: Assistant Team Leader
+
+File: `2026_09_14_assistant_team_leader_designation.sql`
+
+Adds row to `user_designation` so Add/Edit User can pick designation **Assistant Team Leader**.
+
+```sql
+USE mytfs;
+SELECT designation_id, designation, is_active FROM user_designation
+WHERE LOWER(TRIM(designation)) = 'assistant team leader';
+```
+
+### 2E. Create Assistant Team Leader users first (required before assign SQL)
+
+**Skip the bulk-assign SQL until ATL users exist.**
+
+1. Finish SQL **2A–2D**, then pull/restart backend + deploy frontend (sections 3–4) so **Assistant Team Leader** appears in Add User.
+2. **User Management → Add User** — create each ATL with role **Assistant Team Leader** (on live these are user_id **192** Team A, **193** Team B — confirm after create).
+3. Confirm:
+
+```sql
+USE mytfs;
+SELECT u.user_id, u.user_name, r.role_name, u.team_id
+FROM tfs_user u
+JOIN user_role r ON r.role_id = u.role_id
+WHERE u.is_delete = 1
+  AND u.user_id IN (192, 193);
+-- Or list all ATLs:
+-- AND LOWER(TRIM(r.role_name)) = 'assistant team leader';
+```
+
+### 2F. Bulk assign agents to Assistant Team Leaders (only after 2E)
 
 File: `2026_09_11_assign_team_leaders_by_team.sql`
 
-- Team **A** → **Anchal Yadav**  
-- Team **B** → **Chaitanya Bhanarkar**
+Uses **user_id** only (no names):
 
-Confirm names first:
+- Team **A** agents → `team_leader_id = [192]`
+- Team **B** agents → `team_leader_id = [193]`
+
+Confirm ATLs exist first:
 
 ```sql
 USE mytfs;
 SELECT user_id, user_name, role_id FROM tfs_user
-WHERE LOWER(user_name) IN ('anchal yadav', 'chaitanya bhanarkar') AND is_delete = 1;
+WHERE user_id IN (192, 193) AND is_delete = 1;
 
 SELECT team_id, team_name FROM team WHERE LOWER(TRIM(team_name)) IN ('a', 'b');
 ```
 
-Edit the SQL file if spelling differs, then run it.
+Then run the migration file.
 
-### 2F. Fix already-broken fractional tenure users (optional data fix)
+**Alternative:** skip 2F and set Assistant Team Leader on each agent via **Edit User**.
+
+### 2G. Fix already-broken fractional tenure users (optional data fix)
 
 If agents/QA were added with tenure `0.5` / `0.75` but roster used full 9h, their `user_tenure` may be `NULL` (old Add User bug). After deploy:
 
@@ -208,7 +243,7 @@ Then **Reset Employee** in the UI (Admin only) so roster + monthly goal recalcul
 | 500 on QA add / list | 2A/2B not run |
 | Role missing / still “Team Leader” | 2C not run; hard-refresh FE |
 | Cannot save ATL on user | 2D not run |
-| ATL empty billable | 2E / wrong names |
+| ATL empty billable | ATL user not created yet, or 2F not run / wrong names |
 | Tenure `0.5` becomes blank after Add | Old backend still running — restart API after pull |
 | Reset still 21 days / 189h | Fix `user_tenure` + `joining_date` on user, then Reset Employee again |
 | Old UI | Frontend not rebuilt / cache |
@@ -222,7 +257,10 @@ Then **Reset Employee** in the UI (Admin only) so roster + monthly goal recalcul
 2. migrations/2026_09_11_qa_tracker_manual_subtasks.sql
 3. migrations/2026_09_11_team_leader_role.sql
 4. migrations/2026_09_11_tfs_user_team_leader_id.sql
-5. migrations/2026_09_11_assign_team_leaders_by_team.sql      # optional
+5. migrations/2026_09_14_assistant_team_leader_designation.sql
+6. (deploy code + restart API + build FE)
+7. Create Assistant Team Leader users in UI
+8. migrations/2026_09_11_assign_team_leaders_by_team.sql      # only after step 7
 ```
 
-Then: **push from PC → pull on server → SQL → restart API → build FE → smoke test**.
+Then: **SQL 1–5 → pull/restart/build → create ATL users → assign SQL (or Edit User) → smoke test**.

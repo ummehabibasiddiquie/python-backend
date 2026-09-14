@@ -1,49 +1,36 @@
 -- Deploy step: assign Assistant Team Leaders by team (agents only)
--- Prerequisites (run first if not already applied):
---   1) migrations/2026_09_11_team_leader_role.sql
---   2) migrations/2026_09_11_tfs_user_team_leader_id.sql
+-- Prerequisites:
+--   1) team_leader_id column exists
+--   2) ATL users 192 (Team A) and 193 (Team B) already created
 --
--- Mapping:
---   Team A (team_name = 'A' / team_id = 1) → Anchal Yadav
---   Team B (team_name = 'B' / team_id = 2) → Chaitanya Bhanarkar
---
--- Uses user_name lookup so it works even if user_id differs on server.
--- Adjust names below if server spelling differs.
+-- Mapping (by user_id — no name lookup):
+--   Team A agents → [192]
+--   Team B agents → [193]
 
--- Team A agents → Anchal Yadav
+-- Team A agents → user_id 192
 UPDATE tfs_user u
-JOIN user_role r ON r.role_id = u.role_id
-SET u.team_leader_id = CONCAT(
-  '[',
-  (SELECT tl.user_id FROM tfs_user tl WHERE LOWER(TRIM(tl.user_name)) = 'anchal yadav' AND tl.is_delete = 1 LIMIT 1),
-  ']'
-)
+INNER JOIN user_role r ON r.role_id = u.role_id
+INNER JOIN team t ON t.team_id = u.team_id AND LOWER(TRIM(t.team_name)) = 'a'
+INNER JOIN (
+  SELECT user_id FROM tfs_user WHERE user_id = 192 AND is_delete = 1
+) tl ON tl.user_id = 192
+SET u.team_leader_id = '[192]'
 WHERE u.is_delete = 1
-  AND u.team_id = (SELECT t.team_id FROM team t WHERE LOWER(TRIM(t.team_name)) = 'a' LIMIT 1)
-  AND LOWER(TRIM(r.role_name)) = 'agent'
-  AND EXISTS (
-    SELECT 1 FROM tfs_user tl
-    WHERE LOWER(TRIM(tl.user_name)) = 'anchal yadav' AND tl.is_delete = 1
-  );
+  AND LOWER(TRIM(r.role_name)) = 'agent';
 
--- Team B agents → Chaitanya Bhanarkar
+-- Team B agents → user_id 193
 UPDATE tfs_user u
-JOIN user_role r ON r.role_id = u.role_id
-SET u.team_leader_id = CONCAT(
-  '[',
-  (SELECT tl.user_id FROM tfs_user tl WHERE LOWER(TRIM(tl.user_name)) = 'chaitanya bhanarkar' AND tl.is_delete = 1 LIMIT 1),
-  ']'
-)
+INNER JOIN user_role r ON r.role_id = u.role_id
+INNER JOIN team t ON t.team_id = u.team_id AND LOWER(TRIM(t.team_name)) = 'b'
+INNER JOIN (
+  SELECT user_id FROM tfs_user WHERE user_id = 193 AND is_delete = 1
+) tl ON tl.user_id = 193
+SET u.team_leader_id = '[193]'
 WHERE u.is_delete = 1
-  AND u.team_id = (SELECT t.team_id FROM team t WHERE LOWER(TRIM(t.team_name)) = 'b' LIMIT 1)
-  AND LOWER(TRIM(r.role_name)) = 'agent'
-  AND EXISTS (
-    SELECT 1 FROM tfs_user tl
-    WHERE LOWER(TRIM(tl.user_name)) = 'chaitanya bhanarkar' AND tl.is_delete = 1
-  );
+  AND LOWER(TRIM(r.role_name)) = 'agent';
 
--- Verify after deploy:
--- SELECT u.user_id, u.user_name, t.team_name, u.team_leader_id, r.role_name
+-- Verify:
+-- SELECT u.user_id, u.user_name, t.team_name, u.team_leader_id
 -- FROM tfs_user u
 -- JOIN user_role r ON r.role_id = u.role_id
 -- LEFT JOIN team t ON t.team_id = u.team_id
