@@ -251,7 +251,7 @@ def roster_create_change_request():
             return api_response(
                 400,
                 f"Cannot edit roster for {emp_row.get('user_name') or 'this employee'}: "
-                "joining date is not set",
+                "tracker joining date is not set",
             )
 
         scope_err = assert_manager_scope(cursor, logged_in_user_id, role_name, roster_month)
@@ -2290,7 +2290,7 @@ def _build_excel_preview(
                     "sheet": row.get("sheet"),
                     "name": row["name"],
                     "user_id": emp.get("user_id"),
-                    "reason": "joining_date is not set — skipped (set DOJ before roster/Excel)",
+                    "reason": "tracker joining date is not set — skipped (set Tracker Joining Date before roster/Excel)",
                 }
             )
             continue
@@ -2328,6 +2328,23 @@ def _build_excel_preview(
                 continue
 
             if not change:
+                continue
+
+            joining = parse_date(emp.get("joining_date"))
+            if joining and d < joining:
+                skipped.append(
+                    {
+                        "row": row["row"],
+                        "sheet": row.get("sheet"),
+                        "user_id": uid,
+                        "user_name": emp.get("user_name"),
+                        "date": date_iso,
+                        "label": change.get("label"),
+                        "reason": (
+                            f"Before joining date ({joining.isoformat()}) — skipped"
+                        ),
+                    }
+                )
                 continue
 
             roster_month = resolve_roster_month_for_date(roster_by_um, uid, d)

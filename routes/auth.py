@@ -201,9 +201,27 @@ def user_handler():
         except ValueError:
             return None
 
+    def _optional_tenure(val):
+        """Keep fractional tenure (0.5, 0.75). Do not coerce via int()."""
+        if val is None:
+            return None
+        s = str(val).strip()
+        if not s or s.lower() in ("null", "none"):
+            return None
+        try:
+            tenure = float(s)
+        except ValueError:
+            return None
+        if tenure < 0:
+            tenure = 0.0
+        # Store as plain number string so 0.5 is not lost
+        if tenure == int(tenure):
+            return str(int(tenure))
+        return str(tenure)
+
     designation_id = _optional_int(designation_id)
     team = _optional_int(team)
-    user_tenure = _optional_int(user_tenure)
+    user_tenure = _optional_tenure(user_tenure)
     role_id = _optional_int(role_id) or role_id
 
     user_number = form.get("user_number")

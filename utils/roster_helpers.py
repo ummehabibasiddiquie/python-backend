@@ -1120,15 +1120,16 @@ def resolve_roster_period(
     month_end: date,
 ) -> tuple[date | None, date | None, str | None]:
     """
-    Prorate from joining_date. Dates before joining are excluded entirely.
+    Prorate from tracker joining_date (system DOJ for roster/tracker, not org DOJ).
+    Dates before joining are excluded entirely.
     Returns (start, end, skip_reason).
     """
     joining_date = parse_date(employee.get("joining_date"))
     if not joining_date:
-        return None, None, "joining_date is not set"
+        return None, None, "tracker joining date is not set"
 
     if joining_date > month_end:
-        return None, None, "employee joining date is after the roster month"
+        return None, None, "tracker joining date is after the roster month"
 
     deactivated_at = employee.get("deactivated_at")
     if deactivated_at:
@@ -1417,7 +1418,14 @@ def insert_roster_for_employee(
     *,
     tracker_baseline: dict | None = None,
     write_audit: bool = True,
+    sync_umt: str = "if_missing",
 ) -> dict:
+    """
+    sync_umt:
+      - "if_missing": create user_monthly_tracker only when absent (default generate)
+      - "always": overwrite monthly_target / working_days from this roster (reset)
+      - "never": do not touch user_monthly_tracker
+    """
     roster_start, roster_end, skip_reason = resolve_roster_period(employee, month_start, month_end)
     if skip_reason:
         return {"user_id": employee["user_id"], "status": "skipped", "reason": skip_reason}
@@ -1511,20 +1519,33 @@ def insert_roster_for_employee(
             notes="Default roster generated",
         )
 
-    insert_umt_from_roster_if_missing(
-        cursor,
-        {
-            "roster_month_id": roster_month_id,
-            "user_id": int(employee["user_id"]),
-            "month_year": month_year,
-            "monthly_target_hours": metrics["monthly_target_hours"],
-            "target_working_days": metrics["target_working_days"],
-            "extra_assigned_hours": extra_assigned,
-        },
-        created_by,
-        write_audit=write_audit,
-    )
+    umt_payload = {
+        "roster_month_id": roster_month_id,
+        "user_id": int(employee["user_id"]),
+        "month_year": month_year,
+        "monthly_target_hours": metrics["monthly_target_hours"],
+        "target_working_days": metrics["target_working_days"],
+        "extra_assigned_hours": extra_assigned,
+    }
+    if sync_umt == "always":
+        sync_to_user_monthly_tracker(
+            cursor,
+            umt_payload,
+            "Synced monthly goal from roster reset/regenerate",
+            created_by,
+            approval_status=None,
+            action="ROSTER_RESET_SYNCED_TO_UMT",
+            write_audit=write_audit,
+        )
+    elif sync_umt == "if_missing":
+        insert_umt_from_roster_if_missing(
+            cursor,
+            umt_payload,
+            created_by,
+            write_audit=write_audit,
+        )
 
+    joining = parse_date(employee.get("joining_date"))
     return {
         "user_id": employee["user_id"],
         "user_name": employee.get("user_name"),
@@ -1532,6 +1553,9 @@ def insert_roster_for_employee(
         "roster_month_id": roster_month_id,
         "roster_start_date": roster_start.isoformat(),
         "roster_end_date": roster_end.isoformat(),
+        "joining_date": joining.isoformat() if joining else None,
+        "user_tenure": employee.get("user_tenure"),
+        "daily_full_hours": daily_full_hours,
         **metrics,
     }
 

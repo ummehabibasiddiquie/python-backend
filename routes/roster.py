@@ -395,6 +395,7 @@ def reset_regenerate_roster():
                 logged_in_user_id,
                 tracker_baseline=tracker_map.get(int(employee["user_id"]), default_tracker),
                 write_audit=False,
+                sync_umt="always",
             )
             if result.get("status") == "created":
                 created_count += 1
@@ -451,6 +452,8 @@ def reset_regenerate_employee_roster():
     """
     Super Admin only. Reset & regenerate roster for one employee in a month.
     Clears that employee's change-request history for the month (pending/approved/rejected).
+    Week locks do not block this admin reset. Roster days start from joining_date
+    (not month start) and daily hours follow user_tenure. Monthly goal is overwritten.
     """
     data = request.get_json(silent=True) or {}
     logged_in_user_id, err = _require_logged_in_user(data)
@@ -521,6 +524,7 @@ def reset_regenerate_employee_roster():
             logged_in_user_id,
             tracker_baseline=tracker_map.get(int(target_user_id), default_tracker),
             write_audit=True,
+            sync_umt="always",
         )
         if result.get("status") != "created":
             conn.rollback()
