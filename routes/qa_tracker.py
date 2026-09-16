@@ -52,6 +52,10 @@ MANUAL_KIND_TO_ACTIVITY = {
 QC_ACTIVITIES = ("qc_tasks", "rework_qc")
 QA_DELETE_WINDOW_HOURS = 24
 QA_TRACKER_GO_LIVE = QA_NEW_TARGETS_EFFECTIVE_FROM.strftime("%Y-%m-%d")
+# One-time: apply current task QA targets to already-saved rows on this date.
+# Later target edits stay frozen on older rows.
+QA_ONE_TIME_TARGET_REBUILD_DATE = QA_TRACKER_GO_LIVE
+_TODAY_TARGET_REBUILD_DONE = False
 
 
 def _clamp_tracker_start(start_date: str | None) -> str:
@@ -78,10 +82,33 @@ def _active_tracker_where(start_date: str, end_date: str) -> tuple[str, list]:
     return where, [QA_TRACKER_GO_LIVE, start_date, end_date]
 
 
+def _rebuild_today_hours_once(cursor, conn) -> None:
+    """Apply current task QA targets to today's already-saved QC hours once.
+
+    After this, later target edits only affect files saved after the change.
+    """
+    global _TODAY_TARGET_REBUILD_DONE
+    if _TODAY_TARGET_REBUILD_DONE:
+        return
+    today = today_str()[:10]
+    if today != QA_ONE_TIME_TARGET_REBUILD_DATE:
+        _TODAY_TARGET_REBUILD_DONE = True
+        return
+    rebuild_september_qa_hours(cursor, today, today)
+    conn.commit()
+    _TODAY_TARGET_REBUILD_DONE = True
+
+
 def _prepare_tracker_read(cursor, conn, manager, logged_in_user_id, requested, start_date, end_date) -> None:
     _purge_pre_golive_rows(cursor)
     _deactivate_zero_manual_rows(cursor)
     conn.commit()
+    try:
+        _rebuild_today_hours_once(cursor, conn)
+    except Exception:
+        conn.rollback()
+        import traceback
+        traceback.print_exc()
     sync_ids = _resolve_sync_user_ids(cursor, manager, logged_in_user_id, requested)
     if not sync_ids:
         return
@@ -1719,6 +1746,12 @@ def qa_tracker_day():
         if auth_err:
             return auth_err
         _purge_pre_golive_rows(cursor)
+        try:
+            _rebuild_today_hours_once(cursor, conn)
+        except Exception:
+            conn.rollback()
+            import traceback
+            traceback.print_exc()
         _sync_qc_rows(cursor, target_id, work_date)
         conn.commit()
         ctx = get_role_context(cursor, logged_in_user_id)
