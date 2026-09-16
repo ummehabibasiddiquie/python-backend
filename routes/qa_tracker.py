@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import json
 import re
 import uuid
 from collections import defaultdict
@@ -22,10 +23,15 @@ from utils.qc_sla import (
     sla_applies_to_submission,
 )
 from utils.time_ist import IST, now_ist, now_str, today_str
+from utils.qa_targets import (
+    QA_NEW_TARGETS_EFFECTIVE_FROM,
+    report_record_counts,
+    resolve_qa_targets,
+)
+from utils.qa_column_counts import ensure_qc_object_count_column, fill_missing_range_counts
 
 qa_tracker_bp = Blueprint("qa_tracker", __name__)
 
-QA_TARGET_RATIO = 0.5
 EXPECTED_HOURS = {
     "qc_tasks": 4.5,
     "feedback": 1.5,
@@ -44,6 +50,48 @@ MANUAL_KIND_TO_ACTIVITY = {
 }
 QC_ACTIVITIES = ("qc_tasks", "rework_qc")
 QA_DELETE_WINDOW_HOURS = 24
+QA_TRACKER_GO_LIVE = QA_NEW_TARGETS_EFFECTIVE_FROM.strftime("%Y-%m-%d")
+
+
+def _clamp_tracker_start(start_date: str | None) -> str:
+    start = _parse_date(start_date) or QA_TRACKER_GO_LIVE
+    return start if start >= QA_TRACKER_GO_LIVE else QA_TRACKER_GO_LIVE
+
+
+def _purge_pre_golive_rows(cursor) -> None:
+    cursor.execute(
+        "DELETE FROM qa_work_tracker WHERE work_date < %s",
+        (QA_TRACKER_GO_LIVE,),
+    )
+
+
+def _active_tracker_where(start_date: str, end_date: str) -> tuple[str, list]:
+    start_date = _clamp_tracker_start(start_date)
+    end_date = _parse_date(end_date) or start_date
+    where = """
+        qwt.is_active=1
+        AND qwt.work_date >= %s
+        AND qwt.work_date BETWEEN %s AND %s
+        AND NOT (qwt.source_table='manual' AND qwt.hours <= 0)
+    """
+    return where, [QA_TRACKER_GO_LIVE, start_date, end_date]
+
+
+def _prepare_tracker_read(cursor, conn, manager, logged_in_user_id, requested, start_date, end_date) -> None:
+    _purge_pre_golive_rows(cursor)
+    _deactivate_zero_manual_rows(cursor)
+    conn.commit()
+    sync_ids = _resolve_sync_user_ids(cursor, manager, logged_in_user_id, requested)
+    if not sync_ids:
+        return
+    try:
+        _sync_month_from_qc(cursor, sync_ids, start_date, end_date)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        import traceback
+        traceback.print_exc()
+
 
 
 def _month_bounds(month_year: str | None) -> tuple[str, str, str] | None:
@@ -390,12 +438,43 @@ def _deactivate_zero_manual_rows(cursor) -> None:
     )
 
 
-def _calc_hours(qc_count, actual_target) -> tuple[float, float, float]:
-    actual = _round4(actual_target)
-    qa_target = _round4(actual * QA_TARGET_RATIO)
-    hours = _round4(_float(qc_count) / qa_target) if qa_target else 0.0
-    return actual, qa_target, hours
+def _apply_range_counts(cursor, rec: dict, work_date: str | None) -> tuple[int, int]:
+    fill_missing_range_counts(cursor, rec, work_date)
+    return report_record_counts(rec)
 
+
+def _calc_hours(
+    qc_count,
+    actual_target,
+    *,
+    qa_minutes_per_file=None,
+    qa_minutes_per_record=None,
+    qa_target_ranges=None,
+    object_count=None,
+    work_date=None,
+) -> tuple[float, float, float]:
+    resolved = resolve_qa_targets(
+        task_target=actual_target,
+        qa_minutes_per_file=qa_minutes_per_file,
+        qa_minutes_per_record=qa_minutes_per_record,
+        qa_target_ranges=qa_target_ranges,
+        object_count=object_count,
+        qc_generated_count=qc_count,
+        work_date=work_date,
+    )
+    return resolved["actual_target"], resolved["qa_target"], resolved["hours"]
+
+
+def _hours_from_qc_rec(rec: dict, work_date: str | None = None) -> tuple[float, float, float]:
+    return _calc_hours(
+        rec.get("qc_generated_count"),
+        rec.get("task_target") if rec.get("task_target") is not None else rec.get("actual_target"),
+        qa_minutes_per_file=rec.get("qa_minutes_per_file"),
+        qa_minutes_per_record=rec.get("qa_minutes_per_record"),
+        qa_target_ranges=rec.get("qa_target_ranges"),
+        object_count=rec.get("object_count"),
+        work_date=work_date if work_date is not None else rec.get("work_date"),
+    )
 
 def _require_user(data: dict):
     logged_in_user_id = data.get("logged_in_user_id")
@@ -419,17 +498,79 @@ def _resolve_target_qa(cursor, logged_in_user_id: int, requested_qa_user_id) -> 
     return target_id, ctx, None
 
 
-def _upsert_qc_row(cursor, row: dict, now: str) -> int:
-    """Insert or update a QC-sourced tracker row. Unique on (source_table, source_id, activity_type)."""
-    source_id = int(row["source_id"])
+def _target_snapshot(rec: dict, work_date: str | None) -> str:
+    """Target inputs used the first time this QA row is stored."""
+    ranges = rec.get("qa_target_ranges")
+    if isinstance(ranges, (bytes, bytearray)):
+        ranges = ranges.decode("utf-8", errors="ignore")
+    payload = {
+        "task_target": rec.get("task_target"),
+        "qa_minutes_per_file": rec.get("qa_minutes_per_file"),
+        "qa_minutes_per_record": rec.get("qa_minutes_per_record"),
+        "qa_target_ranges": ranges,
+        "qa_count_column": rec.get("qa_count_column"),
+        "object_count": rec.get("object_count"),
+        "work_date": str(work_date)[:10] if work_date else None,
+    }
+    return json.dumps(payload, default=str)
+
+
+_SNAPSHOT_COLUMN_READY = False
+
+
+def ensure_target_snapshot_column(cursor) -> None:
+    global _SNAPSHOT_COLUMN_READY
+    if _SNAPSHOT_COLUMN_READY:
+        return
+    cursor.execute("SHOW COLUMNS FROM qa_work_tracker LIKE 'target_snapshot'")
+    if not cursor.fetchone():
+        cursor.execute(
+            """
+            ALTER TABLE qa_work_tracker
+            ADD COLUMN target_snapshot JSON NULL AFTER hours
+            """
+        )
     cursor.execute(
         """
+        UPDATE qa_work_tracker
+        SET target_snapshot = JSON_OBJECT(
+            'actual_target', actual_target,
+            'qa_target', qa_target,
+            'hours', hours,
+            'frozen', 1
+        )
+        WHERE target_snapshot IS NULL
+          AND activity_type IN ('qc_tasks', 'rework_qc')
+        """
+    )
+    _SNAPSHOT_COLUMN_READY = True
+
+
+def _upsert_qc_row(cursor, row: dict, now: str, overwrite_target: bool = False) -> int:
+    """Insert or update a QC-sourced tracker row. Unique on (source_table, source_id, activity_type).
+
+    Hours and targets are written only on insert. A later task-target change must not
+    rewrite past days (same idea as agent tracker storing actual_target at submit time).
+    """
+    ensure_target_snapshot_column(cursor)
+    source_id = int(row["source_id"])
+    if overwrite_target:
+        target_sql = """
+            actual_target=VALUES(actual_target),
+            qa_target=VALUES(qa_target),
+            hours=VALUES(hours),
+            target_snapshot=VALUES(target_snapshot),"""
+    else:
+        target_sql = """
+            target_snapshot=COALESCE(target_snapshot, VALUES(target_snapshot)),"""
+    cursor.execute(
+        f"""
         INSERT INTO qa_work_tracker (
             qa_user_id, work_date, activity_type, project_id, task_id,
             qc_record_id, tracker_id, source_table, source_id,
             file_record_count, qc_generated_count, actual_target, qa_target,
-            hours, qc_status, is_active, created_at, updated_at
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s)
+            hours, target_snapshot, qc_status, is_active, created_at, updated_at
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s)
         ON DUPLICATE KEY UPDATE
             qa_user_id=VALUES(qa_user_id),
             work_date=VALUES(work_date),
@@ -439,9 +580,7 @@ def _upsert_qc_row(cursor, row: dict, now: str) -> int:
             tracker_id=VALUES(tracker_id),
             file_record_count=VALUES(file_record_count),
             qc_generated_count=VALUES(qc_generated_count),
-            actual_target=VALUES(actual_target),
-            qa_target=VALUES(qa_target),
-            hours=VALUES(hours),
+            {target_sql}
             qc_status=VALUES(qc_status),
             is_active=1,
             updated_at=VALUES(updated_at),
@@ -462,6 +601,7 @@ def _upsert_qc_row(cursor, row: dict, now: str) -> int:
             row["actual_target"],
             row["qa_target"],
             row["hours"],
+            row.get("target_snapshot"),
             row.get("qc_status"),
             now,
             now,
@@ -473,9 +613,20 @@ def _upsert_qc_row(cursor, row: dict, now: str) -> int:
 def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
     """Build tracker rows from existing QC tables for this QA user and date."""
     rows: list[dict] = []
+    ensure_qc_object_count_column(cursor)
+    task_target_cols = """
+            COALESCE(t.task_target, 0) AS task_target,
+            t.qa_minutes_per_file,
+            t.qa_minutes_per_record,
+            t.qa_target_ranges,
+            t.qa_count_column,
+            qr.object_count,
+            qr.qc_object_count,
+            qr.whole_file_path
+    """
 
     cursor.execute(
-        """
+        f"""
         SELECT
             qr.id AS qc_record_id,
             qr.qa_user_id,
@@ -487,7 +638,7 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
             qr.qc_status,
             COALESCE(qr.file_record_count, 0) AS file_record_count,
             COALESCE(qr.qc_generated_count, 0) AS qc_generated_count,
-            COALESCE(t.task_target, 0) AS actual_target,
+            {task_target_cols},
             p.project_name,
             t.task_name
         FROM qc_records qr
@@ -500,7 +651,8 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
         (qa_user_id, work_date),
     )
     for rec in cursor.fetchall() or []:
-        actual, qa_target, hours = _calc_hours(rec.get("qc_generated_count"), rec.get("actual_target"))
+        file_count, qc_count = _apply_range_counts(cursor, rec, work_date)
+        actual, qa_target, hours = _hours_from_qc_rec(rec, work_date)
         rows.append(
             {
                 "qa_user_id": qa_user_id,
@@ -512,17 +664,19 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
                 "tracker_id": rec.get("tracker_id"),
                 "source_table": "qc_records",
                 "source_id": rec.get("qc_record_id"),
-                "file_record_count": rec.get("file_record_count"),
-                "qc_generated_count": rec.get("qc_generated_count"),
+                "file_record_count": file_count,
+                "qc_generated_count": qc_count,
+                "object_count": rec.get("object_count"),
                 "actual_target": actual,
                 "qa_target": qa_target,
                 "hours": hours,
+                "target_snapshot": _target_snapshot(rec, work_date),
                 "qc_status": rec.get("status") or rec.get("qc_status"),
             }
         )
 
     cursor.execute(
-        """
+        f"""
         SELECT
             rh.qc_rework_id AS source_id,
             qr.id AS qc_record_id,
@@ -533,7 +687,7 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
             qr.status,
             COALESCE(rh.file_record_count, qr.file_record_count, 0) AS file_record_count,
             COALESCE(rh.qc_data_generated_count, qr.qc_generated_count, 0) AS qc_generated_count,
-            COALESCE(t.task_target, 0) AS actual_target
+            {task_target_cols}
         FROM qc_rework_history rh
         JOIN qc_records qr ON qr.id = rh.qc_record_id
         LEFT JOIN task t ON t.task_id = qr.task_id
@@ -546,7 +700,8 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
         (qa_user_id, work_date, work_date, work_date),
     )
     for rec in cursor.fetchall() or []:
-        actual, qa_target, hours = _calc_hours(rec.get("qc_generated_count"), rec.get("actual_target"))
+        file_count, qc_count = _apply_range_counts(cursor, rec, work_date)
+        actual, qa_target, hours = _hours_from_qc_rec(rec, work_date)
         rows.append(
             {
                 "qa_user_id": qa_user_id,
@@ -558,17 +713,19 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
                 "tracker_id": rec.get("tracker_id"),
                 "source_table": "qc_rework_history",
                 "source_id": rec.get("source_id"),
-                "file_record_count": rec.get("file_record_count"),
-                "qc_generated_count": rec.get("qc_generated_count"),
+                "file_record_count": file_count,
+                "qc_generated_count": qc_count,
+                "object_count": rec.get("object_count"),
                 "actual_target": actual,
                 "qa_target": qa_target,
                 "hours": hours,
+                "target_snapshot": _target_snapshot(rec, work_date),
                 "qc_status": "rework",
             }
         )
 
     cursor.execute(
-        """
+        f"""
         SELECT
             ch.qc_correction_id AS source_id,
             qr.id AS qc_record_id,
@@ -579,7 +736,7 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
             qr.status,
             COALESCE(qr.file_record_count, 0) AS file_record_count,
             COALESCE(qr.qc_generated_count, 0) AS qc_generated_count,
-            COALESCE(t.task_target, 0) AS actual_target
+            {task_target_cols}
         FROM qc_correction_history ch
         JOIN qc_records qr ON qr.id = ch.qc_record_id
         LEFT JOIN task t ON t.task_id = qr.task_id
@@ -592,7 +749,8 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
         (qa_user_id, work_date, work_date, work_date),
     )
     for rec in cursor.fetchall() or []:
-        actual, qa_target, hours = _calc_hours(rec.get("qc_generated_count"), rec.get("actual_target"))
+        file_count, qc_count = _apply_range_counts(cursor, rec, work_date)
+        actual, qa_target, hours = _hours_from_qc_rec(rec, work_date)
         rows.append(
             {
                 "qa_user_id": qa_user_id,
@@ -604,18 +762,19 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
                 "tracker_id": rec.get("tracker_id"),
                 "source_table": "qc_correction_history",
                 "source_id": rec.get("source_id"),
-                "file_record_count": rec.get("file_record_count"),
-                "qc_generated_count": rec.get("qc_generated_count"),
+                "file_record_count": file_count,
+                "qc_generated_count": qc_count,
+                "object_count": rec.get("object_count"),
                 "actual_target": actual,
                 "qa_target": qa_target,
                 "hours": hours,
+                "target_snapshot": _target_snapshot(rec, work_date),
                 "qc_status": "correction",
             }
         )
 
-    # First-time rework/correction on qc_records with no history row yet
     cursor.execute(
-        """
+        f"""
         SELECT
             qr.id AS qc_record_id,
             qr.qa_user_id,
@@ -625,7 +784,7 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
             qr.status,
             COALESCE(qr.file_record_count, 0) AS file_record_count,
             COALESCE(qr.qc_generated_count, 0) AS qc_generated_count,
-            COALESCE(t.task_target, 0) AS actual_target
+            {task_target_cols}
         FROM qc_records qr
         LEFT JOIN task t ON t.task_id = qr.task_id
         WHERE qr.qa_user_id=%s
@@ -641,7 +800,8 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
         (qa_user_id, work_date),
     )
     for rec in cursor.fetchall() or []:
-        actual, qa_target, hours = _calc_hours(rec.get("qc_generated_count"), rec.get("actual_target"))
+        file_count, qc_count = _apply_range_counts(cursor, rec, work_date)
+        actual, qa_target, hours = _hours_from_qc_rec(rec, work_date)
         status = (rec.get("status") or "").strip().lower()
         rows.append(
             {
@@ -654,11 +814,13 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
                 "tracker_id": rec.get("tracker_id"),
                 "source_table": "qc_records",
                 "source_id": rec.get("qc_record_id"),
-                "file_record_count": rec.get("file_record_count"),
-                "qc_generated_count": rec.get("qc_generated_count"),
+                "file_record_count": file_count,
+                "qc_generated_count": qc_count,
+                "object_count": rec.get("object_count"),
                 "actual_target": actual,
                 "qa_target": qa_target,
                 "hours": hours,
+                "target_snapshot": _target_snapshot(rec, work_date),
                 "qc_status": status,
             }
         )
@@ -715,14 +877,40 @@ def _qc_user_dates(cursor, qa_user_ids: list[int], start_date: str, end_date: st
     return out
 
 
+def rebuild_september_qa_hours(cursor, start_date: str | None = None, end_date: str | None = None) -> int:
+    """Recalculate QA hours from go-live onward using the task targets configured now."""
+    start_date = _clamp_tracker_start(start_date or QA_TRACKER_GO_LIVE)
+    if not end_date:
+        end_date = today_str()[:10]
+    cursor.execute(
+        """
+        SELECT DISTINCT qa_user_id
+        FROM qc_records
+        WHERE qa_user_id IS NOT NULL
+        """
+    )
+    ids = [int(r["qa_user_id"]) for r in (cursor.fetchall() or []) if r.get("qa_user_id")]
+    pairs = _qc_user_dates(cursor, ids, start_date, end_date)
+    for uid, work_date in pairs:
+        _sync_qc_rows(cursor, uid, work_date, overwrite_target=True)
+    return len(pairs)
+
+
 def _sync_month_from_qc(cursor, qa_user_ids: list[int], start_date: str, end_date: str) -> int:
+    start_date = _clamp_tracker_start(start_date)
+    end_date = _parse_date(end_date) or start_date
+    if start_date > end_date:
+        return 0
     pairs = _qc_user_dates(cursor, qa_user_ids, start_date, end_date)
     for uid, work_date in pairs:
         _sync_qc_rows(cursor, uid, work_date)
     return len(pairs)
 
 
-def _sync_qc_rows(cursor, qa_user_id: int, work_date: str) -> int:
+def _sync_qc_rows(cursor, qa_user_id: int, work_date: str, overwrite_target: bool = False) -> int:
+    work_date = _parse_date(work_date) or ""
+    if not work_date or work_date < QA_TRACKER_GO_LIVE:
+        return 0
     sources = _collect_qc_sources(cursor, qa_user_id, work_date)
     keep_keys = set()
     now = now_str()
@@ -733,7 +921,7 @@ def _sync_qc_rows(cursor, qa_user_id: int, work_date: str) -> int:
         if key in keep_keys:
             continue
         keep_keys.add(key)
-        _upsert_qc_row(cursor, row, now)
+        _upsert_qc_row(cursor, row, now, overwrite_target=overwrite_target)
 
     cursor.execute(
         """
@@ -1053,6 +1241,8 @@ def sync_qa_tracker():
         return err
 
     work_date = _parse_date(data.get("work_date")) or today_str()
+    if work_date < QA_TRACKER_GO_LIVE:
+        return api_response(400, f"QA report starts from {QA_TRACKER_GO_LIVE}")
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
@@ -1081,6 +1271,8 @@ def qa_tracker_add_entry():
     requested_date = _parse_date(data.get("work_date")) or today
     if requested_date > today:
         return api_response(400, "Tracker cannot be added for a future date")
+    if requested_date < QA_TRACKER_GO_LIVE:
+        return api_response(400, f"QA report starts from {QA_TRACKER_GO_LIVE}")
     details, detail_err = _validate_manual_details(data)
     if detail_err:
         return detail_err
@@ -1260,6 +1452,8 @@ def qa_tracker_update_entry():
         work_date = _parse_date(data.get("work_date")) or _date_str(row.get("work_date"))
         if work_date > today_str():
             return api_response(400, "Tracker cannot be added for a future date")
+        if work_date < QA_TRACKER_GO_LIVE:
+            return api_response(400, f"QA report starts from {QA_TRACKER_GO_LIVE}")
         hours = _round4(data.get("hours") if data.get("hours") is not None else row.get("hours"))
         if hours <= 0:
             return api_response(400, "Hours must be greater than 0")
@@ -1336,6 +1530,7 @@ def qa_tracker_entries():
     end_date = _parse_date(data.get("end_date")) or start_date
     if end_date < start_date:
         start_date, end_date = end_date, start_date
+    start_date = _clamp_tracker_start(start_date)
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1347,14 +1542,16 @@ def qa_tracker_entries():
         manager = _ctx_can_view_as_manager(ctx)
         can_write = _ctx_is_manager(ctx)
         requested = data.get("qa_user_id")
+        _purge_pre_golive_rows(cursor)
         _deactivate_zero_manual_rows(cursor)
         conn.commit()
-        params = [start_date, end_date]
+        params = [QA_TRACKER_GO_LIVE, start_date, end_date]
         where = """
             qwt.is_active=1
             AND qwt.source_table='manual'
             AND qwt.activity_type IN ('feedback','reporting')
             AND qwt.hours > 0
+            AND qwt.work_date >= %s
             AND qwt.work_date BETWEEN %s AND %s
         """
         if manager:
@@ -1429,6 +1626,8 @@ def qa_tracker_day():
         return err
 
     work_date = _parse_date(data.get("work_date")) or today_str()
+    if work_date < QA_TRACKER_GO_LIVE:
+        return api_response(400, f"QA report starts from {QA_TRACKER_GO_LIVE}")
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     target_id = None
@@ -1436,6 +1635,7 @@ def qa_tracker_day():
         target_id, _, auth_err = _resolve_target_qa(cursor, logged_in_user_id, data.get("qa_user_id"))
         if auth_err:
             return auth_err
+        _purge_pre_golive_rows(cursor)
         _sync_qc_rows(cursor, target_id, work_date)
         conn.commit()
         ctx = get_role_context(cursor, logged_in_user_id)
@@ -1479,6 +1679,7 @@ def qa_tracker_list():
         end_date = _parse_date(data.get("end_date")) or start_date
         if end_date < start_date:
             start_date, end_date = end_date, start_date
+    start_date = _clamp_tracker_start(start_date)
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1490,12 +1691,7 @@ def qa_tracker_list():
 
         manager = _ctx_can_view_as_manager(ctx)
         requested = data.get("qa_user_id")
-        params = [start_date, end_date]
-        where = """
-            qwt.is_active=1
-            AND qwt.work_date BETWEEN %s AND %s
-            AND NOT (qwt.source_table='manual' AND qwt.hours <= 0)
-        """
+        where, params = _active_tracker_where(start_date, end_date)
 
         if manager:
             if requested not in (None, "", 0, "0"):
@@ -1505,11 +1701,9 @@ def qa_tracker_list():
             where += " AND qwt.qa_user_id=%s"
             params.append(logged_in_user_id)
 
-        _deactivate_zero_manual_rows(cursor)
-        sync_ids = _resolve_sync_user_ids(cursor, manager, logged_in_user_id, requested)
-        if sync_ids:
-            _sync_month_from_qc(cursor, sync_ids, start_date, end_date)
-        conn.commit()
+        _prepare_tracker_read(
+            cursor, conn, manager, logged_in_user_id, requested, start_date, end_date
+        )
 
         cursor.execute(
             f"""
@@ -1656,6 +1850,8 @@ def qa_tracker_list():
             },
         )
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return api_response(500, f"Error listing QA tracker: {str(e)}")
     finally:
         cursor.close()
@@ -1676,6 +1872,13 @@ def qa_tracker_monthly():
     if not bounds:
         return api_response(400, "month_year is required (YYYY-MM or SEP2026)")
     start_date, end_date, month_label = bounds
+    req_start = _parse_date(data.get("start_date"))
+    req_end = _parse_date(data.get("end_date"))
+    if req_start and req_start > start_date:
+        start_date = req_start
+    if req_end and req_end < end_date:
+        end_date = req_end
+    start_date = _clamp_tracker_start(start_date)
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1687,12 +1890,7 @@ def qa_tracker_monthly():
 
         manager = _ctx_can_view_as_manager(ctx)
         requested = data.get("qa_user_id")
-        params = [start_date, end_date]
-        where = """
-            qwt.is_active=1
-            AND qwt.work_date BETWEEN %s AND %s
-            AND NOT (qwt.source_table='manual' AND qwt.hours <= 0)
-        """
+        where, params = _active_tracker_where(start_date, end_date)
 
         if manager:
             if requested not in (None, "", 0, "0"):
@@ -1702,11 +1900,9 @@ def qa_tracker_monthly():
             where += " AND qwt.qa_user_id=%s"
             params.append(logged_in_user_id)
 
-        _deactivate_zero_manual_rows(cursor)
-        sync_ids = _resolve_sync_user_ids(cursor, manager, logged_in_user_id, requested)
-        if sync_ids:
-            _sync_month_from_qc(cursor, sync_ids, start_date, end_date)
-        conn.commit()
+        _prepare_tracker_read(
+            cursor, conn, manager, logged_in_user_id, requested, start_date, end_date
+        )
 
         cursor.execute(
             f"""

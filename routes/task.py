@@ -127,6 +127,26 @@ def add_task():
         except:
             return api_response(400, "qc_percentage must be a number")
 
+    qa_count_column = (form.get("qa_count_column") or "").strip() or None
+    qa_target_ranges = _get_form_json_list(form, "qa_target_ranges")
+    if qa_target_ranges is None:
+        qa_target_ranges = []
+    qa_minutes_raw = form.get("qa_minutes_per_file")
+    qa_minutes_per_file = None
+    if qa_minutes_raw is not None and str(qa_minutes_raw).strip() != "":
+        try:
+            qa_minutes_per_file = float(qa_minutes_raw)
+        except Exception:
+            return api_response(400, "qa_minutes_per_file must be a number")
+
+    qa_rec_raw = form.get("qa_minutes_per_record")
+    qa_minutes_per_record = None
+    if qa_rec_raw is not None and str(qa_rec_raw).strip() != "":
+        try:
+            qa_minutes_per_record = float(qa_rec_raw)
+        except Exception:
+            return api_response(400, "qa_minutes_per_record must be a number")
+
     # ✅ file upload (key: task_file)
     uploaded = request.files.get("task_file")
     saved_filename = None
@@ -159,13 +179,17 @@ def add_task():
                 task_description,
                 task_target,
                 qc_percentage,
+                qa_count_column,
+                qa_target_ranges,
+                qa_minutes_per_file,
+                qa_minutes_per_record,
                 task_file,
                 important_columns,
                 is_active,
                 created_date,
                 updated_date
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 project_id,
@@ -174,6 +198,10 @@ def add_task():
                 task_description,
                 task_target,
                 qc_percentage,
+                qa_count_column,
+                json.dumps(qa_target_ranges),
+                qa_minutes_per_file,
+                qa_minutes_per_record,
                 saved_filename,
                 json.dumps(important_columns),
                 is_active,
@@ -264,6 +292,37 @@ def update_task():
             except:
                 conn.rollback()
                 return api_response(400, "qc_percentage must be a number")
+
+        if form.get("qa_count_column") is not None:
+            update_values["qa_count_column"] = (form.get("qa_count_column") or "").strip() or None
+
+        if form.get("qa_target_ranges") is not None:
+            ranges = _get_form_json_list(form, "qa_target_ranges")
+            if not isinstance(ranges, list):
+                ranges = []
+            update_values["qa_target_ranges"] = json.dumps(ranges)
+
+        if form.get("qa_minutes_per_file") is not None:
+            raw_m = form.get("qa_minutes_per_file")
+            if str(raw_m).strip() == "":
+                update_values["qa_minutes_per_file"] = None
+            else:
+                try:
+                    update_values["qa_minutes_per_file"] = float(raw_m)
+                except Exception:
+                    conn.rollback()
+                    return api_response(400, "qa_minutes_per_file must be a number")
+
+        if form.get("qa_minutes_per_record") is not None:
+            raw_r = form.get("qa_minutes_per_record")
+            if str(raw_r).strip() == "":
+                update_values["qa_minutes_per_record"] = None
+            else:
+                try:
+                    update_values["qa_minutes_per_record"] = float(raw_r)
+                except Exception:
+                    conn.rollback()
+                    return api_response(400, "qa_minutes_per_record must be a number")
 
         # --- FILE LOGIC ---
         # Case 1: new file uploaded → replace
@@ -405,7 +464,9 @@ def list_tasks():
             f"""
             SELECT task_id, project_id, task_team_id,
                    task_name, task_description, task_target,
-                   qc_percentage,task_file, important_columns,
+                   qc_percentage, qa_count_column, qa_target_ranges, qa_minutes_per_file,
+                   qa_minutes_per_record,
+                   task_file, important_columns,
                    is_active, created_date, updated_date
             FROM task
             {where_sql}
@@ -445,6 +506,16 @@ def list_tasks():
         for t in tasks:
             task_team = json.loads(t.get("task_team_id") or "[]")
             important_cols = json.loads(t.get("important_columns") or "[]")
+            ranges_raw = t.get("qa_target_ranges")
+            if isinstance(ranges_raw, (bytes, bytearray)):
+                ranges_raw = ranges_raw.decode("utf-8", errors="ignore")
+            if isinstance(ranges_raw, str):
+                try:
+                    ranges_raw = json.loads(ranges_raw or "[]")
+                except Exception:
+                    ranges_raw = []
+            if not isinstance(ranges_raw, list):
+                ranges_raw = []
             tid = int(t["task_id"])
             result.append(
                 {
@@ -456,6 +527,10 @@ def list_tasks():
                     "task_target": t["task_target"],
                     "important_columns": important_cols,
                     "qc_percentage": t.get("qc_percentage"),
+                    "qa_count_column": t.get("qa_count_column"),
+                    "qa_target_ranges": ranges_raw,
+                    "qa_minutes_per_file": t.get("qa_minutes_per_file"),
+                    "qa_minutes_per_record": t.get("qa_minutes_per_record"),
                     "task_file": task_file_url(t.get("task_file")),  # ✅ absolute
                     "is_active": int(t.get("is_active") if t.get("is_active") is not None else 1),
                     "created_date": t["created_date"],

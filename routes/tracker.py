@@ -883,6 +883,10 @@ def view_trackers():
         """
         where_clauses = ["twt.is_active != 0"]
 
+        if data.get("tracker_id") not in (None, "", 0, "0"):
+            where_clauses.append("twt.tracker_id=%s")
+            params.append(int(data["tracker_id"]))
+
         if data.get("team_id"):
             where_clauses.append("u.team_id=%s")
             params.append(data["team_id"])
