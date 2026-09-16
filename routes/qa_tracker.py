@@ -498,6 +498,39 @@ def _resolve_target_qa(cursor, logged_in_user_id: int, requested_qa_user_id) -> 
     return target_id, ctx, None
 
 
+def _is_legacy_hours_snapshot(raw) -> bool:
+    """True when hours were stored with the old QC-count / task-target formula."""
+    if raw is None or raw == "":
+        return True
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="ignore")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return True
+    if not isinstance(raw, dict):
+        return True
+    if raw.get("target_mode") == "flat":
+        return True
+    if raw.get("frozen") in (1, True, "1") and "qa_minutes_per_file" not in raw and "qa_target_ranges" not in raw:
+        return True
+    return False
+
+
+def _existing_qc_snapshot(cursor, source_table, source_id, activity_type):
+    cursor.execute(
+        """
+        SELECT target_snapshot
+        FROM qa_work_tracker
+        WHERE source_table=%s AND source_id=%s AND activity_type=%s
+        LIMIT 1
+        """,
+        (source_table, int(source_id), activity_type),
+    )
+    return cursor.fetchone()
+
+
 def _target_snapshot(rec: dict, work_date: str | None) -> str:
     """Target inputs used the first time this QA row is stored."""
     ranges = rec.get("qa_target_ranges")
@@ -554,6 +587,12 @@ def _upsert_qc_row(cursor, row: dict, now: str, overwrite_target: bool = False) 
     """
     ensure_target_snapshot_column(cursor)
     source_id = int(row["source_id"])
+    if not overwrite_target:
+        existing = _existing_qc_snapshot(
+            cursor, row["source_table"], source_id, row["activity_type"]
+        )
+        if existing is not None and _is_legacy_hours_snapshot(existing.get("target_snapshot")):
+            overwrite_target = True
     if overwrite_target:
         target_sql = """
             actual_target=VALUES(actual_target),
@@ -1255,6 +1294,34 @@ def sync_qa_tracker():
     except Exception as e:
         conn.rollback()
         return api_response(500, f"Error syncing QA tracker: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@qa_tracker_bp.route("/rebuild_hours", methods=["POST"])
+def qa_tracker_rebuild_hours():
+    data = request.get_json(silent=True) or {}
+    logged_in_user_id, _, err = _require_user(data)
+    if err:
+        return err
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, logged_in_user_id)
+        if not _ctx_is_manager(ctx):
+            return api_response(403, "Only managers can rebuild QA hours")
+        rebuilt = rebuild_september_qa_hours(cursor)
+        conn.commit()
+        return api_response(
+            200,
+            "QA hours rebuilt from go-live using current task targets",
+            {"pairs": rebuilt, "start_date": QA_TRACKER_GO_LIVE},
+        )
+    except Exception as e:
+        conn.rollback()
+        return api_response(500, f"Error rebuilding QA hours: {str(e)}")
     finally:
         cursor.close()
         conn.close()
