@@ -30,6 +30,23 @@ def calculate_targets(base_target, user_tenure):
     return actual_target, tenure_target
 
 
+def _task_ids_from_payload(data):
+    raw = data.get("task_ids") if data.get("task_ids") not in (None, "", []) else data.get("task_id")
+    if raw in (None, "", 0, "0"):
+        return []
+    if not isinstance(raw, list):
+        raw = [raw]
+    ids = []
+    for item in raw:
+        try:
+            n = int(item)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            ids.append(n)
+    return ids
+
+
 def _roster_working_weights(cursor, user_ids: list, month_year: str) -> dict:
     """user_id -> [(YYYY-MM-DD, weight), ...] for Working roster days only."""
     if not user_ids or not month_year:
@@ -836,7 +853,6 @@ def delete_tracker():
 # ------------------------
 @tracker_bp.route("/view", methods=["POST"])
 def view_trackers():
-    print("====== INSIDE /tracker/view ======")
     data = request.get_json(silent=True) or {}
 
     conn = get_db_connection()
@@ -941,9 +957,11 @@ def view_trackers():
         if data.get("project_id"):
             where_clauses.append("twt.project_id=%s")
             params.append(data["project_id"])
-        if data.get("task_id"):
-            where_clauses.append("twt.task_id=%s")
-            params.append(data["task_id"])
+        task_ids = _task_ids_from_payload(data)
+        if task_ids:
+            placeholders = ",".join(["%s"] * len(task_ids))
+            where_clauses.append(f"twt.task_id IN ({placeholders})")
+            params.extend(task_ids)
         if data.get("shift"):
             where_clauses.append("twt.shift=%s")
             params.append(data["shift"].upper())
@@ -996,17 +1014,17 @@ def view_trackers():
             (SELECT GROUP_CONCAT(DISTINCT am.user_id) 
              FROM tfs_user am 
              WHERE u.asst_manager_id = am.user_id 
-                OR JSON_CONTAINS(u.asst_manager_id, JSON_ARRAY(am.user_id))
+                OR (JSON_VALID(u.asst_manager_id) AND JSON_CONTAINS(u.asst_manager_id, JSON_ARRAY(am.user_id)))
             ) AS assistant_manager_id,
             (SELECT GROUP_CONCAT(DISTINCT am.user_name) 
              FROM tfs_user am 
              WHERE u.asst_manager_id = am.user_id 
-                OR JSON_CONTAINS(u.asst_manager_id, JSON_ARRAY(am.user_id))
+                OR (JSON_VALID(u.asst_manager_id) AND JSON_CONTAINS(u.asst_manager_id, JSON_ARRAY(am.user_id)))
             ) AS assistant_manager_name,
             (SELECT GROUP_CONCAT(DISTINCT am.user_email) 
              FROM tfs_user am 
              WHERE u.asst_manager_id = am.user_id 
-                OR JSON_CONTAINS(u.asst_manager_id, JSON_ARRAY(am.user_id))
+                OR (JSON_VALID(u.asst_manager_id) AND JSON_CONTAINS(u.asst_manager_id, JSON_ARRAY(am.user_id)))
             ) AS assistant_manager_email,
             p.project_id, p.project_name, p.project_category_id, pc.afd_id,
             tk.task_name, tk.qc_percentage, t.team_name,
@@ -1102,6 +1120,7 @@ def view_trackers():
         return api_response(200, "Trackers fetched successfully", response_data)
 
     except Exception as e:
+        logger.exception("Failed to fetch trackers")
         return api_response(500, f"Failed to fetch trackers: {str(e)}")
 
     finally:
@@ -1210,9 +1229,11 @@ def view_daily_trackers():
             where += " AND twt.project_id=%s"
             params.append(data["project_id"])
 
-        if data.get("task_id"):
-            where += " AND twt.task_id=%s"
-            params.append(data["task_id"])
+        task_ids = _task_ids_from_payload(data)
+        if task_ids:
+            placeholders = ",".join(["%s"] * len(task_ids))
+            where += f" AND twt.task_id IN ({placeholders})"
+            params.extend(task_ids)
 
         if data.get("shift"):
             where += " AND twt.shift = %s"
