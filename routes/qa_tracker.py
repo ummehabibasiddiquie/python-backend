@@ -693,7 +693,11 @@ def _upsert_qc_row(cursor, row: dict, now: str, overwrite_target: bool = False) 
 
 
 def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
-    """Build tracker rows from existing QC tables for this QA user and date."""
+    """Build tracker rows from existing QC tables for this QA user and date.
+
+    First-time QC (file scored regular / rework / correction) → qc_tasks.
+    Hours go to rework_qc only after the agent sends the file back and QA QCs it again.
+    """
     rows: list[dict] = []
     ensure_qc_object_count_column(cursor)
     task_target_cols = """
@@ -728,7 +732,6 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
         LEFT JOIN project p ON p.project_id = qr.project_id
         WHERE qr.qa_user_id=%s
           AND DATE(qr.created_at)=%s
-          AND LOWER(TRIM(COALESCE(qr.status, ''))) = 'regular'
         """,
         (qa_user_id, work_date),
     )
@@ -774,12 +777,12 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
         JOIN qc_records qr ON qr.id = rh.qc_record_id
         LEFT JOIN task t ON t.task_id = qr.task_id
         WHERE qr.qa_user_id=%s
-          AND (
-                DATE(rh.created_at)=%s
-             OR (DATE(rh.updated_at)=%s AND DATE(rh.created_at)<>%s)
-          )
+          AND DATE(rh.updated_at)=%s
+          AND LOWER(TRIM(COALESCE(rh.rework_file_qc_status, ''))) = 'completed'
+          AND rh.rework_file_path IS NOT NULL
+          AND TRIM(rh.rework_file_path) <> ''
         """,
-        (qa_user_id, work_date, work_date, work_date),
+        (qa_user_id, work_date),
     )
     for rec in cursor.fetchall() or []:
         file_count, qc_count = _apply_range_counts(cursor, rec, work_date)
@@ -823,12 +826,12 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
         JOIN qc_records qr ON qr.id = ch.qc_record_id
         LEFT JOIN task t ON t.task_id = qr.task_id
         WHERE qr.qa_user_id=%s
-          AND (
-                DATE(ch.created_at)=%s
-             OR (DATE(ch.updated_at)=%s AND DATE(ch.created_at)<>%s)
-          )
+          AND DATE(ch.updated_at)=%s
+          AND LOWER(TRIM(COALESCE(ch.correction_file_qc_status, ''))) = 'completed'
+          AND ch.correction_file_path IS NOT NULL
+          AND TRIM(ch.correction_file_path) <> ''
         """,
-        (qa_user_id, work_date, work_date, work_date),
+        (qa_user_id, work_date),
     )
     for rec in cursor.fetchall() or []:
         file_count, qc_count = _apply_range_counts(cursor, rec, work_date)
@@ -855,58 +858,6 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
             }
         )
 
-    cursor.execute(
-        f"""
-        SELECT
-            qr.id AS qc_record_id,
-            qr.qa_user_id,
-            qr.project_id,
-            qr.task_id,
-            qr.tracker_id,
-            qr.status,
-            COALESCE(qr.file_record_count, 0) AS file_record_count,
-            COALESCE(qr.qc_generated_count, 0) AS qc_generated_count,
-            {task_target_cols}
-        FROM qc_records qr
-        LEFT JOIN task t ON t.task_id = qr.task_id
-        WHERE qr.qa_user_id=%s
-          AND DATE(qr.created_at)=%s
-          AND LOWER(TRIM(COALESCE(qr.status, ''))) IN ('rework', 'correction')
-          AND NOT EXISTS (
-                SELECT 1 FROM qc_rework_history rh WHERE rh.qc_record_id = qr.id
-          )
-          AND NOT EXISTS (
-                SELECT 1 FROM qc_correction_history ch WHERE ch.qc_record_id = qr.id
-          )
-        """,
-        (qa_user_id, work_date),
-    )
-    for rec in cursor.fetchall() or []:
-        file_count, qc_count = _apply_range_counts(cursor, rec, work_date)
-        actual, qa_target, hours = _hours_from_qc_rec(rec, work_date)
-        status = (rec.get("status") or "").strip().lower()
-        rows.append(
-            {
-                "qa_user_id": qa_user_id,
-                "work_date": work_date,
-                "activity_type": "rework_qc",
-                "project_id": rec.get("project_id"),
-                "task_id": rec.get("task_id"),
-                "qc_record_id": rec.get("qc_record_id"),
-                "tracker_id": rec.get("tracker_id"),
-                "source_table": "qc_records",
-                "source_id": rec.get("qc_record_id"),
-                "file_record_count": file_count,
-                "qc_generated_count": qc_count,
-                "object_count": rec.get("object_count"),
-                "actual_target": actual,
-                "qa_target": qa_target,
-                "hours": hours,
-                "target_snapshot": _target_snapshot(rec, work_date),
-                "qc_status": status,
-            }
-        )
-
     return rows
 
 
@@ -915,10 +866,7 @@ def _qc_user_dates(cursor, qa_user_ids: list[int], start_date: str, end_date: st
         return []
     placeholders = ",".join(["%s"] * len(qa_user_ids))
     ids = tuple(int(uid) for uid in qa_user_ids)
-    params = ids + (start_date, end_date) + ids + (start_date, end_date) + ids + (start_date, end_date) + ids + (
-        start_date,
-        end_date,
-    ) + ids + (start_date, end_date)
+    params = ids + (start_date, end_date) + ids + (start_date, end_date) + ids + (start_date, end_date)
     cursor.execute(
         f"""
         SELECT DISTINCT qa_user_id, d FROM (
@@ -926,25 +874,23 @@ def _qc_user_dates(cursor, qa_user_ids: list[int], start_date: str, end_date: st
             FROM qc_records
             WHERE qa_user_id IN ({placeholders}) AND DATE(created_at) BETWEEN %s AND %s
             UNION
-            SELECT qr.qa_user_id, DATE(rh.created_at) AS d
-            FROM qc_rework_history rh
-            JOIN qc_records qr ON qr.id = rh.qc_record_id
-            WHERE qr.qa_user_id IN ({placeholders}) AND DATE(rh.created_at) BETWEEN %s AND %s
-            UNION
             SELECT qr.qa_user_id, DATE(rh.updated_at) AS d
             FROM qc_rework_history rh
             JOIN qc_records qr ON qr.id = rh.qc_record_id
-            WHERE qr.qa_user_id IN ({placeholders}) AND DATE(rh.updated_at) BETWEEN %s AND %s
-            UNION
-            SELECT qr.qa_user_id, DATE(ch.created_at) AS d
-            FROM qc_correction_history ch
-            JOIN qc_records qr ON qr.id = ch.qc_record_id
-            WHERE qr.qa_user_id IN ({placeholders}) AND DATE(ch.created_at) BETWEEN %s AND %s
+            WHERE qr.qa_user_id IN ({placeholders})
+              AND DATE(rh.updated_at) BETWEEN %s AND %s
+              AND LOWER(TRIM(COALESCE(rh.rework_file_qc_status, ''))) = 'completed'
+              AND rh.rework_file_path IS NOT NULL
+              AND TRIM(rh.rework_file_path) <> ''
             UNION
             SELECT qr.qa_user_id, DATE(ch.updated_at) AS d
             FROM qc_correction_history ch
             JOIN qc_records qr ON qr.id = ch.qc_record_id
-            WHERE qr.qa_user_id IN ({placeholders}) AND DATE(ch.updated_at) BETWEEN %s AND %s
+            WHERE qr.qa_user_id IN ({placeholders})
+              AND DATE(ch.updated_at) BETWEEN %s AND %s
+              AND LOWER(TRIM(COALESCE(ch.correction_file_qc_status, ''))) = 'completed'
+              AND ch.correction_file_path IS NOT NULL
+              AND TRIM(ch.correction_file_path) <> ''
         ) src
         WHERE d IS NOT NULL
         """,
