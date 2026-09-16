@@ -25,6 +25,7 @@ from utils.qc_sla import (
 from utils.time_ist import IST, now_ist, now_str, today_str
 from utils.qa_targets import (
     QA_NEW_TARGETS_EFFECTIVE_FROM,
+    parse_qa_target_ranges,
     report_record_counts,
     resolve_qa_targets,
 )
@@ -498,8 +499,18 @@ def _resolve_target_qa(cursor, logged_in_user_id: int, requested_qa_user_id) -> 
     return target_id, ctx, None
 
 
+def _snapshot_has_usable_qa_target(raw: dict) -> bool:
+    if parse_qa_target_ranges(raw.get("qa_target_ranges")):
+        return True
+    if _float(raw.get("qa_minutes_per_file")) > 0:
+        return True
+    if _float(raw.get("qa_minutes_per_record")) > 0:
+        return True
+    return False
+
+
 def _is_legacy_hours_snapshot(raw) -> bool:
-    """True when hours were stored with the old QC-count / task-target formula."""
+    """True when hours were stored with the old formula or with no QA target yet."""
     if raw is None or raw == "":
         return True
     if isinstance(raw, (bytes, bytearray)):
@@ -511,9 +522,11 @@ def _is_legacy_hours_snapshot(raw) -> bool:
             return True
     if not isinstance(raw, dict):
         return True
-    if raw.get("target_mode") == "flat":
+    if raw.get("target_mode") in ("flat", "none"):
         return True
     if raw.get("frozen") in (1, True, "1") and "qa_minutes_per_file" not in raw and "qa_target_ranges" not in raw:
+        return True
+    if not _snapshot_has_usable_qa_target(raw):
         return True
     return False
 
@@ -521,7 +534,7 @@ def _is_legacy_hours_snapshot(raw) -> bool:
 def _existing_qc_snapshot(cursor, source_table, source_id, activity_type):
     cursor.execute(
         """
-        SELECT target_snapshot
+        SELECT target_snapshot, hours
         FROM qa_work_tracker
         WHERE source_table=%s AND source_id=%s AND activity_type=%s
         LIMIT 1
@@ -591,7 +604,10 @@ def _upsert_qc_row(cursor, row: dict, now: str, overwrite_target: bool = False) 
         existing = _existing_qc_snapshot(
             cursor, row["source_table"], source_id, row["activity_type"]
         )
-        if existing is not None and _is_legacy_hours_snapshot(existing.get("target_snapshot")):
+        if existing is not None and (
+            _float(existing.get("hours")) <= 0
+            or _is_legacy_hours_snapshot(existing.get("target_snapshot"))
+        ):
             overwrite_target = True
     if overwrite_target:
         target_sql = """
