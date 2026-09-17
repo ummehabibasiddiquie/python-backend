@@ -63,6 +63,25 @@ def _clamp_tracker_start(start_date: str | None) -> str:
     return start if start >= QA_TRACKER_GO_LIVE else QA_TRACKER_GO_LIVE
 
 
+def _resolve_report_range(start_date: str | None, end_date: str | None) -> tuple[str, str] | None:
+    """Return (start, end) on/after go-live, or None if the selected window is entirely before it."""
+    start = _parse_date(start_date)
+    end = _parse_date(end_date) or start
+    if not start:
+        start = end or today_str()[:10]
+    if not end:
+        end = start
+    if end < start:
+        start, end = end, start
+    if end < QA_TRACKER_GO_LIVE:
+        return None
+    if start < QA_TRACKER_GO_LIVE:
+        start = QA_TRACKER_GO_LIVE
+    if start > end:
+        return None
+    return start, end
+
+
 def _purge_pre_golive_rows(cursor) -> None:
     cursor.execute(
         "DELETE FROM qa_work_tracker WHERE work_date < %s",
@@ -1584,9 +1603,14 @@ def qa_tracker_entries():
 
     start_date = _parse_date(data.get("start_date")) or today_str()
     end_date = _parse_date(data.get("end_date")) or start_date
-    if end_date < start_date:
-        start_date, end_date = end_date, start_date
-    start_date = _clamp_tracker_start(start_date)
+    resolved = _resolve_report_range(start_date, end_date)
+    if not resolved:
+        return api_response(
+            200,
+            "QA tracker entries fetched",
+            {"start_date": start_date, "end_date": end_date, "entries": [], "qa_users": []},
+        )
+    start_date, end_date = resolved
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1739,9 +1763,21 @@ def qa_tracker_list():
     else:
         start_date = _parse_date(data.get("start_date")) or today_str()
         end_date = _parse_date(data.get("end_date")) or start_date
-        if end_date < start_date:
-            start_date, end_date = end_date, start_date
-    start_date = _clamp_tracker_start(start_date)
+    resolved = _resolve_report_range(start_date, end_date)
+    if not resolved:
+        return api_response(
+            200,
+            "QA tracker list fetched",
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "month_year": (_month_bounds(data.get("month_year")) or (None, None, None))[2],
+                "expected": {**EXPECTED_HOURS, "total": EXPECTED_TOTAL},
+                "rows": [],
+                "qa_users": [],
+            },
+        )
+    start_date, end_date = resolved
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -1940,7 +1976,21 @@ def qa_tracker_monthly():
         start_date = req_start
     if req_end and req_end < end_date:
         end_date = req_end
-    start_date = _clamp_tracker_start(start_date)
+    resolved = _resolve_report_range(start_date, end_date)
+    if not resolved:
+        return api_response(
+            200,
+            "QA tracker monthly fetched",
+            {
+                "month_year": month_label,
+                "start_date": start_date,
+                "end_date": end_date,
+                "expected": {**EXPECTED_HOURS, "total": EXPECTED_TOTAL},
+                "rows": [],
+                "qa_users": [],
+            },
+        )
+    start_date, end_date = resolved
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
