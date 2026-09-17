@@ -21,6 +21,7 @@ from utils.qc_sla import (
     parse_dt,
     qc_deadline,
     sla_applies_to_submission,
+    sla_hours_for_submission,
 )
 from utils.time_ist import IST, now_ist, now_str, today_str
 from utils.qa_targets import (
@@ -1021,7 +1022,8 @@ def _fetch_day_payload(
                 CAST(qr.date_of_file_submission AS CHAR),
                 CAST(qr.created_at AS CHAR),
                 CAST(qwt.created_at AS CHAR)
-            ) AS tracker_time
+            ) AS tracker_time,
+            twt.shift AS tracker_shift
         FROM qa_work_tracker qwt
         LEFT JOIN project p ON p.project_id = qwt.project_id
         LEFT JOIN task t ON t.task_id = qwt.task_id
@@ -1096,12 +1098,14 @@ def _fetch_day_payload(
                 qc_done = qc_updated
             # Late QC SLA only from Sep 2026 (old temp_qc months excluded)
             applies = sla_applies_to_submission(submitted_at)
-            deadline = qc_deadline(submitted_at, holidays) if applies else None
+            sla_hours = sla_hours_for_submission(r.get("tracker_shift"), submitted_at)
+            deadline = qc_deadline(submitted_at, holidays, hours=sla_hours) if applies else None
             late = (
                 is_qc_late(
                     submitted_at,
                     qc_done.strftime("%Y-%m-%d %H:%M:%S") if qc_done else None,
                     holidays,
+                    hours=sla_hours,
                 )
                 if applies
                 else False
@@ -1197,7 +1201,8 @@ def _qc_file_sla_rows(cursor, where: str, params: list) -> list[dict]:
                 CAST(qr.date_of_file_submission AS CHAR)
             ) AS file_submitted_at,
             CAST(qr.created_at AS CHAR) AS qc_created_at,
-            CAST(qr.updated_at AS CHAR) AS qc_updated_at
+            CAST(qr.updated_at AS CHAR) AS qc_updated_at,
+            twt.shift AS tracker_shift
         FROM qa_work_tracker qwt
         LEFT JOIN qc_records qr
           ON qr.id = COALESCE(
@@ -1252,6 +1257,7 @@ def _annotate_late_counts(cursor, rows: list[dict], where: str, params: list, *,
             submitted_at,
             qc_done.strftime("%Y-%m-%d %H:%M:%S") if qc_done else None,
             holidays,
+            hours=sla_hours_for_submission(r.get("tracker_shift"), submitted_at),
         ):
             continue
         qa_id = _int(r.get("qa_user_id"))

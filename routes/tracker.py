@@ -1055,16 +1055,18 @@ def view_trackers():
             else:
                 t["tracker_file"] = file_path
 
-        # Pending QC urgency: 24 working hours from submission (pauses Sat/Sun/holidays)
+        # Pending QC urgency: 24 working hours from submission (48h for night
+        # files dated to the previous day after midnight; pauses Sat/Sun/holidays)
         if data.get("qc_pending") is not None and trackers:
-            from utils.qc_sla import load_holidays_around, sla_fields
+            from utils.qc_sla import load_holidays_around, sla_fields, sla_hours_for_submission
 
             holidays = load_holidays_around(
                 cursor,
                 *[t.get("date_time") for t in trackers],
             )
             for t in trackers:
-                fields = sla_fields(t.get("date_time"), holidays)
+                sla_hours = sla_hours_for_submission(t.get("shift"), t.get("date_time"))
+                fields = sla_fields(t.get("date_time"), holidays, hours=sla_hours)
                 t.update(fields)
 
         totals_query = f"""

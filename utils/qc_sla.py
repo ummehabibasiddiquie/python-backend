@@ -1,5 +1,6 @@
 """
-QC SLA: deadline = submission + 24 working hours.
+QC SLA: deadline = submission + 24 working hours (48 for night
+trackers dated to the previous day after midnight).
 Working-hour clock pauses on Saturday, Sunday, and org_holiday dates.
 
 Files submitted before QC_FORM_SLA_EFFECTIVE_FROM used the old temp_qc
@@ -16,10 +17,26 @@ from utils.roster_helpers import load_active_holidays, parse_date
 from utils.time_ist import IST, now_ist
 
 QC_SLA_WORKING_HOURS = 24.0
+# Night trackers submitted 00:00–09:00 are stored on the previous date
+# (see add_tracker). Give QA a full extra working day so they are not
+# already late when the file actually arrives after midnight.
+NIGHT_SHIFT_SLA_WORKING_HOURS = 48.0
+NIGHT_BACKDATE_BEFORE_HOUR = 9
 # Per-file QC form + 24h urgent SLA apply from this month onward.
 # Earlier months used temp_qc daily average scores only.
 QC_FORM_SLA_EFFECTIVE_FROM = date(2026, 9, 1)
 QC_FORM_SLA_EFFECTIVE_FROM_SQL = QC_FORM_SLA_EFFECTIVE_FROM.isoformat()
+
+
+def sla_hours_for_submission(shift=None, submitted_at=None) -> float:
+    """Night files rolled back to the previous calendar day get 48 working hours."""
+    shift_name = str(shift or "").strip().upper().replace(" ", "_")
+    if shift_name not in ("NIGHT", "NIGHT_SHIFT"):
+        return QC_SLA_WORKING_HOURS
+    dt = parse_dt(submitted_at)
+    if dt and dt.hour < NIGHT_BACKDATE_BEFORE_HOUR:
+        return NIGHT_SHIFT_SLA_WORKING_HOURS
+    return QC_SLA_WORKING_HOURS
 
 
 def submission_date(value) -> date | None:
@@ -222,6 +239,7 @@ def sla_fields(
             "qc_deadline": "",
             "is_overdue": False,
             "hours_remaining": None,
+            "sla_hours": hours,
             "sla_applies": False,
         }
     submitted = parse_dt(submitted_at)
@@ -233,6 +251,7 @@ def sla_fields(
             "qc_deadline": "",
             "is_overdue": False,
             "hours_remaining": None,
+            "sla_hours": hours,
             "sla_applies": True,
         }
     remaining = working_hours_between(current, deadline, holidays)
@@ -241,6 +260,7 @@ def sla_fields(
         "qc_deadline": deadline.strftime("%Y-%m-%d %H:%M:%S"),
         "is_overdue": bool(remaining is not None and remaining < 0),
         "hours_remaining": remaining,
+        "sla_hours": hours,
         "sla_applies": True,
     }
 
