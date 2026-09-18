@@ -143,7 +143,7 @@ def _write_rules(ws):
         ("Quality weight", WEIGHT_QUALITY, "(quality YES days / working days) x this weight."),
         ("Schedule weight", WEIGHT_SCHEDULE, "(present days / working days) x this weight."),
         ("Reporting weight", WEIGHT_REPORTING, "Band score. The maximum is this weight."),
-        ("Timeliness weight", WEIGHT_TIMELINESS, "Not filled by HRMS. Type the earned score in KRA Score!D13 (0 to 10). The total then includes this weight."),
+        ("Timeliness weight", WEIGHT_TIMELINESS, "Always included in total weight (100%). Earned stays blank until typed in KRA Score!D13 (0 to 10); then total earned updates."),
     ]
     for idx, (label, value, note) in enumerate(rows, 5):
         ws.cell(idx, 1, label).font = _font(11, True)
@@ -422,7 +422,7 @@ def _write_score(ws, report, totals_rows):
     ws["A1"] = f"KRA score — {report.get('user_name') or 'Agent'} — {report.get('month_year')}"
     ws["A1"].font = _font(18, True, NAVY)
     ws.merge_cells("A2:F2")
-    ws["A2"] = "Points 1–4 come from HRMS formulas. Point 5 (Timeliness) is blank — type the earned score in D13 (0–10) so the total recalculates."
+    ws["A2"] = "Points 1–4 come from HRMS. Point 5 (Timeliness) weight is always in the 100% total; leave D13 blank until you type the earned score (0–10)."
     ws["A2"].font = _font(11, False, MUTED)
 
     for col, label in enumerate(("Sr", "Objective", "Weight %", "Earned %", "How it is calculated", "% of weight"), 1):
@@ -452,7 +452,7 @@ def _write_score(ws, report, totals_rows):
          "0-3 instances = 14%. 4-6 = 7%. More than 6 = 0%. Verbal warning = 1, email = 2, letter = 3."),
         (13, 5, "Timeliness - Adherence to break and login schedule", "=Rules!$B$16",
          None,
-         "Not from HRMS. Type earned score in D13 (0 to 10). Example: up to 3 non-compliances = 10%, 4–5 = 5%, more than 5 = 0%."),
+         "Weight 10% always counts in total. Type earned in D13 (0–10) when ready — total earned then updates. Example: up to 3 non-compliances = 10%, 4–5 = 5%, more than 5 = 0%."),
     ]
     for r, sr, title, weight, earned, how in rows:
         ws.cell(r, 1, sr)
@@ -513,9 +513,9 @@ def _write_score(ws, report, totals_rows):
         ws.cell(r, 9).fill = _fill(AMBER if r in (10, 14) else "FFF2CC")
 
     ws["B15"] = "Total earned"
-    ws["C15"] = '=C5+C7+C9+C11+IF(D13="",0,C13)'
+    ws["C15"] = "=C5+C7+C9+C11+C13"
     ws["D15"] = '=IF(D5="",0,D5)+IF(D7="",0,D7)+IF(D9="",0,D9)+D11+IF(D13="",0,D13)'
-    ws["E15"] = "While D13 is blank, total uses 90%. After you type Timeliness in D13, total uses 100%."
+    ws["E15"] = "Weight always includes Timeliness 10% (100% total). Leave D13 blank until you type earned; then total earned updates."
     ws["F15"] = '=IF(C15=0,"",D15/C15)'
     for col in range(2, 7):
         cell = ws.cell(15, col)

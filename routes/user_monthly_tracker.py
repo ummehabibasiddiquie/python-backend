@@ -500,7 +500,8 @@ def list_user_monthly_targets():
         month_end_str = month_end.strftime("%Y-%m-%d %H:%M:%S")
 
         # ---------------- Base WHERE: only agent rows ----------------
-        # Remove is_active check to show deactivated users if they have tracker data
+        # Inactive users still appear here if they have tracker data (other pages / history).
+        # User Monthly Goal hides deactivated users for current/future via list_users only.
         user_where = """
             WHERE u.is_delete=1
             AND u.role_id=%s

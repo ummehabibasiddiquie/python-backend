@@ -59,7 +59,7 @@ FORMULAS = {
     "working_days": "Days marked Present, Half Day, Absent, WFH, or Unrostered. Leave, Week Off, and Holiday are not working days.",
     "present_days": "Present, Half Day, and WFH. This is rostered attendance.",
     "reporting": "Count Present, Half Day, WFH, and Unrostered days with fewer than 7 trackers. Add warning instances (verbal = 1, email = 2, letter = 3). 0–3 instances = 14%, 4–6 = 7%, more than 6 = 0%.",
-    "timeliness": "Left blank. This point is not stored in HRMS.",
+    "timeliness": "Not filled by HRMS. Weight 10% always counts in total weightage. Earned stays blank until typed in the Excel KRA Score sheet (0–10).",
 }
 
 
@@ -413,10 +413,16 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
         schedule_earned or 0,
         reporting_earned,
     ]
-    applicable_weight = WEIGHT_PRODUCTIVITY + WEIGHT_QUALITY + WEIGHT_SCHEDULE + WEIGHT_REPORTING
+    # Point 5 (Timeliness) weight always counts toward 100%. Earned stays blank until filled in Excel.
+    applicable_weight = (
+        WEIGHT_PRODUCTIVITY
+        + WEIGHT_QUALITY
+        + WEIGHT_SCHEDULE
+        + WEIGHT_REPORTING
+        + WEIGHT_TIMELINESS
+    )
     if timeliness_earned is not None:
         earned_parts.append(timeliness_earned)
-        applicable_weight += WEIGHT_TIMELINESS
     earned_total = round(sum(earned_parts), 2)
     kra_percent = round((earned_total / applicable_weight) * 100, 2) if applicable_weight else None
 

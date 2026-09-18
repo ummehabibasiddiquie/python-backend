@@ -5,7 +5,6 @@ from config import get_db_connection
 from utils.response import api_response
 from utils.qc_auto_score import AUTO_QC_DAYS_WITHOUT_EXISTING_SCORE_SQL
 from utils.time_ist import now_str
-from utils.user_status import sql_listing_leaver_clause
 from datetime import datetime, timedelta
 
 user_monthly_report_bp = Blueprint("user_monthly_report", __name__)
@@ -81,9 +80,10 @@ def get_role_context(cursor, user_id: int) -> dict:
 
 
 # ---------------------------
-# LIST USERS (for user monthly tracker page)
-# - For current month: returns all active users (so managers can add goals)
-# - For past months: returns users who have monthly targets for that month
+# LIST USERS (User Monthly Goal page only)
+# - Current / future: active agents only (deactivated never listed for new months)
+# - Past months: users who have monthly targets for that month (incl. inactive)
+# Mid-month leavers who already have a goal row still appear via tracker/list data.
 # ---------------------------
 @user_monthly_report_bp.route("/list_users", methods=["POST"])
 def list_users_for_monthly_tracker():
@@ -106,30 +106,26 @@ def list_users_for_monthly_tracker():
 
         if not agent_role_id:
             return api_response(500, "Agent role not found in user_role table", None)
-        
-        # Determine if requested month is current month
-        is_current_month = False
+
+        now = datetime.now()
+        is_past_month = False
         if month_year:
             dt = datetime.strptime(month_year, "%b%Y")
-            now = datetime.now()
-            is_current_month = (dt.month == now.month and dt.year == now.year)
-        else:
-            is_current_month = True  # Default to current month
+            is_past_month = (dt.year, dt.month) < (now.year, now.month)
 
         # ---------------- Base WHERE: only agent rows ----------------
-        # Current month / default listing: active + deactivated within last 3 months.
-        # Past month: anyone with monthly targets for that month (historical data kept).
-        if month_year and not is_current_month:
+        if is_past_month:
             user_where = """
                 WHERE u.is_delete=1
                 AND u.role_id=%s
             """
             user_params = [agent_role_id]
         else:
-            user_where = f"""
+            # Current / future / default: active only (User Monthly Goal)
+            user_where = """
                 WHERE u.is_delete=1
                 AND u.role_id=%s
-                AND {sql_listing_leaver_clause("u", months=3)}
+                AND u.is_active=1
             """
             user_params = [agent_role_id]
 
@@ -157,9 +153,8 @@ def list_users_for_monthly_tracker():
             """
             user_params.extend([str(mid), str(mid), str(mid)])
 
-        # ---------------- Joins: based on current vs past month ----------------
-        if month_year and not is_current_month:
-            # Past month: INNER JOIN with user_monthly_tracker to show only users with targets
+        # ---------------- Joins: past month needs tracker rows ----------------
+        if is_past_month:
             umt_join = """
                 INNER JOIN user_monthly_tracker umt
                 ON umt.user_id = u.user_id
@@ -168,7 +163,6 @@ def list_users_for_monthly_tracker():
             """
             final_params = [month_year]
         else:
-            # Current month or no month specified: no tracker join needed
             umt_join = ""
             final_params = []
 
