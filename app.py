@@ -22,6 +22,7 @@ from routes.holiday import holiday_bp
 from routes.roster import roster_bp
 from routes.report_email import report_email_bp
 from routes.qa_tracker import qa_tracker_bp
+from routes.kra import kra_bp
 import routes.roster_workflow  # Import workflow routes BEFORE registering blueprint
 
 from scheduler import start_scheduler
@@ -60,6 +61,7 @@ app.register_blueprint(holiday_bp, url_prefix="/holiday")
 app.register_blueprint(roster_bp, url_prefix="/roster")
 app.register_blueprint(report_email_bp, url_prefix="/report_email")
 app.register_blueprint(qa_tracker_bp, url_prefix="/qa_tracker")
+app.register_blueprint(kra_bp, url_prefix="/kra")
 
 # print("\n==== REGISTERED ROUTES ====")
 # for r in app.url_map.iter_rules():
