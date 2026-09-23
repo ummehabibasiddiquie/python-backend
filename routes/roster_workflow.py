@@ -89,6 +89,8 @@ from utils.roster_week_lock import (
     week_has_pending_submitted_requests,
     dates_from_change_request,
     request_touches_week,
+    pending_approval_message_for_change,
+    pending_approval_message_for_dates,
 )
 from utils.roster_week_email import (
     send_weekly_roster_after_approval,
@@ -140,7 +142,7 @@ def _validate_change_dates_editable(
     change_type: str,
     change_payload: dict | None,
 ) -> tuple[bool, str]:
-    """Month-level + per-week lock checks for a specific change."""
+    """Month-level + per-week lock + pending-approval week checks for a specific change."""
     ok, msg = _validate_month_editable(cursor, roster_month)
     if not ok:
         return False, msg
@@ -151,6 +153,11 @@ def _validate_change_dates_editable(
         )
         if week_msg:
             return False, week_msg
+    pending_msg = pending_approval_message_for_change(
+        cursor, roster_month, change_type, change_payload or {}
+    )
+    if pending_msg:
+        return False, pending_msg
     return True, ""
 
 
@@ -187,14 +194,20 @@ def roster_weekoff_swap_preview():
             return api_response(400, msg)
 
         month_year = (roster_month.get("month_year") or "").strip()
+        parsed_dates = [parse_date(d) for d in (new_week_off_dates or []) if parse_date(d)]
         if month_year:
             week_msg = week_lock_message_for_dates(
                 cursor,
                 month_year,
-                [parse_date(d) for d in (new_week_off_dates or []) if parse_date(d)],
+                parsed_dates,
             )
             if week_msg:
                 return api_response(400, week_msg)
+        pending_msg = pending_approval_message_for_dates(
+            cursor, roster_month, parsed_dates
+        )
+        if pending_msg:
+            return api_response(400, pending_msg)
 
         preview = weekoff_swap_preview(cursor, int(roster_month_id), new_week_off_dates)
         return api_response(200, "Week-off swap preview generated", preview)
@@ -263,9 +276,6 @@ def roster_create_change_request():
         )
         if not ok:
             return api_response(400, msg)
-
-        if roster_month.get("status") == "Pending Approval":
-            return api_response(400, "Withdraw submission before creating new change requests")
 
         if change_type in ("LEAVE_ADD", "LEAVE_UPDATE"):
             try:
@@ -450,7 +460,7 @@ def roster_submit_batch():
             WHERE rm.month_year=%s
               AND rm.is_active=1
               AND rm.user_id IN ({placeholders})
-              AND rm.status IN ('Draft', 'Approved')
+              AND rm.status IN ('Draft', 'Approved', 'Pending Approval')
               AND rcr.status='Pending'
               AND rcr.is_active=1
               AND (rcr.batch_id IS NULL OR rcr.batch_id='')
@@ -2401,7 +2411,10 @@ def _build_excel_preview(
                 )
                 continue
 
-            if roster_month.get("status") == "Pending Approval":
+            pending_msg = pending_approval_message_for_dates(
+                cursor, roster_month, [d]
+            )
+            if pending_msg:
                 skipped.append(
                     {
                         "row": row["row"],
@@ -2410,7 +2423,7 @@ def _build_excel_preview(
                         "user_name": emp.get("user_name"),
                         "date": date_iso,
                         "label": change.get("label"),
-                        "reason": "Roster is Pending Approval — skipped (withdraw first)",
+                        "reason": f"{pending_msg} — skipped",
                     }
                 )
                 continue
@@ -2829,16 +2842,6 @@ def roster_excel_apply():
                             "user_name": item.get("user_name"),
                             "date": item.get("date"),
                             "reason": msg,
-                        }
-                    )
-                    continue
-
-                if roster_month.get("status") == "Pending Approval":
-                    failed.append(
-                        {
-                            "user_name": item.get("user_name"),
-                            "date": item.get("date"),
-                            "reason": "Pending Approval — withdraw first",
                         }
                     )
                     continue

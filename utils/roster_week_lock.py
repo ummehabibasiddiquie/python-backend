@@ -150,6 +150,95 @@ def dates_from_change_request(req: dict) -> list[date]:
     return dates_from_change_payload(req.get("change_type") or "", payload)
 
 
+def list_submitted_pending_requests(cursor, roster_month_id: int) -> list[dict]:
+    """Pending change requests already submitted for approval (have a batch_id)."""
+    cursor.execute(
+        """
+        SELECT request_id, roster_month_id, change_type, change_payload, batch_id, status
+        FROM roster_change_request
+        WHERE roster_month_id=%s
+          AND is_active=1
+          AND status='Pending'
+          AND batch_id IS NOT NULL
+          AND TRIM(batch_id) != ''
+        ORDER BY request_id ASC
+        """,
+        (int(roster_month_id),),
+    )
+    rows = cursor.fetchall() or []
+    for row in rows:
+        payload = row.get("change_payload")
+        if isinstance(payload, (bytes, bytearray)):
+            payload = payload.decode("utf-8", errors="ignore")
+        if isinstance(payload, str):
+            try:
+                row["change_payload"] = json.loads(payload)
+            except Exception:
+                row["change_payload"] = {}
+    return rows
+
+
+def pending_approval_week_numbers(
+    cursor, roster_month_id: int, month_year: str
+) -> set[int]:
+    """Week numbers that have submitted pending requests for this roster month."""
+    month_year = (month_year or "").strip()
+    if not month_year:
+        return set()
+    weeks: set[int] = set()
+    for req in list_submitted_pending_requests(cursor, roster_month_id):
+        for d in dates_from_change_request(req):
+            meta = week_meta_for_date(month_year, d)
+            if meta and meta.get("week_number") is not None:
+                weeks.add(int(meta["week_number"]))
+    return weeks
+
+
+def pending_approval_message_for_dates(
+    cursor,
+    roster_month: dict,
+    dates: list[date],
+) -> str | None:
+    """
+    If any of the given dates fall in a week that already has submitted pending
+    requests for this employee, return a user-facing block message.
+    """
+    if not roster_month or not dates:
+        return None
+    month_year = (roster_month.get("month_year") or "").strip()
+    roster_month_id = roster_month.get("roster_month_id")
+    if not month_year or not roster_month_id:
+        return None
+    blocked = pending_approval_week_numbers(cursor, int(roster_month_id), month_year)
+    if not blocked:
+        return None
+    hit: set[int] = set()
+    for d in dates:
+        if not d:
+            continue
+        meta = week_meta_for_date(month_year, d)
+        wn = int((meta or {}).get("week_number") or 0)
+        if wn in blocked:
+            hit.add(wn)
+    if not hit:
+        return None
+    labels = ", ".join(f"Week {n}" for n in sorted(hit))
+    return (
+        f"{labels} has pending approval requests; "
+        "withdraw or wait for review before editing that week."
+    )
+
+
+def pending_approval_message_for_change(
+    cursor,
+    roster_month: dict,
+    change_type: str,
+    change_payload: dict | None,
+) -> str | None:
+    dates = dates_from_change_payload(change_type or "", change_payload or {})
+    return pending_approval_message_for_dates(cursor, roster_month, dates)
+
+
 def list_week_locks(cursor, month_year: str) -> list[dict]:
     """Active week locks for a month, enriched for API responses."""
     ensure_week_lock_table(cursor)

@@ -37,8 +37,9 @@ from utils.roster_metrics import (
 )
 
 
-EDITABLE_STATUSES = frozenset({"Draft", "Approved"})
-SUBMITTABLE_STATUSES = frozenset({"Draft", "Approved"})
+# Pending Approval still allows edits on weeks that have no submitted pending requests.
+EDITABLE_STATUSES = frozenset({"Draft", "Approved", "Pending Approval"})
+SUBMITTABLE_STATUSES = frozenset({"Draft", "Approved", "Pending Approval"})
 LOCKABLE_STATUSES = frozenset({"Draft", "Approved"})
 
 
