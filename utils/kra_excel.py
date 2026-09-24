@@ -105,7 +105,7 @@ def build_kra_workbook(report: dict) -> tuple[io.BytesIO, str]:
     rules.title = "Rules"
     daily = wb.create_sheet("Daily Log")
     score = wb.create_sheet("KRA Score")
-    _write_rules(rules)
+    _write_rules(rules, report)
     totals_rows = _write_daily(daily, report, first, last)
     _write_score(score, report, totals_rows)
 
@@ -119,7 +119,10 @@ def build_kra_workbook(report: dict) -> tuple[io.BytesIO, str]:
     return output, filename
 
 
-def _write_rules(ws):
+def _write_rules(ws, report=None):
+    report = report or {}
+    prod_hours = (report.get("rules") or {}).get("productivity_hours", PRODUCTIVITY_HOURS)
+    tenure_val = report.get("effective_tenure", 1)
     ws.sheet_view.showGridLines = False
     ws["A1"] = "KRA calculation rules"
     ws["A1"].font = _font(18, True, NAVY)
@@ -132,9 +135,8 @@ def _write_rules(ws):
         _header(ws.cell(4, col, label))
 
     rows = [
-        ("Productivity hours", PRODUCTIVITY_HOURS, "Billable hours at or above this = YES. Below this = NO."),
-        ("Quality minimum", QUALITY_MIN, "QC score at or above this = YES. Below this = NO. Sheet rule: equals or exceeds 98%."),
-        ("Minimum trackers", TRACKER_MIN, "A Present, Half Day, WFH, or Unrostered day with fewer trackers is one non-compliance."),
+        ("Productivity hours", prod_hours, f"Full day target based on tenure {tenure_val}. Half day = half of this ({round(prod_hours / 2, 3)}h)."),
+        ("Minimum trackers", TRACKER_MIN, "Present, WFH, or Unrostered day with fewer than 7 trackers, or Half Day with fewer than 4 trackers, is a non-compliance day."),
         ("Full reporting band up to", REPORTING_FULL_MAX, f"0 to this many instances still earns {REPORTING_FULL_SCORE}%."),
         ("Partial reporting band up to", REPORTING_PARTIAL_MAX, f"Above the full band, up to this number, earns {REPORTING_PARTIAL_SCORE}%. More than this earns 0%."),
         ("Full reporting score", REPORTING_FULL_SCORE, "Points earned inside the first band."),
@@ -198,7 +200,7 @@ def _write_daily(ws, report, first, last):
         ws.cell(r, 4, row.get("billable_hours"))
         ws.cell(
             r, 5,
-            f'=IF(OR(C{r}="PRESENT",C{r}="HALF DAY",C{r}="WFH",C{r}="ABSENT",C{r}="UNROSTERED",AND(ISNUMBER(D{r}),D{r}>0)),IF(N(D{r})>=Rules!$B$5,"YES","NO"),"")',
+            f'=IF(OR(C{r}="PRESENT",C{r}="HALF DAY",C{r}="WFH",C{r}="ABSENT",C{r}="UNROSTERED",AND(ISNUMBER(D{r}),D{r}>0)),IF(N(D{r})>=IF(C{r}="HALF DAY",Rules!$B$5/2,Rules!$B$5),"YES","NO"),"")',
         )
         ws.cell(r, 6, row.get("qc_score"))
         ws.cell(r, 7, f'=IF(F{r}="","",IF(F{r}>=Rules!$B$6,"YES","NO"))')
@@ -241,10 +243,12 @@ def _write_daily(ws, report, first, last):
 
     working = "+".join(status_count(s) for s in ("PRESENT", "HALF DAY", "ABSENT", "WFH", "UNROSTERED"))
     present = "+".join(status_count(s) for s in ("PRESENT", "HALF DAY", "WFH"))
-    low_tracker = "+".join(
+    full_day_tracker = "+".join(
         f'COUNTIFS({span},"{status}",{tracker_col},"<"&Rules!$B$7)'
-        for status in ("PRESENT", "HALF DAY", "WFH", "UNROSTERED")
+        for status in ("PRESENT", "WFH", "UNROSTERED")
     )
+    half_day_tracker = f'COUNTIFS({span},"HALF DAY",{tracker_col},"<4")'
+    low_tracker = f"{full_day_tracker}+{half_day_tracker}"
 
     # End-of-listing totals — same labels as the shared sheet, laid out as
     # three compact label|value pairs (no blank columns between label and value).
@@ -338,7 +342,7 @@ def _write_daily(ws, report, first, last):
         "0.00",
     )
 
-    merge_label(low_row, 1, 2, "Days under 7 trackers")
+    merge_label(low_row, 1, 2, "Days with low trackers (<7 full / <4 half)")
     put_value(low_row, 3, f"={low_tracker}")
 
     for r in (avg_row, counts_row, working_row, score_row, low_row):
@@ -390,7 +394,11 @@ def _write_daily(ws, report, first, last):
     ws.conditional_formatting.add(f"G{first}:G{last}", FormulaRule(formula=[f'G{first}="NO"'], fill=_fill(RED), font=_font(10, True, "991B1B")))
     ws.conditional_formatting.add(
         f"H{first}:H{last}",
-        FormulaRule(formula=[f'AND(ISNUMBER(H{first}),H{first}<Rules!$B$7)'], fill=_fill(RED), font=_font(10, True, "991B1B")),
+        FormulaRule(
+            formula=[f'AND(ISNUMBER(H{first}),H{first}<IF(C{first}="HALF DAY",4,Rules!$B$7))'],
+            fill=_fill(RED),
+            font=_font(10, True, "991B1B"),
+        ),
     )
 
     # Daily columns stay compact; K:L are the right-side counts only
