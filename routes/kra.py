@@ -237,10 +237,20 @@ def kra_export():
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        allowed, _role_name, _allow_policy = _can_view(cursor, actor_id, int(target_id))
+        allowed, role_name, _allow_policy = _can_view(cursor, actor_id, int(target_id))
         if not allowed:
             return api_response(403, "You cannot export this agent's KRA")
+        
+        # Log diagnostic info
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"KRA Export - Actor: {actor_id}, Role: {role_name}, Target: {target_id}, Month: {month_year}")
+        
         report = build_kra_report(cursor, int(target_id), year, month, month_year)
+        
+        # Log report structure
+        logger.info(f"KRA Report - Days count: {len(report.get('days', []))}, Counts: {report.get('counts', {})}")
+        
         output, filename = build_kra_workbook(report)
         return send_file(
             output,
@@ -249,6 +259,9 @@ def kra_export():
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
     except Exception as exc:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"KRA Export error: {str(exc)}", exc_info=True)
         return api_response(500, f"Could not export KRA: {exc}")
     finally:
         cursor.close()

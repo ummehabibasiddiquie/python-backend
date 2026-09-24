@@ -96,9 +96,14 @@ def _safe_name(value: str) -> str:
 
 
 def build_kra_workbook(report: dict) -> tuple[io.BytesIO, str]:
+    import logging
+    logger = logging.getLogger(__name__)
+    
     days = report.get("days") or []
     first = 6
     last = first + max(len(days), 1) - 1
+
+    logger.info(f"KRA Excel - Building workbook for {report.get('user_name')}, days: {len(days)}, first: {first}, last: {last}")
 
     wb = Workbook()
     rules = wb.active
@@ -109,6 +114,10 @@ def build_kra_workbook(report: dict) -> tuple[io.BytesIO, str]:
     totals_rows = _write_daily(daily, report, first, last)
     _write_score(score, report, totals_rows)
 
+    # Verify formulas were written
+    logger.info(f"KRA Excel - Daily Log sheet rows: {daily.max_row}, Score sheet rows: {score.max_row}")
+    logger.info(f"KRA Excel - Totals rows: {totals_rows}")
+
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
@@ -116,6 +125,8 @@ def build_kra_workbook(report: dict) -> tuple[io.BytesIO, str]:
     if report.get("period_end"):
         filename += f" through {report.get('period_end')}"
     filename += ".xlsx"
+    
+    logger.info(f"KRA Excel - Workbook saved, filename: {filename}")
     return output, filename
 
 
