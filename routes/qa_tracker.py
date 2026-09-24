@@ -500,6 +500,7 @@ def _calc_hours(
     qa_target_ranges=None,
     object_count=None,
     work_date=None,
+    is_rework: bool = False,
 ) -> tuple[float, float, float]:
     resolved = resolve_qa_targets(
         task_target=actual_target,
@@ -509,11 +510,14 @@ def _calc_hours(
         object_count=object_count,
         qc_generated_count=qc_count,
         work_date=work_date,
+        is_rework=is_rework,
     )
     return resolved["actual_target"], resolved["qa_target"], resolved["hours"]
 
 
-def _hours_from_qc_rec(rec: dict, work_date: str | None = None) -> tuple[float, float, float]:
+def _hours_from_qc_rec(
+    rec: dict, work_date: str | None = None, is_rework: bool = False
+) -> tuple[float, float, float]:
     return _calc_hours(
         rec.get("qc_generated_count"),
         rec.get("task_target") if rec.get("task_target") is not None else rec.get("actual_target"),
@@ -522,6 +526,7 @@ def _hours_from_qc_rec(rec: dict, work_date: str | None = None) -> tuple[float, 
         qa_target_ranges=rec.get("qa_target_ranges"),
         object_count=rec.get("object_count"),
         work_date=work_date if work_date is not None else rec.get("work_date"),
+        is_rework=is_rework,
     )
 
 def _require_user(data: dict):
@@ -591,7 +596,7 @@ def _existing_qc_snapshot(cursor, source_table, source_id, activity_type):
     return cursor.fetchone()
 
 
-def _target_snapshot(rec: dict, work_date: str | None) -> str:
+def _target_snapshot(rec: dict, work_date: str | None, is_rework: bool = False) -> str:
     """Target inputs used the first time this QA row is stored."""
     ranges = rec.get("qa_target_ranges")
     if isinstance(ranges, (bytes, bytearray)):
@@ -604,6 +609,7 @@ def _target_snapshot(rec: dict, work_date: str | None) -> str:
         "qa_count_column": rec.get("qa_count_column"),
         "object_count": rec.get("object_count"),
         "work_date": str(work_date)[:10] if work_date else None,
+        "is_rework": is_rework,
     }
     return json.dumps(payload, default=str)
 
@@ -651,11 +657,23 @@ def _upsert_qc_row(cursor, row: dict, now: str, overwrite_target: bool = False) 
         existing = _existing_qc_snapshot(
             cursor, row["source_table"], source_id, row["activity_type"]
         )
-        if existing is not None and (
-            _float(existing.get("hours")) <= 0
-            or _is_legacy_hours_snapshot(existing.get("target_snapshot"))
-        ):
-            overwrite_target = True
+        if existing is not None:
+            snap = existing.get("target_snapshot")
+            if isinstance(snap, (bytes, bytearray)):
+                snap = snap.decode("utf-8", errors="ignore")
+            if isinstance(snap, str):
+                try:
+                    snap = json.loads(snap)
+                except Exception:
+                    snap = {}
+            if not isinstance(snap, dict):
+                snap = {}
+            if (
+                _float(existing.get("hours")) <= 0
+                or _is_legacy_hours_snapshot(existing.get("target_snapshot"))
+                or (row["activity_type"] == "rework_qc" and not snap.get("is_rework"))
+            ):
+                overwrite_target = True
     if overwrite_target:
         target_sql = """
             actual_target=VALUES(actual_target),
@@ -757,7 +775,7 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
     )
     for rec in cursor.fetchall() or []:
         file_count, qc_count = _apply_range_counts(cursor, rec, work_date)
-        actual, qa_target, hours = _hours_from_qc_rec(rec, work_date)
+        actual, qa_target, hours = _hours_from_qc_rec(rec, work_date, is_rework=False)
         rows.append(
             {
                 "qa_user_id": qa_user_id,
@@ -775,7 +793,7 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
                 "actual_target": actual,
                 "qa_target": qa_target,
                 "hours": hours,
-                "target_snapshot": _target_snapshot(rec, work_date),
+                "target_snapshot": _target_snapshot(rec, work_date, is_rework=False),
                 "qc_status": rec.get("status") or rec.get("qc_status"),
             }
         )
@@ -806,7 +824,7 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
     )
     for rec in cursor.fetchall() or []:
         file_count, qc_count = _apply_range_counts(cursor, rec, work_date)
-        actual, qa_target, hours = _hours_from_qc_rec(rec, work_date)
+        actual, qa_target, hours = _hours_from_qc_rec(rec, work_date, is_rework=True)
         rows.append(
             {
                 "qa_user_id": qa_user_id,
@@ -824,7 +842,7 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
                 "actual_target": actual,
                 "qa_target": qa_target,
                 "hours": hours,
-                "target_snapshot": _target_snapshot(rec, work_date),
+                "target_snapshot": _target_snapshot(rec, work_date, is_rework=True),
                 "qc_status": "rework",
             }
         )
@@ -855,7 +873,7 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
     )
     for rec in cursor.fetchall() or []:
         file_count, qc_count = _apply_range_counts(cursor, rec, work_date)
-        actual, qa_target, hours = _hours_from_qc_rec(rec, work_date)
+        actual, qa_target, hours = _hours_from_qc_rec(rec, work_date, is_rework=True)
         rows.append(
             {
                 "qa_user_id": qa_user_id,
@@ -873,7 +891,7 @@ def _collect_qc_sources(cursor, qa_user_id: int, work_date: str) -> list[dict]:
                 "actual_target": actual,
                 "qa_target": qa_target,
                 "hours": hours,
-                "target_snapshot": _target_snapshot(rec, work_date),
+                "target_snapshot": _target_snapshot(rec, work_date, is_rework=True),
                 "qc_status": "correction",
             }
         )

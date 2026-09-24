@@ -51,17 +51,9 @@ def _month(data):
     return year, month, label, None
 
 
-def _agent_role_id(cursor):
-    cursor.execute(
-        """
-        SELECT role_id
-        FROM user_role
-        WHERE LOWER(TRIM(role_name)) = 'agent'
-        LIMIT 1
-        """
-    )
-    row = cursor.fetchone() or {}
-    return row.get("role_id")
+def _clean_id_match(col: str) -> str:
+    cleaned = f"REPLACE(REPLACE(REPLACE(REPLACE({col},'[',''),']',''),'\"',''),' ','')"
+    return f"({col} = %s OR FIND_IN_SET(%s, {cleaned}) > 0)"
 
 
 def _scope_clause(role_name: str, logged_in_user_id: int):
@@ -72,17 +64,23 @@ def _scope_clause(role_name: str, logged_in_user_id: int):
         return " AND u.user_id = %s", [int(logged_in_user_id)]
     if role_name in ("assistant team leader", "team leader"):
         return f" AND {team_leader_scope_sql('u')}", team_leader_scope_params(logged_in_user_id)
-    mid = str(int(logged_in_user_id))
+    if role_name == "assistant manager":
+        s_id = str(int(logged_in_user_id))
+        return f" AND {_clean_id_match('u.asst_manager_id')}", [s_id, s_id]
+    if role_name == "qa":
+        s_id = str(int(logged_in_user_id))
+        return f" AND {_clean_id_match('u.qa_id')}", [s_id, s_id]
+
+    s_id = str(int(logged_in_user_id))
     return (
-        """
+        f"""
         AND (
-            JSON_CONTAINS(u.project_manager_id, %s)
-            OR JSON_CONTAINS(u.asst_manager_id, %s)
-            OR JSON_CONTAINS(u.qa_id, %s)
-            OR u.user_id = %s
+            {_clean_id_match('u.project_manager_id')}
+            OR {_clean_id_match('u.asst_manager_id')}
+            OR {_clean_id_match('u.qa_id')}
         )
         """,
-        [mid, mid, mid, int(logged_in_user_id)],
+        [s_id, s_id, s_id, s_id, s_id, s_id],
     )
 
 
@@ -91,22 +89,29 @@ def _can_view(cursor, actor_id: int, target_user_id: int) -> tuple[bool, str, bo
     role_name = ctx.get("user_role_name") or ""
     if not role_name:
         return False, "", False
-    agent_role_id = _agent_role_id(cursor)
-    if not agent_role_id:
-        return False, role_name, False
     clause, params = _scope_clause(role_name, actor_id)
     cursor.execute(
         f"""
         SELECT u.user_id
         FROM tfs_user u
+        JOIN user_role r ON r.role_id = u.role_id
         WHERE u.is_delete = 1
-          AND u.role_id = %s
+          AND u.is_active = 1
+          AND r.is_active = 1
+          AND LOWER(TRIM(r.role_name)) = 'agent'
+          AND NOT EXISTS (
+              SELECT 1 FROM tfs_user u2
+              JOIN user_role r2 ON r2.role_id = u2.role_id
+              WHERE LOWER(TRIM(u2.user_name)) = LOWER(TRIM(u.user_name))
+                AND u2.is_delete = 1
+                AND u2.is_active = 1
+                AND LOWER(TRIM(r2.role_name)) != 'agent'
+          )
           AND u.user_id = %s
-          AND {sql_listing_leaver_clause("u", months=3)}
           {clause}
         LIMIT 1
         """,
-        tuple([agent_role_id, int(target_user_id), *params]),
+        tuple([int(target_user_id), *params]),
     )
     allowed = cursor.fetchone() is not None
     allow_policy = role_name != "agent"
@@ -127,25 +132,32 @@ def list_kra_users():
         role_name = ctx.get("user_role_name") or ""
         if not role_name:
             return api_response(404, "User not found")
-        agent_role_id = _agent_role_id(cursor)
-        if not agent_role_id:
-            return api_response(500, "Agent role not found")
         clause, params = _scope_clause(role_name, actor_id)
         cursor.execute(
             f"""
             SELECT u.user_id, u.user_name, t.team_name
             FROM tfs_user u
+            JOIN user_role r ON r.role_id = u.role_id
             LEFT JOIN team t ON t.team_id = u.team_id
             WHERE u.is_delete = 1
-              AND u.role_id = %s
-              AND {sql_listing_leaver_clause("u", months=3)}
+              AND u.is_active = 1
+              AND r.is_active = 1
+              AND LOWER(TRIM(r.role_name)) = 'agent'
+              AND NOT EXISTS (
+                  SELECT 1 FROM tfs_user u2
+                  JOIN user_role r2 ON r2.role_id = u2.role_id
+                  WHERE LOWER(TRIM(u2.user_name)) = LOWER(TRIM(u.user_name))
+                    AND u2.is_delete = 1
+                    AND u2.is_active = 1
+                    AND LOWER(TRIM(r2.role_name)) != 'agent'
+              )
               {clause}
             ORDER BY
               CASE WHEN t.team_name IS NULL OR TRIM(t.team_name) = '' THEN 1 ELSE 0 END,
               t.team_name,
               u.user_name
             """,
-            tuple([agent_role_id, *params]),
+            tuple(params),
         )
         rows = cursor.fetchall() or []
         return api_response(200, "Users fetched", {
