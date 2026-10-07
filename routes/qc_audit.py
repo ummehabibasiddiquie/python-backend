@@ -88,45 +88,44 @@ def test_qc_audit():
         "timestamp": str(datetime.now())
     })
 
+def _valid_iso_date(value):
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        datetime.strptime(text[:10], "%Y-%m-%d")
+        return text[:10]
+    except ValueError:
+        return None
+
+
 @qc_audit_bp.route("/report", methods=["POST"])
 def qc_audit_report():
 
-    data = request.get_json()
-    start_date = data.get("start_date")  # Format: "2024-04-07"
-    end_date = data.get("end_date")      # Format: "2024-04-10"
-    
-    # If no date filters provided, default to current month
-    if not start_date or not end_date:
-        from datetime import datetime
-        current_month = datetime.now().strftime("%Y-%m")
-        start_date = f"{current_month}-01"
-        # Get last day of current month
-        current_year = datetime.now().year
-        current_month_num = datetime.now().month
-        if current_month_num in [1,3,5,7,8,10,12]:
-            last_day = 31
-        elif current_month_num in [4,6,9,11]:
-            last_day = 30
-        elif current_month_num == 2:
-            # Check for leap year
-            if (current_year % 4 == 0 and current_year % 100 != 0) or (current_year % 400 == 0):
-                last_day = 29
-            else:
-                last_day = 28
-        else:
-            last_day = 30
-        end_date = f"{current_month}-{last_day:02d}"
+    data = request.get_json() or {}
+    start_date = _valid_iso_date(data.get("start_date"))
+    end_date = _valid_iso_date(data.get("end_date"))
+    qc_start_date = _valid_iso_date(data.get("qc_start_date"))
+    qc_end_date = _valid_iso_date(data.get("qc_end_date"))
+
+    # If no date filters provided, default to current month on worked date.
+    if not any((start_date, end_date, qc_start_date, qc_end_date)):
+        from calendar import monthrange
+        today = datetime.now()
+        start_date = today.replace(day=1).strftime("%Y-%m-%d")
+        last_day = monthrange(today.year, today.month)[1]
+        end_date = today.replace(day=last_day).strftime("%Y-%m-%d")
     
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     try:
 
-        # Base query with date filter
         query = """
         SELECT
         qa.created_date AS audit_datetime,
         qr.date_of_file_submission AS worked_date,
+        qr.created_at AS qc_date,
         qr.updated_at AS evaluation_date,
         tu.user_name AS agent_name,
         qc_user.user_name AS qc_agent_name,
@@ -157,19 +156,26 @@ def qc_audit_report():
         ON qr.task_id = t.task_id
         """
 
-        # Add date filter if start_date and end_date are provided
-        date_filter = ""
-        if start_date and end_date:
-            date_filter = f"""
-            WHERE DATE(qr.date_of_file_submission) >= DATE('{start_date}')
-            AND DATE(qr.date_of_file_submission) <= DATE('{end_date}')
-            """
+        where = []
+        params = []
+        if start_date:
+            where.append("DATE(qr.date_of_file_submission) >= %s")
+            params.append(start_date)
+        if end_date:
+            where.append("DATE(qr.date_of_file_submission) <= %s")
+            params.append(end_date)
+        if qc_start_date:
+            where.append("DATE(qr.created_at) >= %s")
+            params.append(qc_start_date)
+        if qc_end_date:
+            where.append("DATE(qr.created_at) <= %s")
+            params.append(qc_end_date)
+        if where:
+            query += " WHERE " + " AND ".join(where)
 
-        query += date_filter + """
-        ORDER BY qa.created_date DESC
-        """
+        query += " ORDER BY qa.created_date DESC"
 
-        cursor.execute(query)
+        cursor.execute(query, params)
         rows = cursor.fetchall()
 
         return jsonify({
@@ -256,11 +262,9 @@ def _annotate_openpyxl_sheet(ws, error_list):
             continue
         if row_num < 1:
             continue
-        excel_rows = [row_num, row_num + 1] if row_num >= 2 else [row_num + 1]
-        for excel_row in excel_rows:
-            by_row.setdefault(excel_row, [])
-            if label not in by_row[excel_row]:
-                by_row[excel_row].append(label)
+        by_row.setdefault(row_num, [])
+        if label not in by_row[row_num]:
+            by_row[row_num].append(label)
 
     last_data = 1
     for r in range(2, (ws.max_row or 1) + 1):
