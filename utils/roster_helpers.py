@@ -780,16 +780,27 @@ def cap_month_goals_to_universal_working_days(cursor, month_year: str) -> dict:
     now = now_str()
     roster_updated = 0
     tracker_updated = 0
+    ensure_umt_goal_locked_column(cursor)
 
     cursor.execute(
         """
-        SELECT roster_month_id, target_working_days, monthly_target_hours
-        FROM roster_month
-        WHERE is_active=1 AND month_year=%s
+        SELECT
+            rm.roster_month_id,
+            rm.target_working_days,
+            rm.monthly_target_hours,
+            umt.goal_locked
+        FROM roster_month rm
+        LEFT JOIN user_monthly_tracker umt
+          ON umt.user_id = rm.user_id
+         AND umt.month_year = rm.month_year
+         AND umt.is_active = 1
+        WHERE rm.is_active=1 AND rm.month_year=%s
         """,
         (str(month_year).strip(),),
     )
     for row in cursor.fetchall() or []:
+        if int(row.get("goal_locked") or 0) == 1:
+            continue
         twd = float(row.get("target_working_days") or 0)
         hours = float(row.get("monthly_target_hours") or 0)
         if twd <= cap:
@@ -807,13 +818,15 @@ def cap_month_goals_to_universal_working_days(cursor, month_year: str) -> dict:
 
     cursor.execute(
         """
-        SELECT user_monthly_tracker_id, working_days, monthly_target
+        SELECT user_monthly_tracker_id, working_days, monthly_target, goal_locked
         FROM user_monthly_tracker
         WHERE is_active=1 AND month_year=%s
         """,
         (str(month_year).strip(),),
     )
     for row in cursor.fetchall() or []:
+        if int(row.get("goal_locked") or 0) == 1:
+            continue
         wd = float(row.get("working_days") or 0)
         mt = float(row.get("monthly_target") or 0)
         if wd <= cap:
@@ -869,6 +882,34 @@ def derive_daily_full_hours_from_tracker(monthly_target, working_days) -> float:
     except (TypeError, ValueError):
         pass
     return FULL_DAY_HOURS
+
+
+def ensure_umt_goal_locked_column(cursor) -> None:
+    """Managers can lock monthly_target so later roster syncs do not overwrite it."""
+    cursor.execute("SHOW COLUMNS FROM user_monthly_tracker LIKE 'goal_locked'")
+    if cursor.fetchone():
+        return
+    cursor.execute(
+        """
+        ALTER TABLE user_monthly_tracker
+        ADD COLUMN goal_locked TINYINT(1) NOT NULL DEFAULT 0
+        """
+    )
+
+
+def umt_goal_is_locked(cursor, user_id: int, month_year: str) -> bool:
+    ensure_umt_goal_locked_column(cursor)
+    cursor.execute(
+        """
+        SELECT goal_locked
+        FROM user_monthly_tracker
+        WHERE user_id=%s AND month_year=%s AND is_active=1
+        LIMIT 1
+        """,
+        (int(user_id), str(month_year).strip()),
+    )
+    row = cursor.fetchone() or {}
+    return int(row.get("goal_locked") or 0) == 1
 
 
 def load_user_monthly_tracker_baseline(
@@ -1576,7 +1617,10 @@ def sync_to_user_monthly_tracker(
 
     Extra assigned hours are manager-owned (can be negative to reduce the goal).
     Roster generate/reconcile does not overwrite an existing extra.
+    If a manager locked monthly_target on User Monthly Goal, roster does not
+    overwrite monthly_target or working_days.
     """
+    ensure_umt_goal_locked_column(cursor)
     user_id = int(roster_month["user_id"])
     month_year = roster_month["month_year"]
     monthly_target = str(roster_month["monthly_target_hours"])
@@ -1588,18 +1632,30 @@ def sync_to_user_monthly_tracker(
     if existing_id:
         cursor.execute(
             """
-            UPDATE user_monthly_tracker
-            SET monthly_target=%s, working_days=%s
+            SELECT user_monthly_tracker_id, monthly_target, working_days,
+                   extra_assigned_hours, goal_locked
+            FROM user_monthly_tracker
             WHERE user_monthly_tracker_id=%s
             """,
-            (monthly_target, working_days, int(existing_id)),
+            (int(existing_id),),
         )
+        locked_row = cursor.fetchone() or {}
+        if int(locked_row.get("goal_locked") or 0) != 1:
+            cursor.execute(
+                """
+                UPDATE user_monthly_tracker
+                SET monthly_target=%s, working_days=%s
+                WHERE user_monthly_tracker_id=%s
+                """,
+                (monthly_target, working_days, int(existing_id)),
+            )
         tracker_id = int(existing_id)
-        old_value = None
+        old_value = dict(locked_row) if locked_row else None
     else:
         cursor.execute(
             """
-            SELECT user_monthly_tracker_id, monthly_target, working_days, extra_assigned_hours
+            SELECT user_monthly_tracker_id, monthly_target, working_days,
+                   extra_assigned_hours, goal_locked
             FROM user_monthly_tracker
             WHERE user_id=%s AND month_year=%s AND is_active=1
             LIMIT 1
@@ -1610,14 +1666,15 @@ def sync_to_user_monthly_tracker(
         old_value = dict(existing) if existing else None
 
         if existing:
-            cursor.execute(
-                """
-                UPDATE user_monthly_tracker
-                SET monthly_target=%s, working_days=%s
-                WHERE user_monthly_tracker_id=%s
-                """,
-                (monthly_target, working_days, int(existing["user_monthly_tracker_id"])),
-            )
+            if int(existing.get("goal_locked") or 0) != 1:
+                cursor.execute(
+                    """
+                    UPDATE user_monthly_tracker
+                    SET monthly_target=%s, working_days=%s
+                    WHERE user_monthly_tracker_id=%s
+                    """,
+                    (monthly_target, working_days, int(existing["user_monthly_tracker_id"])),
+                )
             tracker_id = int(existing["user_monthly_tracker_id"])
         else:
             cursor.execute(

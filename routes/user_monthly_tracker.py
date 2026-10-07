@@ -5,6 +5,7 @@ from config import get_db_connection
 from utils.response import api_response
 from utils.roster_helpers import (
     can_manage_roster_employees,
+    ensure_umt_goal_locked_column,
     get_role_context,
     reject_if_read_only,
     sync_tracker_extra_hours_to_roster,
@@ -277,9 +278,16 @@ def update_user_monthly_target():
 
     parsed_monthly_target = None
     if "monthly_target" in data and data["monthly_target"] not in [None, ""]:
-        # Monthly target is set by roster generate and must not be edited afterwards.
-        # Reduce/increase the goal with extra_assigned_hours (negative allowed).
-        parsed_monthly_target = None
+        try:
+            parsed_monthly_target = float(str(data["monthly_target"]).strip())
+        except (TypeError, ValueError):
+            return api_response(400, "monthly_target must be a number")
+        if parsed_monthly_target < 0:
+            return api_response(400, "monthly_target cannot be negative")
+        updates.append("monthly_target=%s")
+        params.append(str(parsed_monthly_target))
+        updates.append("goal_locked=%s")
+        params.append(1)
 
     parsed_extra = None
     if "extra_assigned_hours" in data and data["extra_assigned_hours"] not in [None, ""]:
@@ -296,6 +304,7 @@ def update_user_monthly_target():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        ensure_umt_goal_locked_column(cursor)
         # Current row
         cursor.execute(
             """
@@ -311,7 +320,11 @@ def update_user_monthly_target():
 
         if parsed_extra is not None:
             try:
-                current_target = float(current.get("monthly_target") or 0)
+                current_target = float(
+                    parsed_monthly_target
+                    if parsed_monthly_target is not None
+                    else (current.get("monthly_target") or 0)
+                )
             except (TypeError, ValueError):
                 current_target = 0.0
             if current_target + parsed_extra < 0:
@@ -480,6 +493,7 @@ def list_user_monthly_targets():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        ensure_umt_goal_locked_column(cursor)
         ctx = get_role_context(cursor, int(logged_in_user_id))
         my_role_name = (ctx.get("user_role_name") or "").lower()
         agent_role_id = ctx.get("agent_role_id")
@@ -668,6 +682,7 @@ def list_user_monthly_targets():
                 umt.working_days,
                 COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0) AS monthly_target,
                 COALESCE(umt.extra_assigned_hours, 0) AS extra_assigned_hours,
+                COALESCE(umt.goal_locked, 0) AS goal_locked,
                 (
                     COALESCE(CAST(umt.monthly_target AS DECIMAL(10,2)), 0)
                     + COALESCE(umt.extra_assigned_hours, 0)
@@ -700,6 +715,7 @@ def list_user_monthly_targets():
                 umt.working_days,
                 umt.monthly_target,
                 umt.extra_assigned_hours,
+                umt.goal_locked,
                 qc.avg_qc_score,
                 qc.qc_days_count
             ORDER BY
