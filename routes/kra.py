@@ -99,14 +99,6 @@ def _can_view(cursor, actor_id: int, target_user_id: int) -> tuple[bool, str, bo
           AND u.is_active = 1
           AND r.is_active = 1
           AND LOWER(TRIM(r.role_name)) = 'agent'
-          AND NOT EXISTS (
-              SELECT 1 FROM tfs_user u2
-              JOIN user_role r2 ON r2.role_id = u2.role_id
-              WHERE LOWER(TRIM(u2.user_name)) = LOWER(TRIM(u.user_name))
-                AND u2.is_delete = 1
-                AND u2.is_active = 1
-                AND LOWER(TRIM(r2.role_name)) != 'agent'
-          )
           AND u.user_id = %s
           {clause}
         LIMIT 1
@@ -143,14 +135,6 @@ def list_kra_users():
               AND u.is_active = 1
               AND r.is_active = 1
               AND LOWER(TRIM(r.role_name)) = 'agent'
-              AND NOT EXISTS (
-                  SELECT 1 FROM tfs_user u2
-                  JOIN user_role r2 ON r2.role_id = u2.role_id
-                  WHERE LOWER(TRIM(u2.user_name)) = LOWER(TRIM(u.user_name))
-                    AND u2.is_delete = 1
-                    AND u2.is_active = 1
-                    AND LOWER(TRIM(r2.role_name)) != 'agent'
-              )
               {clause}
             ORDER BY
               CASE WHEN t.team_name IS NULL OR TRIM(t.team_name) = '' THEN 1 ELSE 0 END,
