@@ -947,7 +947,7 @@ def _remove_date_from_one_leave(
             right_start.isoformat(),
             end.isoformat(),
             leave.get("reason"),
-            int(leave.get("is_rostered") or 1),
+            int(1 if leave.get("is_rostered") is None else leave.get("is_rostered")),
             int(leave.get("affect_target") or 0),
             int(leave.get("is_half_day") or 0),
             leave.get("created_by"),
