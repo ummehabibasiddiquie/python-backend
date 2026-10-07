@@ -18,11 +18,23 @@ from utils.kra import (
     REPORTING_PARTIAL_MAX,
     REPORTING_PARTIAL_SCORE,
     TRACKER_MIN,
+    TRACKER_MIN_HALF_DAY,
     WEIGHT_PRODUCTIVITY,
     WEIGHT_QUALITY,
     WEIGHT_REPORTING,
     WEIGHT_SCHEDULE,
     WEIGHT_TIMELINESS,
+)
+
+ATTENDANCE_CHOICES = (
+    "PRESENT",
+    "HALF DAY",
+    "ABSENT",
+    "LEAVE",
+    "WEEK OFF",
+    "WFH",
+    "UNROSTERED",
+    "HOLIDAY",
 )
 
 ATTENDANCE_FILL = {
@@ -73,6 +85,27 @@ thin = Border(
 )
 wrap = Alignment(wrap_text=True, vertical="center")
 center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+# One ordered list. Formulas use these keys so they cannot drift off the Rules rows.
+RULES_START_ROW = 5
+RULE_KEYS = (
+    "prod_hours",
+    "qc_min",
+    "tracker_min",
+    "reporting_full_max",
+    "reporting_partial_max",
+    "reporting_full_score",
+    "reporting_partial_score",
+    "weight_prod",
+    "weight_qual",
+    "weight_sched",
+    "weight_reporting",
+    "weight_timeliness",
+)
+
+
+def rules_b(key: str) -> str:
+    return f"Rules!$B${RULES_START_ROW + RULE_KEYS.index(key)}"
 
 
 def _fill(hex_color: str) -> PatternFill:
@@ -134,33 +167,97 @@ def _write_rules(ws, report=None):
     for col, label in enumerate(("Setting", "Value", "What it does"), 1):
         _header(ws.cell(4, col, label))
 
-    rows = [
-        ("Productivity hours", prod_hours, f"Full day target based on tenure {tenure_val}. Half day = half of this ({round(prod_hours / 2, 3)}h)."),
-        ("Minimum trackers", TRACKER_MIN, "Present, WFH, or Unrostered day with fewer than 7 trackers, or Half Day with fewer than 4 trackers, is a non-compliance day."),
-        ("Full reporting band up to", REPORTING_FULL_MAX, f"0 to this many instances still earns {REPORTING_FULL_SCORE}%."),
-        ("Partial reporting band up to", REPORTING_PARTIAL_MAX, f"Above the full band, up to this number, earns {REPORTING_PARTIAL_SCORE}%. More than this earns 0%."),
-        ("Full reporting score", REPORTING_FULL_SCORE, "Points earned inside the first band."),
-        ("Partial reporting score", REPORTING_PARTIAL_SCORE, "Points earned inside the second band."),
-        ("Productivity weight", WEIGHT_PRODUCTIVITY, "(YES days / working days) x this weight."),
-        ("Quality weight", WEIGHT_QUALITY, "(quality YES days / working days) x this weight."),
-        ("Schedule weight", WEIGHT_SCHEDULE, "(present days / working days) x this weight."),
-        ("Reporting weight", WEIGHT_REPORTING, "Band score. The maximum is this weight."),
-        ("Timeliness weight", WEIGHT_TIMELINESS, "Always included in total weight (100%). Earned stays blank until typed in KRA Score!D13 (0 to 10); then total earned updates."),
-    ]
-    for idx, (label, value, note) in enumerate(rows, 5):
-        ws.cell(idx, 1, label).font = _font(11, True)
-        value_cell = ws.cell(idx, 2, value)
+    settings = {
+        "prod_hours": (
+            "Productivity hours",
+            prod_hours,
+            f"Full day target based on tenure {tenure_val}. Half day = half of this ({round(prod_hours / 2, 3)}h).",
+        ),
+        "qc_min": (
+            "Minimum QC score",
+            QUALITY_MIN,
+            "Quality is YES only on working days (Present, Half Day, Absent, WFH, Unrostered) when QC is at least this. Holiday, Leave, and Week Off stay blank.",
+        ),
+        "tracker_min": (
+            "Minimum trackers",
+            TRACKER_MIN,
+            "Present, WFH, or Unrostered day with fewer than 7 trackers, or Half Day with fewer than 4 trackers, is a non-compliance day.",
+        ),
+        "reporting_full_max": (
+            "Full reporting band up to",
+            REPORTING_FULL_MAX,
+            f"0 to this many instances still earns {REPORTING_FULL_SCORE}%.",
+        ),
+        "reporting_partial_max": (
+            "Partial reporting band up to",
+            REPORTING_PARTIAL_MAX,
+            f"Above the full band, up to this number, earns {REPORTING_PARTIAL_SCORE}%. More than this earns 0%.",
+        ),
+        "reporting_full_score": (
+            "Full reporting score",
+            REPORTING_FULL_SCORE,
+            "Points earned inside the first band.",
+        ),
+        "reporting_partial_score": (
+            "Partial reporting score",
+            REPORTING_PARTIAL_SCORE,
+            "Points earned inside the second band.",
+        ),
+        "weight_prod": (
+            "Productivity weight",
+            WEIGHT_PRODUCTIVITY,
+            "(YES days / working days) x this weight.",
+        ),
+        "weight_qual": (
+            "Quality weight",
+            WEIGHT_QUALITY,
+            "(quality YES days / working days) x this weight.",
+        ),
+        "weight_sched": (
+            "Schedule weight",
+            WEIGHT_SCHEDULE,
+            "(present days / working days) x this weight.",
+        ),
+        "weight_reporting": (
+            "Reporting weight",
+            WEIGHT_REPORTING,
+            "Band score. The maximum is this weight.",
+        ),
+        "weight_timeliness": (
+            "Timeliness weight",
+            WEIGHT_TIMELINESS,
+            "Always included in total weight (100%). Earned stays blank until typed in KRA Score!D13 (0 to 10); then total earned updates.",
+        ),
+    }
+    if set(settings) != set(RULE_KEYS):
+        raise ValueError("Rules settings keys must match RULE_KEYS")
+    for idx, key in enumerate(RULE_KEYS):
+        label, value, note = settings[key]
+        row = RULES_START_ROW + idx
+        ws.cell(row, 1, label).font = _font(11, True)
+        value_cell = ws.cell(row, 2, value)
         value_cell.font = _font(12, True, TEAL)
         value_cell.alignment = center
         value_cell.fill = _fill(AMBER)
-        ws.cell(idx, 3, note).font = _font(11)
+        ws.cell(row, 3, note).font = _font(11)
         for col in range(1, 4):
-            ws.cell(idx, col).border = thin
-            ws.cell(idx, col).alignment = wrap
+            ws.cell(row, col).border = thin
+            ws.cell(row, col).alignment = wrap
+
+    ws["E4"] = "Attendance"
+    _header(ws["E4"])
+    for idx, status in enumerate(ATTENDANCE_CHOICES, 5):
+        cell = ws.cell(idx, 5, status)
+        cell.font = _font(10, True, ATTENDANCE_FONT.get(status, "1F2933"))
+        cell.fill = _fill(ATTENDANCE_FILL.get(status, WHITE))
+        cell.alignment = center
+        cell.border = thin
 
     ws.column_dimensions["A"].width = 32
     ws.column_dimensions["B"].width = 14
     ws.column_dimensions["C"].width = 88
+    ws.column_dimensions["D"].width = 3
+    ws.column_dimensions["E"].width = 16
     ws.row_dimensions[1].height = 28
     ws.freeze_panes = "A5"
     ws.page_setup.orientation = "landscape"
@@ -182,7 +279,11 @@ def _write_daily(ws, report, first, last):
     ws.merge_cells("A2:I2")
     period = report.get("period_end") or ""
     as_of = f"   ·   Through {period}" if period else ""
-    ws["A2"] = f"{report.get('month_year')}   ·   Team {team}{as_of}   ·   Generated from HRMS. Yellow cells are formulas."
+    ws["A2"] = (
+        f"{report.get('month_year')}   ·   Team {team}{as_of}   ·   "
+        "Change Attendance (dropdown), hours, QC, or trackers — KRA Score recalculates. "
+        "Holiday / Leave / Week Off stay out of Productivity and Quality even if extra hours or QC exist."
+    )
     ws["A2"].font = _font(11, False, MUTED)
 
     headers = [
@@ -200,10 +301,15 @@ def _write_daily(ws, report, first, last):
         ws.cell(r, 4, row.get("billable_hours"))
         ws.cell(
             r, 5,
-            f'=IF(OR(C{r}="PRESENT",C{r}="HALF DAY",C{r}="WFH",C{r}="ABSENT",C{r}="UNROSTERED",AND(ISNUMBER(D{r}),D{r}>0)),IF(N(D{r})>=IF(C{r}="HALF DAY",Rules!$B$5/2,Rules!$B$5),"YES","NO"),"")',
+            f'=IF(OR(C{r}="PRESENT",C{r}="HALF DAY",C{r}="WFH",C{r}="ABSENT",C{r}="UNROSTERED"),'
+            f'IF(N(D{r})>=IF(C{r}="HALF DAY",{rules_b("prod_hours")}/2,{rules_b("prod_hours")}),"YES","NO"),"")',
         )
         ws.cell(r, 6, row.get("qc_score"))
-        ws.cell(r, 7, f'=IF(F{r}="","",IF(F{r}>=Rules!$B$6,"YES","NO"))')
+        ws.cell(
+            r, 7,
+            f'=IF(OR(C{r}="PRESENT",C{r}="HALF DAY",C{r}="WFH",C{r}="ABSENT",C{r}="UNROSTERED"),'
+            f'IF(F{r}="","",IF(F{r}>={rules_b("qc_min")},"YES","NO")),"")',
+        )
         trackers = row.get("tracker_count")
         if trackers is None and (row.get("attendance") or "") in ("PRESENT", "HALF DAY", "WFH", "UNROSTERED"):
             trackers = 0
@@ -244,10 +350,12 @@ def _write_daily(ws, report, first, last):
     working = "+".join(status_count(s) for s in ("PRESENT", "HALF DAY", "ABSENT", "WFH", "UNROSTERED"))
     present = "+".join(status_count(s) for s in ("PRESENT", "HALF DAY", "WFH"))
     full_day_tracker = "+".join(
-        f'COUNTIFS({span},"{status}",{tracker_col},"<"&Rules!$B$7)'
+        f'COUNTIFS({span},"{status}",{tracker_col},"<"&{rules_b("tracker_min")})'
         for status in ("PRESENT", "WFH", "UNROSTERED")
     )
-    half_day_tracker = f'COUNTIFS({span},"HALF DAY",{tracker_col},"<4")'
+    half_day_tracker = (
+        f'COUNTIFS({span},"HALF DAY",{tracker_col},"<{TRACKER_MIN_HALF_DAY}")'
+    )
     low_tracker = f"{full_day_tracker}+{half_day_tracker}"
 
     # End-of-listing totals — same labels as the shared sheet, laid out as
@@ -326,19 +434,19 @@ def _write_daily(ws, report, first, last):
     merge_label(score_row, 1, 2, "Score")
     put_value(
         score_row, 3,
-        f'=IF(C{working_row}=0,"",C{counts_row}/C{working_row}*Rules!$B$12)',
+        f'=IF(C{working_row}=0,"",C{counts_row}/C{working_row}*{rules_b("weight_prod")})',
         "0.00",
     )
     merge_label(score_row, 4, 5, "Score")
     put_value(
         score_row, 6,
-        f'=IF(F{working_row}=0,"",F{counts_row}/F{working_row}*Rules!$B$13)',
+        f'=IF(F{working_row}=0,"",F{counts_row}/F{working_row}*{rules_b("weight_qual")})',
         "0.00",
     )
     merge_label(score_row, 7, 8, "Score")
     put_value(
         score_row, 9,
-        f'=IF(I{working_row}=0,"",I{counts_row}/I{working_row}*Rules!$B$14)',
+        f'=IF(I{working_row}=0,"",I{counts_row}/I{working_row}*{rules_b("weight_sched")})',
         "0.00",
     )
 
@@ -395,7 +503,9 @@ def _write_daily(ws, report, first, last):
     ws.conditional_formatting.add(
         f"H{first}:H{last}",
         FormulaRule(
-            formula=[f'AND(ISNUMBER(H{first}),H{first}<IF(C{first}="HALF DAY",4,Rules!$B$7))'],
+            formula=[
+                f'AND(ISNUMBER(H{first}),H{first}<IF(C{first}="HALF DAY",{TRACKER_MIN_HALF_DAY},{rules_b("tracker_min")}))'
+            ],
             fill=_fill(RED),
             font=_font(10, True, "991B1B"),
         ),
@@ -409,6 +519,21 @@ def _write_daily(ws, report, first, last):
     }.items():
         ws.column_dimensions[col].width = width
     ws.freeze_panes = "A6"
+    attendance_dv = DataValidation(
+        type="list",
+        formula1="=Rules!$E$5:$E$12",
+        allow_blank=True,
+        showDropDown=False,
+        showErrorMessage=True,
+        errorTitle="Attendance",
+        error="Pick PRESENT, HALF DAY, ABSENT, LEAVE, WEEK OFF, WFH, UNROSTERED, or HOLIDAY.",
+        promptTitle="Attendance",
+        prompt="Select a status. KRA Score updates from this column.",
+        showInputMessage=True,
+    )
+    attendance_dv.add(f"C{first}:C{last}")
+    ws.add_data_validation(attendance_dv)
+
     ws.auto_filter.ref = f"A5:I{last}"
     ws.row_dimensions[1].height = 26
     ws.row_dimensions[5].height = 32
@@ -430,7 +555,11 @@ def _write_score(ws, report, totals_rows):
     ws["A1"] = f"KRA score — {report.get('user_name') or 'Agent'} — {report.get('month_year')}"
     ws["A1"].font = _font(18, True, NAVY)
     ws.merge_cells("A2:F2")
-    ws["A2"] = "Points 1–4 come from HRMS. Point 5 (Timeliness) weight is always in the 100% total; leave D13 blank until you type the earned score (0–10)."
+    ws["A2"] = (
+        "Points 1–4 are formulas from Daily Log (and Rules). "
+        "Edit attendance, hours, QC, or trackers on Daily Log and this sheet updates. "
+        "Point 5 (Timeliness): type earned in D13 (0–10)."
+    )
     ws["A2"].font = _font(11, False, MUTED)
 
     for col, label in enumerate(("Sr", "Objective", "Weight %", "Earned %", "How it is calculated", "% of weight"), 1):
@@ -446,19 +575,21 @@ def _write_score(ws, report, totals_rows):
     low_tracker = f"'Daily Log'!C{low_row}"
 
     rows = [
-        (5, 1, "Meeting Daily Productivity", "=Rules!$B$12",
+        (5, 1, "Meeting Daily Productivity", f"={rules_b('weight_prod')}",
          f"={prod_score}",
          f"(No. of Days Productivity Achieved / Total Working Days) x 33  — Daily Log!C{counts_row}/C{working_row}"),
-        (7, 2, "Delivering Right Quality Everyday", "=Rules!$B$13",
+        (7, 2, "Delivering Right Quality Everyday", f"={rules_b('weight_qual')}",
          f"={qual_score}",
          f"(No. of Days Quality Achieved / Total Working Days) x 33  — Daily Log!F{counts_row}/F{working_row}"),
-        (9, 3, "Schedule Adherence - Rostered Attendance", "=Rules!$B$14",
+        (9, 3, "Schedule Adherence - Rostered Attendance", f"={rules_b('weight_sched')}",
          f"={sched_score}",
          f"(Present Days / Total Working Days) x 10  — Daily Log!I{counts_row}/I{working_row}"),
-        (11, 4, "Adherence to Reporting in TimeChamp, Project Tracker, and Keka", "=Rules!$B$15",
-         '=IF(I14<=Rules!$B$8,Rules!$B$10,IF(I14<=Rules!$B$9,Rules!$B$11,0))',
+        (11, 4, "Adherence to Reporting in TimeChamp, Project Tracker, and Keka",
+         f"={rules_b('weight_reporting')}",
+         f'=IF(I14<={rules_b("reporting_full_max")},{rules_b("reporting_full_score")},'
+         f'IF(I14<={rules_b("reporting_partial_max")},{rules_b("reporting_partial_score")},0))',
          "0-3 instances = 14%. 4-6 = 7%. More than 6 = 0%. Verbal warning = 1, email = 2, letter = 3."),
-        (13, 5, "Timeliness - Adherence to break and login schedule", "=Rules!$B$16",
+        (13, 5, "Timeliness - Adherence to break and login schedule", f"={rules_b('weight_timeliness')}",
          None,
          "Weight 10% always counts in total. Type earned in D13 (0–10) when ready — total earned then updates. Example: up to 3 non-compliances = 10%, 4–5 = 5%, more than 5 = 0%."),
     ]

@@ -52,8 +52,8 @@ ROSTER_TO_KRA = {
 }
 
 FORMULAS = {
-    "productivity_day": "YES if billable hours meet the daily target (Full day: 9h × tenure; Half day: 4.5h × tenure; tenure > 1 capped at 1), otherwise NO. Blank on Week Off, Holiday, and Leave when there are no hours.",
-    "quality_day": "YES if the day's QC score is 98 or above. NO if a score exists and is below 98. Blank when there is no score.",
+    "productivity_day": "YES if billable hours meet the daily target on a working day (Present, Half Day, Absent, WFH, Unrostered). Hours on Holiday, Leave, or Week Off are extra and stay blank — they are not YES/NO and do not count in the score.",
+    "quality_day": "YES if QC score is 98 or above on a working day. NO if a working-day score is below 98. Holiday, Leave, and Week Off stay blank even if a score exists (extra work).",
     "productivity_score": "(No. of YES days / Total working days) × 33",
     "quality_score": "(No. of days with QC score ≥ 98 / Total working days) × 33",
     "schedule_score": "(Present + Half Day + WFH / Total working days) × 10",
@@ -168,15 +168,16 @@ def roster_attendance(day_type, working_type, is_half_day) -> str:
 
 
 def productivity_flag(attendance: str, billable_hours, required_hours: float = PRODUCTIVITY_HOURS) -> str | None:
-    hours = _num(billable_hours)
-    has_hours = hours is not None and hours > 0
-    if attendance not in WORKING_ATTENDANCE and not has_hours:
+    if attendance not in WORKING_ATTENDANCE:
         return None
+    hours = _num(billable_hours)
     compare = hours if hours is not None else 0
     return "YES" if compare >= required_hours else "NO"
 
 
-def quality_flag(qc_score) -> str | None:
+def quality_flag(qc_score, attendance: str | None = None) -> str | None:
+    if attendance and attendance not in WORKING_ATTENDANCE:
+        return None
     score = _num(qc_score)
     if score is None:
         return None
@@ -414,7 +415,7 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
                 "target_hours": required_hours,
                 "productivity": productivity_flag(attendance, hours if bill else None, required_hours),
                 "qc_score": qc,
-                "quality": quality_flag(qc),
+                "quality": quality_flag(qc, attendance),
                 "tracker_count": tracker_count if bill or attendance in TRACKER_ATTENDANCE else None,
                 "note": note,
                 "low_tracker": is_low_tracker_day(
