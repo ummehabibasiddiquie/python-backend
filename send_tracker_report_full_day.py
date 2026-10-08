@@ -40,7 +40,7 @@ def fetch_data():
         report_date = today - timedelta(days=1)
 
         # TEST DATE
-        report_date = datetime.strptime("2026-10-02", "%Y-%m-%d").date()
+        report_date = datetime.strptime("2026-10-03", "%Y-%m-%d").date()
         
         print(f"Fetching data for report date: {report_date}")  
 
