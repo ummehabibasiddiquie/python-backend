@@ -1,6 +1,7 @@
 from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
+from utils.qc_code_enrich import backfill_error_lists
 from datetime import datetime
 
 qc_history_user_bp = Blueprint("qc_history_user", __name__)
@@ -42,7 +43,13 @@ def view_qc_history_user_based():
             p.project_name,
             task.task_name,
             qa.user_name AS qa_agent_name,
-            am.user_name AS assistant_manager_name,
+            (
+                SELECT am.user_name
+                FROM tfs_user am
+                WHERE u.asst_manager_id IS NOT NULL
+                  AND u.asst_manager_id LIKE CONCAT('%', am.user_id, '%')
+                LIMIT 1
+            ) AS assistant_manager_name,
             DATE(qr.date_of_file_submission) as work_date_only,
             ur_agent.role_name as agent_role
         FROM qc_records qr
@@ -53,7 +60,6 @@ def view_qc_history_user_based():
         LEFT JOIN project p ON p.project_id = twt.project_id
         LEFT JOIN task task ON task.task_id = twt.task_id
         LEFT JOIN tfs_user qa ON qa.user_id = qr.qa_user_id
-        LEFT JOIN tfs_user am ON u.asst_manager_id LIKE CONCAT('%', am.user_id, '%')
         """
 
         params = []
@@ -99,6 +105,16 @@ def view_qc_history_user_based():
         if not qc_records:
             return api_response(200, "No QC records found", {"count": 0, "records": []})
 
+        unique_records = {}
+        for record in qc_records:
+            rid = record.get("id")
+            try:
+                rid = int(rid)
+            except (TypeError, ValueError):
+                pass
+            if rid not in unique_records:
+                unique_records[rid] = record
+        qc_records = list(unique_records.values())
         qc_record_ids = [r["id"] for r in qc_records]
 
         # 5. Reworks
@@ -124,19 +140,61 @@ def view_qc_history_user_based():
         corrections = cursor.fetchall()
 
         # 7. Mapping
+        def history_key(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return value
+
         rework_map = {}
         for r in reworks:
-            rework_map.setdefault(r["qc_record_id"], []).append(r)
+            rework_map.setdefault(history_key(r.get("qc_record_id")), []).append(r)
 
         correction_map = {}
         for c in corrections:
-            correction_map.setdefault(c["qc_record_id"], []).append(c)
+            correction_map.setdefault(history_key(c.get("qc_record_id")), []).append(c)
 
-        # 8. Merge
+        # 8. Fill QC Code onto legacy error lists from the saved sample file
+        sheet_cache = {}
+        backfill_items = []
+        for record in qc_records:
+            parent_file = record.get("qc_file_path")
+            backfill_items.append({
+                "table": "qc_records",
+                "id_field": "id",
+                "id_value": record["id"],
+                "file_url": parent_file,
+                "error_list": record.get("error_list"),
+                "assign": lambda enriched, rec=record: rec.__setitem__("error_list", enriched),
+            })
+            for rework in rework_map.get(history_key(record.get("id")), []):
+                backfill_items.append({
+                    "table": "qc_rework_history",
+                    "id_field": "qc_rework_id",
+                    "id_value": rework.get("qc_rework_id"),
+                    "error_field": "rework_error_list",
+                    "file_url": rework.get("qc_file_path") or parent_file,
+                    "error_list": rework.get("rework_error_list"),
+                    "assign": lambda enriched, row=rework: row.__setitem__("rework_error_list", enriched),
+                })
+            for correction in correction_map.get(history_key(record.get("id")), []):
+                backfill_items.append({
+                    "table": "qc_correction_history",
+                    "id_field": "qc_correction_id",
+                    "id_value": correction.get("qc_correction_id"),
+                    "error_field": "correction_error_list",
+                    "file_url": correction.get("qc_file_path") or parent_file,
+                    "error_list": correction.get("correction_error_list"),
+                    "assign": lambda enriched, row=correction: row.__setitem__("correction_error_list", enriched),
+                })
+        backfill_error_lists(cursor, conn, backfill_items, sheet_cache=sheet_cache)
+
+        # 9. Merge
         final_data = []
         for record in qc_records:
-            record["qc_rework"] = rework_map.get(record["id"], [])
-            record["qc_correction"] = correction_map.get(record["id"], [])
+            rid = history_key(record.get("id"))
+            record["qc_rework"] = rework_map.get(rid, [])
+            record["qc_correction"] = correction_map.get(rid, [])
             final_data.append(record)
 
         return api_response(

@@ -232,11 +232,55 @@ def _error_label(err):
     )
 
 
+def _cell_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        if value.get("text") is not None:
+            return str(value.get("text")).strip()
+        if value.get("hyperlink"):
+            return str(value.get("hyperlink")).strip()
+    return str(value).strip()
+
+
+def _normalize_header(name):
+    return " ".join(_cell_text(name).replace("_", " ").replace("-", " ").split()).lower()
+
+
+def _is_qc_code_header(name):
+    n = _normalize_header(name)
+    if not n:
+        return False
+    if n in ("qc code", "qccode"):
+        return True
+    return "qc" in n and "code" in n
+
+
+def _normalize_qc_code(value):
+    return " ".join(_cell_text(value).split()).lower()
+
+
+def _error_qc_code(err):
+    if not isinstance(err, dict):
+        return ""
+    return _normalize_qc_code(err.get("qc_code") or err.get("qcCode") or err.get("QC_Code"))
+
+
+def _find_qc_code_column(ws):
+    last_col = ws.max_column or 1
+    for col in range(1, last_col + 1):
+        if _is_qc_code_header(ws.cell(1, col).value):
+            return col
+    return None
+
+
 def _annotate_openpyxl_sheet(ws, error_list):
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.utils import get_column_letter
 
-    errors = _parse_error_list(error_list)
+    from utils.qc_code_enrich import attach_qc_codes_to_error_list
+
+    errors = attach_qc_codes_to_error_list(ws, error_list)
     last_col = ws.max_column or 1
     error_col = last_col
     header = ws.cell(1, last_col).value
@@ -249,6 +293,22 @@ def _annotate_openpyxl_sheet(ws, error_list):
     header_cell.alignment = Alignment(wrap_text=True, vertical="center")
     ws.column_dimensions[get_column_letter(error_col)].width = 48
 
+    last_data = 1
+    for r in range(2, (ws.max_row or 1) + 1):
+        val = str(ws.cell(r, error_col).value or "").strip().lower()
+        if val == "error list":
+            break
+        last_data = r
+
+    qc_col = _find_qc_code_column(ws)
+    code_to_rows = {}
+    if qc_col:
+        for r in range(2, last_data + 1):
+            code = _normalize_qc_code(ws.cell(r, qc_col).value)
+            if not code:
+                continue
+            code_to_rows.setdefault(code, []).append(r)
+
     by_row = {}
     unique = {}
     for err in errors:
@@ -256,22 +316,22 @@ def _annotate_openpyxl_sheet(ws, error_list):
         if not label:
             continue
         unique[label] = unique.get(label, 0) + 1
-        try:
-            row_num = int(err.get("row")) if isinstance(err, dict) else 0
-        except (TypeError, ValueError):
-            continue
-        if row_num < 1:
-            continue
-        by_row.setdefault(row_num, [])
-        if label not in by_row[row_num]:
-            by_row[row_num].append(label)
 
-    last_data = 1
-    for r in range(2, (ws.max_row or 1) + 1):
-        val = str(ws.cell(r, error_col).value or "").strip().lower()
-        if val == "error list":
-            break
-        last_data = r
+        excel_rows = code_to_rows.get(_error_qc_code(err), []) if isinstance(err, dict) else []
+        if not excel_rows:
+            try:
+                row_num = int(err.get("row")) if isinstance(err, dict) else 0
+            except (TypeError, ValueError):
+                row_num = 0
+            if row_num >= 2:
+                excel_rows = [row_num]
+
+        for excel_row in excel_rows:
+            if excel_row < 2:
+                continue
+            by_row.setdefault(excel_row, [])
+            if label not in by_row[excel_row]:
+                by_row[excel_row].append(label)
 
     pink = PatternFill("solid", fgColor="FFC7CE")
     light = PatternFill("solid", fgColor="FFEBEE")
@@ -343,7 +403,22 @@ def download_annotated_qc_file(qc_id):
                 print("annotated download source load failed:", load_err)
                 ws["A1"] = "Agent file could not be loaded. Error list is below."
 
-        _annotate_openpyxl_sheet(ws, record.get("error_list"))
+        from utils.qc_code_enrich import attach_qc_codes_to_error_list, errors_need_qc_code, parse_error_list
+        original_errors = parse_error_list(record.get("error_list"))
+        enriched_errors = attach_qc_codes_to_error_list(ws, original_errors)
+        if errors_need_qc_code(original_errors) and any(
+            isinstance(err, dict) and err.get("qc_code") for err in enriched_errors
+        ):
+            try:
+                cursor.execute(
+                    "UPDATE qc_records SET error_list = %s WHERE id = %s",
+                    (json.dumps(enriched_errors), qc_id),
+                )
+                conn.commit()
+            except Exception as persist_err:
+                print("qc code persist failed:", persist_err)
+
+        _annotate_openpyxl_sheet(ws, enriched_errors)
         out = BytesIO()
         wb.save(out)
         out.seek(0)
