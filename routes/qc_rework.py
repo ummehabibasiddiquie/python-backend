@@ -239,7 +239,9 @@ def view_pending_qc_dashboard():
                 t.task_id,
                 t.qc_percentage AS sampling_percentage,
                 qr.qc_score,
-                qr.error_list
+                qr.error_list,
+                qr.qc_file_path,
+                COALESCE(twt.date_time, qr.date_of_file_submission) AS work_date
             FROM qc_records qr
             LEFT JOIN task_work_tracker twt ON qr.tracker_id = twt.tracker_id
             LEFT JOIN tfs_user u ON u.user_id = twt.user_id
@@ -363,6 +365,8 @@ def view_pending_qc_dashboard():
                 "task_name": qc["task_name"],
                 "task_id": qc["task_id"],
                 "tracker_id": qc["tracker_id"],
+                "work_date": qc.get("work_date"),
+                "qc_file_path": qc.get("qc_file_path"),
                 "sampling_percentage": qc["sampling_percentage"],
 
                 "latest_rework": {

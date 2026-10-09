@@ -42,7 +42,13 @@ def view_qc_history_user_based():
             p.project_name,
             task.task_name,
             qa.user_name AS qa_agent_name,
-            am.user_name AS assistant_manager_name,
+            (
+                SELECT am.user_name
+                FROM tfs_user am
+                WHERE u.asst_manager_id IS NOT NULL
+                  AND u.asst_manager_id LIKE CONCAT('%', am.user_id, '%')
+                LIMIT 1
+            ) AS assistant_manager_name,
             DATE(qr.date_of_file_submission) as work_date_only,
             ur_agent.role_name as agent_role
         FROM qc_records qr
@@ -53,7 +59,6 @@ def view_qc_history_user_based():
         LEFT JOIN project p ON p.project_id = twt.project_id
         LEFT JOIN task task ON task.task_id = twt.task_id
         LEFT JOIN tfs_user qa ON qa.user_id = qr.qa_user_id
-        LEFT JOIN tfs_user am ON u.asst_manager_id LIKE CONCAT('%', am.user_id, '%')
         """
 
         params = []
@@ -99,6 +104,16 @@ def view_qc_history_user_based():
         if not qc_records:
             return api_response(200, "No QC records found", {"count": 0, "records": []})
 
+        unique_records = {}
+        for record in qc_records:
+            rid = record.get("id")
+            try:
+                rid = int(rid)
+            except (TypeError, ValueError):
+                pass
+            if rid not in unique_records:
+                unique_records[rid] = record
+        qc_records = list(unique_records.values())
         qc_record_ids = [r["id"] for r in qc_records]
 
         # 5. Reworks
@@ -124,19 +139,26 @@ def view_qc_history_user_based():
         corrections = cursor.fetchall()
 
         # 7. Mapping
+        def history_key(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return value
+
         rework_map = {}
         for r in reworks:
-            rework_map.setdefault(r["qc_record_id"], []).append(r)
+            rework_map.setdefault(history_key(r.get("qc_record_id")), []).append(r)
 
         correction_map = {}
         for c in corrections:
-            correction_map.setdefault(c["qc_record_id"], []).append(c)
+            correction_map.setdefault(history_key(c.get("qc_record_id")), []).append(c)
 
-        # 8. Merge
+        # 8. Merge (QC Code is filled on View Error in the UI from the sample file)
         final_data = []
         for record in qc_records:
-            record["qc_rework"] = rework_map.get(record["id"], [])
-            record["qc_correction"] = correction_map.get(record["id"], [])
+            rid = history_key(record.get("id"))
+            record["qc_rework"] = rework_map.get(rid, [])
+            record["qc_correction"] = correction_map.get(rid, [])
             final_data.append(record)
 
         return api_response(
