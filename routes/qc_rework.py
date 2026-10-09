@@ -2,7 +2,6 @@ from flask import Blueprint, request
 from utils.response import api_response
 from config import get_db_connection
 from utils.cloudinary_utils import upload_to_cloudinary, FOLDER_QC_REWORK
-from utils.qc_code_enrich import backfill_error_lists
 from datetime import datetime
 
 qc_rework_bp = Blueprint("qc_rework", __name__)
@@ -241,7 +240,8 @@ def view_pending_qc_dashboard():
                 t.qc_percentage AS sampling_percentage,
                 qr.qc_score,
                 qr.error_list,
-                qr.qc_file_path
+                qr.qc_file_path,
+                COALESCE(twt.date_time, qr.date_of_file_submission) AS work_date
             FROM qc_records qr
             LEFT JOIN task_work_tracker twt ON qr.tracker_id = twt.tracker_id
             LEFT JOIN tfs_user u ON u.user_id = twt.user_id
@@ -251,21 +251,6 @@ def view_pending_qc_dashboard():
             ORDER BY qr.id DESC
         """)
         qc_records = cursor.fetchall()
-        backfill_error_lists(
-            cursor,
-            conn,
-            [
-                {
-                    "table": "qc_records",
-                    "id_field": "id",
-                    "id_value": qc["qc_record_id"],
-                    "file_url": qc.get("qc_file_path"),
-                    "error_list": qc.get("error_list"),
-                    "assign": lambda enriched, rec=qc: rec.__setitem__("error_list", enriched),
-                }
-                for qc in qc_records
-            ],
-        )
 
         if not qc_records:
             return api_response(200, "No QC records found", {
@@ -380,6 +365,8 @@ def view_pending_qc_dashboard():
                 "task_name": qc["task_name"],
                 "task_id": qc["task_id"],
                 "tracker_id": qc["tracker_id"],
+                "work_date": qc.get("work_date"),
+                "qc_file_path": qc.get("qc_file_path"),
                 "sampling_percentage": qc["sampling_percentage"],
 
                 "latest_rework": {

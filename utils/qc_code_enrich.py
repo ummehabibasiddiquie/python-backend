@@ -114,10 +114,15 @@ def attach_qc_codes_to_error_list(ws, error_list):
             row_num = int(err.get("row"))
         except (TypeError, ValueError):
             continue
-        for excel_row in (row_num + 1, row_num):
+        mapped = None
+        for excel_row in (row_num, row_num + 1, row_num - 1):
             if excel_row in display_by_row:
-                err["qc_code"] = display_by_row[excel_row]
+                mapped = display_by_row[excel_row]
                 break
+        if not mapped and 1 <= row_num <= len(data_rows):
+            mapped = display_by_row.get(data_rows[row_num - 1])
+        if mapped:
+            err["qc_code"] = mapped
     return errors
 
 

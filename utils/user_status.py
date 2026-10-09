@@ -3,8 +3,9 @@ Deactivated user visibility and write rules.
 
 Convention:
   - is_active = 0 + deactivated_at set = left the org
-  - DATE(deactivated_at) = last day their data stays visible and they may still work
-  - From the next calendar day: no login, no tracker add/edit for that user
+  - DATE(deactivated_at) = last day their data stays visible
+  - Login stops as soon as the account is inactive
+  - Tracker add/edit is allowed through DATE(deactivated_at), then stops
 """
 
 from __future__ import annotations
@@ -30,21 +31,12 @@ def today_ist() -> date:
     return now_ist().date()
 
 
-def can_user_login(is_active, deactivated_at, today: date | None = None) -> bool:
-    """
-    Active users always can.
-    Deactivated users can log in only through DATE(deactivated_at) inclusive.
-    """
+def can_user_login(is_active, deactivated_at=None, today: date | None = None) -> bool:
+    """Only an active account can log in. Deactivation blocks login immediately."""
     try:
-        active = int(is_active or 0) == 1
+        return int(is_active or 0) == 1
     except (TypeError, ValueError):
-        active = False
-    if active:
-        return True
-    left = leave_date(deactivated_at)
-    if not left:
         return False
-    return left >= (today or today_ist())
 
 
 def can_user_write_tracker(is_active, deactivated_at, work_date=None, today: date | None = None) -> bool:

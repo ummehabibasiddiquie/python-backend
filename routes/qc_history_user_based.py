@@ -1,7 +1,6 @@
 from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
-from utils.qc_code_enrich import backfill_error_lists
 from datetime import datetime
 
 qc_history_user_bp = Blueprint("qc_history_user", __name__)
@@ -154,42 +153,7 @@ def view_qc_history_user_based():
         for c in corrections:
             correction_map.setdefault(history_key(c.get("qc_record_id")), []).append(c)
 
-        # 8. Fill QC Code onto legacy error lists from the saved sample file
-        sheet_cache = {}
-        backfill_items = []
-        for record in qc_records:
-            parent_file = record.get("qc_file_path")
-            backfill_items.append({
-                "table": "qc_records",
-                "id_field": "id",
-                "id_value": record["id"],
-                "file_url": parent_file,
-                "error_list": record.get("error_list"),
-                "assign": lambda enriched, rec=record: rec.__setitem__("error_list", enriched),
-            })
-            for rework in rework_map.get(history_key(record.get("id")), []):
-                backfill_items.append({
-                    "table": "qc_rework_history",
-                    "id_field": "qc_rework_id",
-                    "id_value": rework.get("qc_rework_id"),
-                    "error_field": "rework_error_list",
-                    "file_url": rework.get("qc_file_path") or parent_file,
-                    "error_list": rework.get("rework_error_list"),
-                    "assign": lambda enriched, row=rework: row.__setitem__("rework_error_list", enriched),
-                })
-            for correction in correction_map.get(history_key(record.get("id")), []):
-                backfill_items.append({
-                    "table": "qc_correction_history",
-                    "id_field": "qc_correction_id",
-                    "id_value": correction.get("qc_correction_id"),
-                    "error_field": "correction_error_list",
-                    "file_url": correction.get("qc_file_path") or parent_file,
-                    "error_list": correction.get("correction_error_list"),
-                    "assign": lambda enriched, row=correction: row.__setitem__("correction_error_list", enriched),
-                })
-        backfill_error_lists(cursor, conn, backfill_items, sheet_cache=sheet_cache)
-
-        # 9. Merge
+        # 8. Merge (QC Code is filled on View Error in the UI from the sample file)
         final_data = []
         for record in qc_records:
             rid = history_key(record.get("id"))
