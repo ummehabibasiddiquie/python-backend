@@ -1,7 +1,10 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, send_file
 from config import get_db_connection
 from datetime import datetime
 from utils.cloudinary_utils import upload_to_cloudinary, delete_from_cloudinary
+from io import BytesIO
+import json
+import urllib.request
 
 qc_audit_bp = Blueprint("qc_audit", __name__)
 
@@ -85,45 +88,44 @@ def test_qc_audit():
         "timestamp": str(datetime.now())
     })
 
+def _valid_iso_date(value):
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        datetime.strptime(text[:10], "%Y-%m-%d")
+        return text[:10]
+    except ValueError:
+        return None
+
+
 @qc_audit_bp.route("/report", methods=["POST"])
 def qc_audit_report():
 
-    data = request.get_json()
-    start_date = data.get("start_date")  # Format: "2024-04-07"
-    end_date = data.get("end_date")      # Format: "2024-04-10"
-    
-    # If no date filters provided, default to current month
-    if not start_date or not end_date:
-        from datetime import datetime
-        current_month = datetime.now().strftime("%Y-%m")
-        start_date = f"{current_month}-01"
-        # Get last day of current month
-        current_year = datetime.now().year
-        current_month_num = datetime.now().month
-        if current_month_num in [1,3,5,7,8,10,12]:
-            last_day = 31
-        elif current_month_num in [4,6,9,11]:
-            last_day = 30
-        elif current_month_num == 2:
-            # Check for leap year
-            if (current_year % 4 == 0 and current_year % 100 != 0) or (current_year % 400 == 0):
-                last_day = 29
-            else:
-                last_day = 28
-        else:
-            last_day = 30
-        end_date = f"{current_month}-{last_day:02d}"
+    data = request.get_json() or {}
+    start_date = _valid_iso_date(data.get("start_date"))
+    end_date = _valid_iso_date(data.get("end_date"))
+    qc_start_date = _valid_iso_date(data.get("qc_start_date"))
+    qc_end_date = _valid_iso_date(data.get("qc_end_date"))
+
+    # If no date filters provided, default to current month on worked date.
+    if not any((start_date, end_date, qc_start_date, qc_end_date)):
+        from calendar import monthrange
+        today = datetime.now()
+        start_date = today.replace(day=1).strftime("%Y-%m-%d")
+        last_day = monthrange(today.year, today.month)[1]
+        end_date = today.replace(day=last_day).strftime("%Y-%m-%d")
     
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     try:
 
-        # Base query with date filter
         query = """
         SELECT
         qa.created_date AS audit_datetime,
         qr.date_of_file_submission AS worked_date,
+        qr.created_at AS qc_date,
         qr.updated_at AS evaluation_date,
         tu.user_name AS agent_name,
         qc_user.user_name AS qc_agent_name,
@@ -154,19 +156,26 @@ def qc_audit_report():
         ON qr.task_id = t.task_id
         """
 
-        # Add date filter if start_date and end_date are provided
-        date_filter = ""
-        if start_date and end_date:
-            date_filter = f"""
-            WHERE DATE(qr.date_of_file_submission) >= DATE('{start_date}')
-            AND DATE(qr.date_of_file_submission) <= DATE('{end_date}')
-            """
+        where = []
+        params = []
+        if start_date:
+            where.append("DATE(qr.date_of_file_submission) >= %s")
+            params.append(start_date)
+        if end_date:
+            where.append("DATE(qr.date_of_file_submission) <= %s")
+            params.append(end_date)
+        if qc_start_date:
+            where.append("DATE(qr.created_at) >= %s")
+            params.append(qc_start_date)
+        if qc_end_date:
+            where.append("DATE(qr.created_at) <= %s")
+            params.append(qc_end_date)
+        if where:
+            query += " WHERE " + " AND ".join(where)
 
-        query += date_filter + """
-        ORDER BY qa.created_date DESC
-        """
+        query += " ORDER BY qa.created_date DESC"
 
-        cursor.execute(query)
+        cursor.execute(query, params)
         rows = cursor.fetchall()
 
         return jsonify({
@@ -184,6 +193,168 @@ def qc_audit_report():
             "message": str(e)
         }), 500
 
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _parse_error_list(raw):
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="ignore")
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _error_label(err):
+    if err is None:
+        return ""
+    if not isinstance(err, dict):
+        return str(err)
+    return (
+        err.get("error")
+        or (
+            f"{err.get('category')} - {err.get('subcategory')}"
+            if err.get("category") and err.get("subcategory")
+            else ""
+        )
+        or err.get("name")
+        or err.get("message")
+        or json.dumps(err)
+    )
+
+
+def _annotate_openpyxl_sheet(ws, error_list):
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    errors = _parse_error_list(error_list)
+    last_col = ws.max_column or 1
+    error_col = last_col
+    header = ws.cell(1, last_col).value
+    if str(header or "").strip().lower() != "errors":
+        error_col = last_col + 1
+
+    header_cell = ws.cell(1, error_col, "Errors")
+    header_cell.font = Font(bold=True, color="FFFFFF")
+    header_cell.fill = PatternFill("solid", fgColor="B91C1C")
+    header_cell.alignment = Alignment(wrap_text=True, vertical="center")
+    ws.column_dimensions[get_column_letter(error_col)].width = 48
+
+    by_row = {}
+    unique = {}
+    for err in errors:
+        label = (_error_label(err) or "").strip()
+        if not label:
+            continue
+        unique[label] = unique.get(label, 0) + 1
+        try:
+            row_num = int(err.get("row")) if isinstance(err, dict) else 0
+        except (TypeError, ValueError):
+            continue
+        if row_num < 1:
+            continue
+        by_row.setdefault(row_num, [])
+        if label not in by_row[row_num]:
+            by_row[row_num].append(label)
+
+    last_data = 1
+    for r in range(2, (ws.max_row or 1) + 1):
+        val = str(ws.cell(r, error_col).value or "").strip().lower()
+        if val == "error list":
+            break
+        last_data = r
+
+    pink = PatternFill("solid", fgColor="FFC7CE")
+    light = PatternFill("solid", fgColor="FFEBEE")
+    red_font = Font(bold=True, color="9C0006")
+    for excel_row, labels in by_row.items():
+        cell = ws.cell(excel_row, error_col, "; ".join(labels))
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        cell.font = red_font
+        cell.fill = pink
+        for c in range(1, error_col):
+            data_cell = ws.cell(excel_row, c)
+            if data_cell.fill is None or data_cell.fill.fill_type is None:
+                data_cell.fill = light
+        if excel_row > last_data:
+            last_data = excel_row
+
+    next_row = last_data + 2
+    title = ws.cell(next_row, error_col, "Error List")
+    title.font = Font(bold=True, color="FFFFFF")
+    title.fill = PatternFill("solid", fgColor="B91C1C")
+    next_row += 1
+    if not unique:
+        ws.cell(next_row, error_col, "No errors")
+        return
+    yellow = PatternFill("solid", fgColor="FFF2CC")
+    for name, count in unique.items():
+        cell = ws.cell(next_row, error_col, f"{name} ({count})")
+        cell.font = Font(color="9C0006")
+        cell.fill = yellow
+        next_row += 1
+
+
+@qc_audit_bp.route("/download_annotated/<int:qc_id>", methods=["GET"])
+def download_annotated_qc_file(qc_id):
+    """Build an Excel with Errors column + highlighted rows for a QC record."""
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, qc_file_path, error_list FROM qc_records WHERE id = %s LIMIT 1",
+            (qc_id,),
+        )
+        record = cursor.fetchone()
+        if not record:
+            return jsonify({"status": 404, "message": "QC record not found"}), 404
+
+        from openpyxl import Workbook, load_workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "QC Sample"
+        file_url = (record.get("qc_file_path") or "").strip()
+        if len(file_url) > 1 and "https://" in file_url[1:]:
+            file_url = file_url[file_url.find("https://"):]
+        elif len(file_url) > 1 and "http://" in file_url[1:]:
+            file_url = file_url[file_url.find("http://"):]
+
+        if file_url.startswith("http"):
+            try:
+                req = urllib.request.Request(
+                    file_url,
+                    headers={"User-Agent": "HRMS-QC-Annotate/1.0"},
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    payload = BytesIO(resp.read())
+                wb = load_workbook(payload)
+                ws = wb.active
+            except Exception as load_err:
+                print("annotated download source load failed:", load_err)
+                ws["A1"] = "Agent file could not be loaded. Error list is below."
+
+        _annotate_openpyxl_sheet(ws, record.get("error_list"))
+        out = BytesIO()
+        wb.save(out)
+        out.seek(0)
+        return send_file(
+            out,
+            as_attachment=True,
+            download_name=f"QC_Errors_Record_{qc_id}.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    except Exception as e:
+        return jsonify({"status": 500, "message": str(e)}), 500
     finally:
         cursor.close()
         conn.close()

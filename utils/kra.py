@@ -22,6 +22,7 @@ KRA_GO_LIVE_MONTH = "SEP2026"
 PRODUCTIVITY_HOURS = 9
 QUALITY_MIN = 98
 TRACKER_MIN = 7
+TRACKER_MIN_HALF_DAY = 4
 
 WEIGHT_PRODUCTIVITY = 33
 WEIGHT_QUALITY = 33
@@ -36,31 +37,97 @@ REPORTING_PARTIAL_MAX = 6
 REPORTING_FULL_SCORE = 14
 REPORTING_PARTIAL_SCORE = 7
 
+LEAVE_ROSTER = "LEAVE (ROSTER)"
+LEAVE_UNROSTERED = "LEAVE (UNROSTERED)"
+
+# Productivity and Quality: both leave types are excluded.
 WORKING_ATTENDANCE = ("PRESENT", "HALF DAY", "ABSENT", "WFH", "UNROSTERED")
+# Present / schedule column: unrostered leave still counts; roster leave does not.
+SCHEDULE_WORKING_ATTENDANCE = WORKING_ATTENDANCE + (LEAVE_UNROSTERED,)
 PRESENT_ATTENDANCE = ("PRESENT", "HALF DAY", "WFH")
 TRACKER_ATTENDANCE = ("PRESENT", "HALF DAY", "WFH", "UNROSTERED")
-BLANK_ATTENDANCE = ("", "—", "WEEK OFF", "HOLIDAY", "LEAVE")
+NON_WORKING_CALENDAR = ("", "—", "WEEK OFF", "HOLIDAY")
+BLANK_ATTENDANCE = NON_WORKING_CALENDAR + (LEAVE_ROSTER, LEAVE_UNROSTERED, "LEAVE")
 
 ROSTER_TO_KRA = {
     "Week Off": "WEEK OFF",
     "Holiday": "HOLIDAY",
-    "Leave": "LEAVE",
-    "Half Day Leave": "LEAVE",
+    "Leave": LEAVE_ROSTER,
+    "Half Day Leave": "HALF DAY",
     "Half Day": "HALF DAY",
     "Working": "PRESENT",
 }
 
 FORMULAS = {
-    "productivity_day": 'YES if billable hours are 9 or more, otherwise NO. Blank on Week Off, Holiday, and Leave when there are no hours.',
-    "quality_day": "YES if the day's QC score is 98 or above. NO if a score exists and is below 98. Blank when there is no score.",
-    "productivity_score": "(No. of YES days / Total working days) × 33",
-    "quality_score": "(No. of days with QC score ≥ 98 / Total working days) × 33",
-    "schedule_score": "(Present + Half Day + WFH / Total working days) × 10",
-    "working_days": "Days marked Present, Half Day, Absent, WFH, or Unrostered. Leave, Week Off, and Holiday are not working days.",
+    "productivity_day": "YES if billable hours meet the daily target on a working day (Present, Half Day, Absent, WFH, Unrostered). Hours on Holiday, Leave (Roster), Leave (Unrostered), or Week Off are extra and stay blank.",
+    "quality_day": "YES if QC score is 98 or above on a working day. NO if a working-day score is below 98. Holiday, both leave types, and Week Off stay blank even if a score exists (extra work).",
+    "productivity_score": "(No. of YES days / Total working days) × 33. Working days exclude both Leave (Roster) and Leave (Unrostered).",
+    "quality_score": "(No. of days with QC score ≥ 98 / Total working days) × 33. Working days exclude both leave types.",
+    "schedule_score": "(Present + Half Day + WFH / Total working days) × 10. This working-days count excludes Leave (Roster) only — Leave (Unrostered) still counts.",
+    "working_days": "Productivity/Quality working days: Present, Half Day, Absent, WFH, Unrostered. Both leave types are excluded. Schedule working days also include Leave (Unrostered).",
     "present_days": "Present, Half Day, and WFH. This is rostered attendance.",
-    "reporting": "Count Present, Half Day, WFH, and Unrostered days with fewer than 7 trackers. Add warning instances (verbal = 1, email = 2, letter = 3). 0–3 instances = 14%, 4–6 = 7%, more than 6 = 0%.",
+    "reporting": "Count Present, WFH, and Unrostered days with fewer than 7 trackers, and Half Day with fewer than 4 trackers. Add warning instances (verbal = 1, email = 2, letter = 3). 0–3 instances = 14%, 4–6 = 7%, more than 6 = 0%.",
     "timeliness": "Not filled by HRMS. Weight 10% always counts in total weightage. Earned stays blank until typed in the Excel KRA Score sheet (0–10).",
 }
+
+
+def parse_tenure(value) -> float | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        t = float(str(value).strip())
+        if t <= 0:
+            return 1.0
+        if t > 1.0:
+            return 1.0
+        return t
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_effective_tenure(raw_tenure, roster_rows=None, goal_row=None) -> tuple[float, float, float]:
+    """
+    Returns (effective_tenure, full_day_hours, half_day_hours).
+    1. Checks raw_tenure from tfs_user (e.g. '0.75', '.75', '0.5').
+    2. Fallback: Checks working_hours on full working days from roster_day.
+    3. Fallback: Checks monthly_target / working_days from user_monthly_tracker.
+    4. Default: tenure = 1.0 (9.0h full day, 4.5h half day).
+    Tenure > 1 is capped at 1.0.
+    """
+    eff = parse_tenure(raw_tenure)
+    if eff is not None:
+        full = round(9.0 * eff, 3)
+        half = round(full / 2.0, 3)
+        return eff, full, half
+
+    # Fallback to roster_day working_hours for full working days
+    if roster_rows:
+        for row in (roster_rows.values() if isinstance(roster_rows, dict) else roster_rows):
+            if row.get("day_type") == "Working" and (row.get("working_type") or "Full").strip() == "Full":
+                wh = _num(row.get("working_hours"))
+                if wh is not None and 0 < wh <= 9.0:
+                    eff = round(wh / 9.0, 2)
+                    full = round(wh, 3)
+                    half = round(full / 2.0, 3)
+                    return eff, full, half
+
+    # Fallback to user_monthly_tracker (monthly_target / working_days)
+    if goal_row:
+        mt = _num(goal_row.get("monthly_target"))
+        wd = _num(goal_row.get("working_days"))
+        if mt and wd and mt > 0 and wd > 0:
+            daily_full = round(mt / wd, 2)
+            if 0 < daily_full <= 9.0:
+                eff = round(daily_full / 9.0, 2)
+                full = round(daily_full, 3)
+                half = round(full / 2.0, 3)
+                return eff, full, half
+
+    return 1.0, 9.0, 4.5
+
+
+def daily_productivity_targets(user_tenure) -> tuple[float, float, float]:
+    return resolve_effective_tenure(user_tenure)
 
 
 def ensure_kra_note_table(cursor) -> None:
@@ -102,21 +169,36 @@ def _date_key(value) -> date | None:
         return None
 
 
-def roster_attendance(day_type, working_type, is_half_day) -> str:
+def normalize_attendance(status: str) -> str:
+    value = (status or "").strip()
+    if not value:
+        return ""
+    upper = value.upper()
+    if upper == "LEAVE":
+        return LEAVE_ROSTER
+    return upper
+
+
+def roster_attendance(day_type, working_type, is_half_day, is_rostered=1) -> str:
     label = roster_day_status_label(day_type, working_type, is_half_day)
-    return ROSTER_TO_KRA.get(label, "")
+    status = normalize_attendance(ROSTER_TO_KRA.get(label, ""))
+    # Leave already on the roster is always Leave (Roster). Unrostered is only when marked 0.
+    if status == LEAVE_ROSTER and int(is_rostered if is_rostered is not None else 1) == 0:
+        return LEAVE_UNROSTERED
+    return status
 
 
-def productivity_flag(attendance: str, billable_hours) -> str | None:
-    hours = _num(billable_hours)
-    has_hours = hours is not None and hours > 0
-    if attendance not in WORKING_ATTENDANCE and not has_hours:
+def productivity_flag(attendance: str, billable_hours, required_hours: float = PRODUCTIVITY_HOURS) -> str | None:
+    if normalize_attendance(attendance) not in WORKING_ATTENDANCE:
         return None
+    hours = _num(billable_hours)
     compare = hours if hours is not None else 0
-    return "YES" if compare >= PRODUCTIVITY_HOURS else "NO"
+    return "YES" if compare >= required_hours else "NO"
 
 
-def quality_flag(qc_score) -> str | None:
+def quality_flag(qc_score, attendance: str | None = None) -> str | None:
+    if attendance and normalize_attendance(attendance) not in WORKING_ATTENDANCE:
+        return None
     score = _num(qc_score)
     if score is None:
         return None
@@ -124,18 +206,24 @@ def quality_flag(qc_score) -> str | None:
 
 
 def is_working_day(attendance: str) -> bool:
-    return attendance in WORKING_ATTENDANCE
+    return normalize_attendance(attendance) in WORKING_ATTENDANCE
+
+
+def is_schedule_working_day(attendance: str) -> bool:
+    return normalize_attendance(attendance) in SCHEDULE_WORKING_ATTENDANCE
 
 
 def is_present_day(attendance: str) -> bool:
-    return attendance in PRESENT_ATTENDANCE
+    return normalize_attendance(attendance) in PRESENT_ATTENDANCE
 
 
 def is_low_tracker_day(attendance: str, tracker_count) -> bool:
+    attendance = normalize_attendance(attendance)
     if attendance not in TRACKER_ATTENDANCE:
         return False
     count = int(_num(tracker_count) or 0)
-    return count < TRACKER_MIN
+    limit = TRACKER_MIN_HALF_DAY if attendance == "HALF DAY" else TRACKER_MIN
+    return count < limit
 
 
 def reporting_score(low_tracker_days: int, verbal: int = 0, email: int = 0, letter: int = 0) -> dict:
@@ -200,7 +288,7 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
 
     cursor.execute(
         """
-        SELECT u.user_id, u.user_name, t.team_name
+        SELECT u.user_id, u.user_name, u.user_tenure, t.team_name
         FROM tfs_user u
         LEFT JOIN team t ON t.team_id = u.team_id
         WHERE u.user_id = %s
@@ -209,6 +297,8 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
         (int(user_id),),
     )
     user = cursor.fetchone() or {}
+    raw_tenure = user.get("user_tenure")
+    effective_tenure, full_day_hours, half_day_hours = daily_productivity_targets(raw_tenure)
 
     cursor.execute(
         """
@@ -232,7 +322,9 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
             DATE(rd.roster_date) AS work_date,
             rd.day_type,
             rd.working_type,
-            COALESCE(rl.is_half_day, 0) AS is_half_day
+            rd.working_hours,
+            COALESCE(rl.is_half_day, 0) AS is_half_day,
+            COALESCE(rl.is_rostered, 1) AS is_rostered
         FROM roster_month rm
         JOIN roster_day rd
           ON rd.roster_month_id = rm.roster_month_id
@@ -297,7 +389,7 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
 
     cursor.execute(
         """
-        SELECT working_days
+        SELECT working_days, monthly_target
         FROM user_monthly_tracker
         WHERE user_id = %s
           AND is_active = 1
@@ -307,6 +399,10 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
         (int(user_id), month_year),
     )
     goal_row = cursor.fetchone() or {}
+
+    effective_tenure, full_day_hours, half_day_hours = resolve_effective_tenure(
+        raw_tenure, roster, goal_row
+    )
 
     days = []
     current = start
@@ -319,8 +415,12 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
                 rost.get("day_type"),
                 rost.get("working_type"),
                 rost.get("is_half_day"),
+                rost.get("is_rostered", 1),
             )
-        attendance = roster_status
+        attendance = normalize_attendance(roster_status)
+        is_half = (attendance == "HALF DAY")
+        required_hours = half_day_hours if is_half else full_day_hours
+
         hours = _num(bill.get("billable_hours"))
         if hours is not None:
             hours = round(hours, 2)
@@ -340,14 +440,15 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
                 "roster_status": roster_status,
                 "attendance": attendance,
                 "billable_hours": hours if bill else None,
-                "productivity": productivity_flag(attendance, hours if bill else None),
+                "target_hours": required_hours,
+                "productivity": productivity_flag(attendance, hours if bill else None, required_hours),
                 "qc_score": qc,
-                "quality": quality_flag(qc),
-                "tracker_count": tracker_count if bill or attendance in TRACKER_ATTENDANCE else None,
+                "quality": quality_flag(qc, attendance),
+                "tracker_count": tracker_count if bill or normalize_attendance(attendance) in TRACKER_ATTENDANCE else None,
                 "note": note,
                 "low_tracker": is_low_tracker_day(
                     attendance,
-                    tracker_count if bill or attendance in TRACKER_ATTENDANCE else 0,
+                    tracker_count if bill or normalize_attendance(attendance) in TRACKER_ATTENDANCE else 0,
                 ),
             }
         )
@@ -355,25 +456,29 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
 
     # Working days with no tracker rows still count as 0 trackers.
     for row in days:
-        if row["attendance"] in TRACKER_ATTENDANCE and row["tracker_count"] is None:
+        if normalize_attendance(row["attendance"]) in TRACKER_ATTENDANCE and row["tracker_count"] is None:
             row["tracker_count"] = 0
             row["low_tracker"] = True
 
     status_counts = {key: 0 for key in (
-        "PRESENT", "HALF DAY", "ABSENT", "LEAVE", "WEEK OFF", "WFH", "UNROSTERED", "HOLIDAY"
+        "PRESENT", "HALF DAY", "ABSENT", LEAVE_ROSTER, LEAVE_UNROSTERED,
+        "WEEK OFF", "WFH", "UNROSTERED", "HOLIDAY",
     )}
     productivity_yes = 0
     productivity_no = 0
     quality_yes = 0
     quality_no = 0
     working_days = 0
+    schedule_working_days = 0
+    actual_working_days = 0
     present_days = 0
     low_tracker_days = 0
     billable_total = 0.0
     quality_scores = []
 
     for row in days:
-        status = row["attendance"]
+        status = normalize_attendance(row["attendance"])
+        row["attendance"] = status
         if status in status_counts:
             status_counts[status] += 1
         if row["productivity"] == "YES":
@@ -384,8 +489,12 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
             quality_yes += 1
         elif row["quality"] == "NO":
             quality_no += 1
+        if status and status not in NON_WORKING_CALENDAR:
+            actual_working_days += 1
         if is_working_day(status):
             working_days += 1
+        if is_schedule_working_day(status):
+            schedule_working_days += 1
         if is_present_day(status):
             present_days += 1
         if row["low_tracker"]:
@@ -403,7 +512,7 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
 
     productivity_earned = _ratio_score(productivity_yes, working_days, WEIGHT_PRODUCTIVITY)
     quality_earned = _ratio_score(quality_yes, working_days, WEIGHT_QUALITY)
-    schedule_earned = _ratio_score(present_days, working_days, WEIGHT_SCHEDULE)
+    schedule_earned = _ratio_score(present_days, schedule_working_days, WEIGHT_SCHEDULE)
     reporting_earned = float(reporting["earned"])
     timeliness_earned = None if timeliness is None else round(float(timeliness), 2)
 
@@ -430,6 +539,8 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
         "user_id": int(user_id),
         "user_name": user.get("user_name") or "",
         "team_name": user.get("team_name") or "",
+        "user_tenure": raw_tenure,
+        "effective_tenure": effective_tenure,
         "month_year": month_year,
         "period_start": start.isoformat(),
         "period_end": end.isoformat(),
@@ -439,9 +550,12 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
         "roster_found": bool(roster),
         "goal_working_days": _num(goal_row.get("working_days")),
         "rules": {
-            "productivity_hours": PRODUCTIVITY_HOURS,
+            "productivity_hours": full_day_hours,
+            "productivity_half_day_hours": half_day_hours,
+            "base_hours": PRODUCTIVITY_HOURS,
             "quality_min": QUALITY_MIN,
             "tracker_min": TRACKER_MIN,
+            "tracker_min_half_day": TRACKER_MIN_HALF_DAY,
             "weights": {
                 "productivity": WEIGHT_PRODUCTIVITY,
                 "quality": WEIGHT_QUALITY,
@@ -460,6 +574,8 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
             "quality_yes": quality_yes,
             "quality_no": quality_no,
             "working_days": working_days,
+            "schedule_working_days": schedule_working_days,
+            "actual_working_days": actual_working_days,
             "present_days": present_days,
             "low_tracker_days": low_tracker_days,
             "attendance": status_counts,

@@ -8,6 +8,7 @@ import re
 from openpyxl import Workbook
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from utils.kra import (
@@ -18,6 +19,7 @@ from utils.kra import (
     REPORTING_PARTIAL_MAX,
     REPORTING_PARTIAL_SCORE,
     TRACKER_MIN,
+    TRACKER_MIN_HALF_DAY,
     WEIGHT_PRODUCTIVITY,
     WEIGHT_QUALITY,
     WEIGHT_REPORTING,
@@ -25,11 +27,24 @@ from utils.kra import (
     WEIGHT_TIMELINESS,
 )
 
+ATTENDANCE_CHOICES = (
+    "PRESENT",
+    "HALF DAY",
+    "ABSENT",
+    "LEAVE (ROSTER)",
+    "LEAVE (UNROSTERED)",
+    "WEEK OFF",
+    "WFH",
+    "UNROSTERED",
+    "HOLIDAY",
+)
+
 ATTENDANCE_FILL = {
     "PRESENT": "D1FAE5",
     "HALF DAY": "FEF3C7",
     "ABSENT": "FEE2E2",
-    "LEAVE": "FEF9C3",
+    "LEAVE (ROSTER)": "FEF9C3",
+    "LEAVE (UNROSTERED)": "FDE68A",
     "WEEK OFF": "E0F2FE",
     "WFH": "CCFBF1",
     "UNROSTERED": "FFEDD5",
@@ -39,7 +54,8 @@ ATTENDANCE_FONT = {
     "PRESENT": "065F46",
     "HALF DAY": "92400E",
     "ABSENT": "991B1B",
-    "LEAVE": "854D0E",
+    "LEAVE (ROSTER)": "854D0E",
+    "LEAVE (UNROSTERED)": "92400E",
     "WEEK OFF": "075985",
     "WFH": "115E59",
     "UNROSTERED": "9A3412",
@@ -48,7 +64,8 @@ ATTENDANCE_FONT = {
 ATTENDANCE_ROW_TINT = {
     "HALF DAY": "FFFBEB",
     "ABSENT": "FEF2F2",
-    "LEAVE": "FEFCE8",
+    "LEAVE (ROSTER)": "FEFCE8",
+    "LEAVE (UNROSTERED)": "FFFBEB",
     "WEEK OFF": "F0F9FF",
     "WFH": "F0FDFA",
     "UNROSTERED": "FFF7ED",
@@ -73,6 +90,27 @@ thin = Border(
 )
 wrap = Alignment(wrap_text=True, vertical="center")
 center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+# One ordered list. Formulas use these keys so they cannot drift off the Rules rows.
+RULES_START_ROW = 5
+RULE_KEYS = (
+    "prod_hours",
+    "qc_min",
+    "tracker_min",
+    "reporting_full_max",
+    "reporting_partial_max",
+    "reporting_full_score",
+    "reporting_partial_score",
+    "weight_prod",
+    "weight_qual",
+    "weight_sched",
+    "weight_reporting",
+    "weight_timeliness",
+)
+
+
+def rules_b(key: str) -> str:
+    return f"Rules!$B${RULES_START_ROW + RULE_KEYS.index(key)}"
 
 
 def _fill(hex_color: str) -> PatternFill:
@@ -106,11 +144,17 @@ def build_kra_workbook(report: dict) -> tuple[io.BytesIO, str]:
     logger.info(f"KRA Excel - Building workbook for {report.get('user_name')}, days: {len(days)}, first: {first}, last: {last}")
 
     wb = Workbook()
+    wb.calculation.calcMode = "auto"
+    wb.calculation.fullCalcOnLoad = True
     rules = wb.active
     rules.title = "Rules"
     daily = wb.create_sheet("Daily Log")
     score = wb.create_sheet("KRA Score")
-    _write_rules(rules)
+    _write_rules(rules, report)
+    last_choice = RULES_START_ROW + len(ATTENDANCE_CHOICES) - 1
+    wb.defined_names.add(
+        DefinedName(name="AttendanceList", attr_text=f"Rules!$E$5:$E${last_choice}")
+    )
     totals_rows = _write_daily(daily, report, first, last)
     _write_score(score, report, totals_rows)
 
@@ -130,7 +174,10 @@ def build_kra_workbook(report: dict) -> tuple[io.BytesIO, str]:
     return output, filename
 
 
-def _write_rules(ws):
+def _write_rules(ws, report=None):
+    report = report or {}
+    prod_hours = (report.get("rules") or {}).get("productivity_hours", PRODUCTIVITY_HOURS)
+    tenure_val = report.get("effective_tenure", 1)
     ws.sheet_view.showGridLines = False
     ws["A1"] = "KRA calculation rules"
     ws["A1"].font = _font(18, True, NAVY)
@@ -142,34 +189,97 @@ def _write_rules(ws):
     for col, label in enumerate(("Setting", "Value", "What it does"), 1):
         _header(ws.cell(4, col, label))
 
-    rows = [
-        ("Productivity hours", PRODUCTIVITY_HOURS, "Billable hours at or above this = YES. Below this = NO."),
-        ("Quality minimum", QUALITY_MIN, "QC score at or above this = YES. Below this = NO. Sheet rule: equals or exceeds 98%."),
-        ("Minimum trackers", TRACKER_MIN, "A Present, Half Day, WFH, or Unrostered day with fewer trackers is one non-compliance."),
-        ("Full reporting band up to", REPORTING_FULL_MAX, f"0 to this many instances still earns {REPORTING_FULL_SCORE}%."),
-        ("Partial reporting band up to", REPORTING_PARTIAL_MAX, f"Above the full band, up to this number, earns {REPORTING_PARTIAL_SCORE}%. More than this earns 0%."),
-        ("Full reporting score", REPORTING_FULL_SCORE, "Points earned inside the first band."),
-        ("Partial reporting score", REPORTING_PARTIAL_SCORE, "Points earned inside the second band."),
-        ("Productivity weight", WEIGHT_PRODUCTIVITY, "(YES days / working days) x this weight."),
-        ("Quality weight", WEIGHT_QUALITY, "(quality YES days / working days) x this weight."),
-        ("Schedule weight", WEIGHT_SCHEDULE, "(present days / working days) x this weight."),
-        ("Reporting weight", WEIGHT_REPORTING, "Band score. The maximum is this weight."),
-        ("Timeliness weight", WEIGHT_TIMELINESS, "Always included in total weight (100%). Earned stays blank until typed in KRA Score!D13 (0 to 10); then total earned updates."),
-    ]
-    for idx, (label, value, note) in enumerate(rows, 5):
-        ws.cell(idx, 1, label).font = _font(11, True)
-        value_cell = ws.cell(idx, 2, value)
+    settings = {
+        "prod_hours": (
+            "Productivity hours",
+            prod_hours,
+            f"Full day target based on tenure {tenure_val}. Half day = half of this ({round(prod_hours / 2, 3)}h).",
+        ),
+        "qc_min": (
+            "Minimum QC score",
+            QUALITY_MIN,
+            "Quality is YES only on working days (Present, Half Day, Absent, WFH, Unrostered) when QC is at least this. Holiday, both leave types, and Week Off stay blank.",
+        ),
+        "tracker_min": (
+            "Minimum trackers",
+            TRACKER_MIN,
+            "Present, WFH, or Unrostered day with fewer than 7 trackers, or Half Day with fewer than 4 trackers, is a non-compliance day.",
+        ),
+        "reporting_full_max": (
+            "Full reporting band up to",
+            REPORTING_FULL_MAX,
+            f"0 to this many instances still earns {REPORTING_FULL_SCORE}%.",
+        ),
+        "reporting_partial_max": (
+            "Partial reporting band up to",
+            REPORTING_PARTIAL_MAX,
+            f"Above the full band, up to this number, earns {REPORTING_PARTIAL_SCORE}%. More than this earns 0%.",
+        ),
+        "reporting_full_score": (
+            "Full reporting score",
+            REPORTING_FULL_SCORE,
+            "Points earned inside the first band.",
+        ),
+        "reporting_partial_score": (
+            "Partial reporting score",
+            REPORTING_PARTIAL_SCORE,
+            "Points earned inside the second band.",
+        ),
+        "weight_prod": (
+            "Productivity weight",
+            WEIGHT_PRODUCTIVITY,
+            "(YES days / working days) x this weight.",
+        ),
+        "weight_qual": (
+            "Quality weight",
+            WEIGHT_QUALITY,
+            "(quality YES days / working days) x this weight.",
+        ),
+        "weight_sched": (
+            "Schedule weight",
+            WEIGHT_SCHEDULE,
+            "(present days / working days) x this weight.",
+        ),
+        "weight_reporting": (
+            "Reporting weight",
+            WEIGHT_REPORTING,
+            "Band score. The maximum is this weight.",
+        ),
+        "weight_timeliness": (
+            "Timeliness weight",
+            WEIGHT_TIMELINESS,
+            "Always included in total weight (100%). Earned stays blank until typed in KRA Score!D13 (0 to 10); then total earned updates.",
+        ),
+    }
+    if set(settings) != set(RULE_KEYS):
+        raise ValueError("Rules settings keys must match RULE_KEYS")
+    for idx, key in enumerate(RULE_KEYS):
+        label, value, note = settings[key]
+        row = RULES_START_ROW + idx
+        ws.cell(row, 1, label).font = _font(11, True)
+        value_cell = ws.cell(row, 2, value)
         value_cell.font = _font(12, True, TEAL)
         value_cell.alignment = center
         value_cell.fill = _fill(AMBER)
-        ws.cell(idx, 3, note).font = _font(11)
+        ws.cell(row, 3, note).font = _font(11)
         for col in range(1, 4):
-            ws.cell(idx, col).border = thin
-            ws.cell(idx, col).alignment = wrap
+            ws.cell(row, col).border = thin
+            ws.cell(row, col).alignment = wrap
+
+    ws["E4"] = "Attendance"
+    _header(ws["E4"])
+    for idx, status in enumerate(ATTENDANCE_CHOICES, 5):
+        cell = ws.cell(idx, 5, status)
+        cell.font = _font(10, True, ATTENDANCE_FONT.get(status, "1F2933"))
+        cell.fill = _fill(ATTENDANCE_FILL.get(status, WHITE))
+        cell.alignment = center
+        cell.border = thin
 
     ws.column_dimensions["A"].width = 32
     ws.column_dimensions["B"].width = 14
     ws.column_dimensions["C"].width = 88
+    ws.column_dimensions["D"].width = 3
+    ws.column_dimensions["E"].width = 22
     ws.row_dimensions[1].height = 28
     ws.freeze_panes = "A5"
     ws.page_setup.orientation = "landscape"
@@ -191,7 +301,12 @@ def _write_daily(ws, report, first, last):
     ws.merge_cells("A2:I2")
     period = report.get("period_end") or ""
     as_of = f"   ·   Through {period}" if period else ""
-    ws["A2"] = f"{report.get('month_year')}   ·   Team {team}{as_of}   ·   Generated from HRMS. Yellow cells are formulas."
+    ws["A2"] = (
+        f"{report.get('month_year')}   ·   Team {team}{as_of}   ·   "
+        "Change Attendance (dropdown), hours, QC, or trackers — counts and KRA Score recalculate. "
+        "Prod/Quality working days exclude both leave types. "
+        "Present-column working days exclude Leave (Roster) only."
+    )
     ws["A2"].font = _font(11, False, MUTED)
 
     headers = [
@@ -207,12 +322,32 @@ def _write_daily(ws, report, first, last):
         ws.cell(r, 2, row.get("day"))
         ws.cell(r, 3, row.get("attendance") or None)
         ws.cell(r, 4, row.get("billable_hours"))
+        ws.cell(r, 17, f'=IF(C{r}="","",TRIM(C{r}))')
+        ws.cell(
+            r, 14,
+            f'=IF(OR(Q{r}="",Q{r}="WEEK OFF",Q{r}="HOLIDAY"),0,1)',
+        )
+        ws.cell(
+            r, 15,
+            f'=IF(OR(Q{r}="PRESENT",Q{r}="HALF DAY",Q{r}="ABSENT",Q{r}="WFH",Q{r}="UNROSTERED"),1,0)',
+        )
+        ws.cell(
+            r, 16,
+            f'=IF(OR(Q{r}="PRESENT",Q{r}="HALF DAY",Q{r}="WFH"),1,0)',
+        )
+        ws.cell(
+            r, 18,
+            f'=IF(OR(O{r}=1,Q{r}="LEAVE (UNROSTERED)"),1,0)',
+        )
         ws.cell(
             r, 5,
-            f'=IF(OR(C{r}="PRESENT",C{r}="HALF DAY",C{r}="WFH",C{r}="ABSENT",C{r}="UNROSTERED",AND(ISNUMBER(D{r}),D{r}>0)),IF(N(D{r})>=Rules!$B$5,"YES","NO"),"")',
+            f'=IF(O{r}=1,IF(N(D{r})>=IF(Q{r}="HALF DAY",{rules_b("prod_hours")}/2,{rules_b("prod_hours")}),"YES","NO"),"")',
         )
         ws.cell(r, 6, row.get("qc_score"))
-        ws.cell(r, 7, f'=IF(F{r}="","",IF(F{r}>=Rules!$B$6,"YES","NO"))')
+        ws.cell(
+            r, 7,
+            f'=IF(O{r}=1,IF(F{r}="","",IF(F{r}>={rules_b("qc_min")},"YES","NO")),"")',
+        )
         trackers = row.get("tracker_count")
         if trackers is None and (row.get("attendance") or "") in ("PRESENT", "HALF DAY", "WFH", "UNROSTERED"):
             trackers = 0
@@ -240,22 +375,32 @@ def _write_daily(ws, report, first, last):
             for col in (1, 2, 4, 6, 8):
                 ws.cell(r, col).fill = _fill(SLATE)
 
-    span = f"$C${first}:$C${last}"
+    span = f"$Q${first}:$Q${last}"
     prod_col = f"$E${first}:$E${last}"
     qual_col = f"$G${first}:$G${last}"
     tracker_col = f"$H${first}:$H${last}"
     hours_col = f"$D${first}:$D${last}"
     score_col = f"$F${first}:$F${last}"
+    actual_col = f"$N${first}:$N${last}"
+    kra_work_col = f"$O${first}:$O${last}"
+    present_col = f"$P${first}:$P${last}"
+    schedule_work_col = f"$R${first}:$R${last}"
 
     def status_count(status):
         return f'COUNTIF({span},"{status}")'
 
-    working = "+".join(status_count(s) for s in ("PRESENT", "HALF DAY", "ABSENT", "WFH", "UNROSTERED"))
-    present = "+".join(status_count(s) for s in ("PRESENT", "HALF DAY", "WFH"))
-    low_tracker = "+".join(
-        f'COUNTIFS({span},"{status}",{tracker_col},"<"&Rules!$B$7)'
-        for status in ("PRESENT", "HALF DAY", "WFH", "UNROSTERED")
+    actual_working = f"SUM({actual_col})"
+    working = f"SUM({kra_work_col})"
+    schedule_working = f"SUM({schedule_work_col})"
+    present = f"SUM({present_col})"
+    full_day_tracker = "+".join(
+        f'COUNTIFS({span},"{status}",{tracker_col},"<"&{rules_b("tracker_min")})'
+        for status in ("PRESENT", "WFH", "UNROSTERED")
     )
+    half_day_tracker = (
+        f'COUNTIFS({span},"HALF DAY",{tracker_col},"<{TRACKER_MIN_HALF_DAY}")'
+    )
+    low_tracker = f"{full_day_tracker}+{half_day_tracker}"
 
     # End-of-listing totals — same labels as the shared sheet, laid out as
     # three compact label|value pairs (no blank columns between label and value).
@@ -273,6 +418,7 @@ def _write_daily(ws, report, first, last):
         "quality_yes": counts_row,
         "present_days": counts_row,
         "working_days": working_row,
+        "actual_working_cell": "L6",
         "low_tracker_days": low_row,
         "productivity_score": score_row,
         "quality_score": score_row,
@@ -327,39 +473,52 @@ def _write_daily(ws, report, first, last):
     merge_label(working_row, 4, 5, "Total Working Days")
     put_value(working_row, 6, f"={working}")
     merge_label(working_row, 7, 8, "Total Working Days")
-    put_value(working_row, 9, f"={working}")
+    put_value(working_row, 9, f"={schedule_working}")
 
     # Scores
     merge_label(score_row, 1, 2, "Score")
     put_value(
         score_row, 3,
-        f'=IF(C{working_row}=0,"",C{counts_row}/C{working_row}*Rules!$B$12)',
+        f'=IF(C{working_row}=0,"",C{counts_row}/C{working_row}*{rules_b("weight_prod")})',
         "0.00",
     )
     merge_label(score_row, 4, 5, "Score")
     put_value(
         score_row, 6,
-        f'=IF(F{working_row}=0,"",F{counts_row}/F{working_row}*Rules!$B$13)',
+        f'=IF(F{working_row}=0,"",F{counts_row}/F{working_row}*{rules_b("weight_qual")})',
         "0.00",
     )
     merge_label(score_row, 7, 8, "Score")
     put_value(
         score_row, 9,
-        f'=IF(I{working_row}=0,"",I{counts_row}/I{working_row}*Rules!$B$14)',
+        f'=IF(I{working_row}=0,"",I{counts_row}/I{working_row}*{rules_b("weight_sched")})',
         "0.00",
     )
 
-    merge_label(low_row, 1, 2, "Days under 7 trackers")
+    merge_label(low_row, 1, 2, "Days with low trackers (<7 full / <4 half)")
     put_value(low_row, 3, f"={low_tracker}")
 
     for r in (avg_row, counts_row, working_row, score_row, low_row):
         ws.row_dimensions[r].height = 24
 
-    # Right-side attendance counts (beside the daily log, after Note)
+    for r in (3, 4):
+        ws.cell(r, 11).value = None
+        ws.cell(r, 12).value = None
+
     _header(ws.cell(5, 11, "Attendance"))
     _header(ws.cell(5, 12, "Count"))
-    for idx, status in enumerate(("PRESENT", "HALF DAY", "ABSENT", "LEAVE", "WEEK OFF", "WFH", "UNROSTERED", "HOLIDAY")):
-        r = first + idx
+
+    actual_label = ws.cell(6, 11, "Actual working days")
+    actual_label.font = _font(10, True, NAVY)
+    actual_label.fill = _fill(SLATE)
+    actual_label.border = thin
+    actual_label.alignment = Alignment(vertical="center", wrap_text=True)
+    put_value(6, 12, f"={actual_working}")
+    ws.row_dimensions[6].height = 22
+
+    status_start = 7
+    for idx, status in enumerate(ATTENDANCE_CHOICES):
+        r = status_start + idx
         label = ws.cell(r, 11, status)
         label.font = _font(10, True, ATTENDANCE_FONT.get(status, "1F2933"))
         label.border = thin
@@ -371,9 +530,10 @@ def _write_daily(ws, report, first, last):
         cell.border = thin
         cell.fill = _fill(ATTENDANCE_FILL.get(status, AMBER))
 
-    _header(ws.cell(first + 9, 11, "Productivity"))
-    _header(ws.cell(first + 9, 12, "Count"))
-    yes_r, no_r = first + 10, first + 11
+    prod_block = status_start + len(ATTENDANCE_CHOICES) + 1
+    _header(ws.cell(prod_block, 11, "Productivity"))
+    _header(ws.cell(prod_block, 12, "Count"))
+    yes_r, no_r = prod_block + 1, prod_block + 2
     ws.cell(yes_r, 11, "YES").font = _font(10, True, "166534")
     ws.cell(yes_r, 11).fill = _fill(GREEN)
     ws.cell(yes_r, 11).border = thin
@@ -401,17 +561,47 @@ def _write_daily(ws, report, first, last):
     ws.conditional_formatting.add(f"G{first}:G{last}", FormulaRule(formula=[f'G{first}="NO"'], fill=_fill(RED), font=_font(10, True, "991B1B")))
     ws.conditional_formatting.add(
         f"H{first}:H{last}",
-        FormulaRule(formula=[f'AND(ISNUMBER(H{first}),H{first}<Rules!$B$7)'], fill=_fill(RED), font=_font(10, True, "991B1B")),
+        FormulaRule(
+            formula=[
+                f'AND(ISNUMBER(H{first}),H{first}<IF(Q{first}="HALF DAY",{TRACKER_MIN_HALF_DAY},{rules_b("tracker_min")}))'
+            ],
+            fill=_fill(RED),
+            font=_font(10, True, "991B1B"),
+        ),
     )
 
     # Daily columns stay compact; K:L are the right-side counts only
     for col, width in {
-        "A": 12, "B": 11, "C": 12, "D": 13, "E": 18,
+        "A": 12, "B": 11, "C": 20, "D": 13, "E": 18,
         "F": 12, "G": 14, "H": 10, "I": 22, "J": 2,
-        "K": 14, "L": 9,
+        "K": 22, "L": 9,
     }.items():
         ws.column_dimensions[col].width = width
+    for col, label in (
+        (14, "Actual work"),
+        (15, "Prod/Qual work"),
+        (16, "Present flag"),
+        (17, "Status"),
+        (18, "Schedule work"),
+    ):
+        _header(ws.cell(5, col, label))
+        ws.column_dimensions[ws.cell(5, col).column_letter].hidden = True
     ws.freeze_panes = "A6"
+    attendance_dv = DataValidation(
+        type="list",
+        formula1="=AttendanceList",
+        allow_blank=True,
+        showDropDown=False,
+        showErrorMessage=True,
+        errorTitle="Attendance",
+        error="Pick PRESENT, HALF DAY, ABSENT, LEAVE (ROSTER), LEAVE (UNROSTERED), WEEK OFF, WFH, UNROSTERED, or HOLIDAY.",
+        promptTitle="Attendance",
+        prompt="Select a status. KRA Score updates from this column.",
+        showInputMessage=True,
+    )
+    attendance_dv.add(f"C{first}:C{last}")
+    ws.add_data_validation(attendance_dv)
+
     ws.auto_filter.ref = f"A5:I{last}"
     ws.row_dimensions[1].height = 26
     ws.row_dimensions[5].height = 32
@@ -433,7 +623,11 @@ def _write_score(ws, report, totals_rows):
     ws["A1"] = f"KRA score — {report.get('user_name') or 'Agent'} — {report.get('month_year')}"
     ws["A1"].font = _font(18, True, NAVY)
     ws.merge_cells("A2:F2")
-    ws["A2"] = "Points 1–4 come from HRMS. Point 5 (Timeliness) weight is always in the 100% total; leave D13 blank until you type the earned score (0–10)."
+    ws["A2"] = (
+        "Points 1–4 are formulas from Daily Log (and Rules). "
+        "Edit attendance, hours, QC, or trackers on Daily Log and this sheet updates. "
+        "Point 5 (Timeliness): type earned in D13 (0–10)."
+    )
     ws["A2"].font = _font(11, False, MUTED)
 
     for col, label in enumerate(("Sr", "Objective", "Weight %", "Earned %", "How it is calculated", "% of weight"), 1):
@@ -449,19 +643,21 @@ def _write_score(ws, report, totals_rows):
     low_tracker = f"'Daily Log'!C{low_row}"
 
     rows = [
-        (5, 1, "Meeting Daily Productivity", "=Rules!$B$12",
+        (5, 1, "Meeting Daily Productivity", f"={rules_b('weight_prod')}",
          f"={prod_score}",
          f"(No. of Days Productivity Achieved / Total Working Days) x 33  — Daily Log!C{counts_row}/C{working_row}"),
-        (7, 2, "Delivering Right Quality Everyday", "=Rules!$B$13",
+        (7, 2, "Delivering Right Quality Everyday", f"={rules_b('weight_qual')}",
          f"={qual_score}",
          f"(No. of Days Quality Achieved / Total Working Days) x 33  — Daily Log!F{counts_row}/F{working_row}"),
-        (9, 3, "Schedule Adherence - Rostered Attendance", "=Rules!$B$14",
+        (9, 3, "Schedule Adherence - Rostered Attendance", f"={rules_b('weight_sched')}",
          f"={sched_score}",
-         f"(Present Days / Total Working Days) x 10  — Daily Log!I{counts_row}/I{working_row}"),
-        (11, 4, "Adherence to Reporting in TimeChamp, Project Tracker, and Keka", "=Rules!$B$15",
-         '=IF(I14<=Rules!$B$8,Rules!$B$10,IF(I14<=Rules!$B$9,Rules!$B$11,0))',
+         f"(Present Days / Total Working Days) x 10  — Daily Log!I{counts_row}/I{working_row}. Unrostered leave stays in this working-days count; roster leave does not."),
+        (11, 4, "Adherence to Reporting in TimeChamp, Project Tracker, and Keka",
+         f"={rules_b('weight_reporting')}",
+         f'=IF(I14<={rules_b("reporting_full_max")},{rules_b("reporting_full_score")},'
+         f'IF(I14<={rules_b("reporting_partial_max")},{rules_b("reporting_partial_score")},0))',
          "0-3 instances = 14%. 4-6 = 7%. More than 6 = 0%. Verbal warning = 1, email = 2, letter = 3."),
-        (13, 5, "Timeliness - Adherence to break and login schedule", "=Rules!$B$16",
+        (13, 5, "Timeliness - Adherence to break and login schedule", f"={rules_b('weight_timeliness')}",
          None,
          "Weight 10% always counts in total. Type earned in D13 (0–10) when ready — total earned then updates. Example: up to 3 non-compliances = 10%, 4–5 = 5%, more than 5 = 0%."),
     ]
@@ -503,6 +699,23 @@ def _write_score(ws, report, totals_rows):
     )
     timeliness_dv.add("D13")
     ws.add_data_validation(timeliness_dv)
+
+    actual_cell = f"'Daily Log'!{totals_rows.get('actual_working_cell', 'L6')}"
+    ws["H5"] = "Actual working days"
+    ws["I5"] = f"={actual_cell}"
+    ws["H6"] = "Prod/Quality working days"
+    ws["I6"] = f"='Daily Log'!C{working_row}"
+    ws["H7"] = "Schedule working days"
+    ws["I7"] = f"='Daily Log'!I{working_row}"
+    for r in range(5, 8):
+        ws.cell(r, 8).font = _font(10, True)
+        ws.cell(r, 8).border = thin
+        ws.cell(r, 8).alignment = Alignment(vertical="center")
+        ws.cell(r, 8).fill = _fill(SLATE)
+        ws.cell(r, 9).font = _font(11, True, TEAL)
+        ws.cell(r, 9).alignment = center
+        ws.cell(r, 9).border = thin
+        ws.cell(r, 9).fill = _fill(AMBER)
 
     ws["H10"] = "Low tracker days"
     ws["I10"] = f"={low_tracker}"

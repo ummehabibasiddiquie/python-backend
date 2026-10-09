@@ -93,6 +93,8 @@ def apply_active_leaves_to_days(days: list[dict], leaves: list[dict] | None) -> 
                 row["leave_id"] = leave_id
                 row["leave_is_half_day"] = is_half
                 row["leave_affect_target"] = affect_target
+                raw_rostered = leave.get("is_rostered")
+                row["leave_is_rostered"] = 1 if raw_rostered is None else int(raw_rostered)
                 row["leave_type"] = leave.get("leave_type") or row.get("leave_type")
                 if is_half:
                     orig_wt = row.get("working_type") or "Full"

@@ -123,47 +123,62 @@ def resolve_qa_targets(
     object_count=None,
     qc_generated_count=None,
     work_date=None,
+    is_rework: bool = False,
 ) -> dict:
     """
     Returns actual_target, qa_target, hours, target_mode.
 
     Detection order when new modes are active:
       object_range → file_minutes → record_minutes → none (no task_target fallback)
+    For rework (is_rework=True), target is halved:
+      - object_range: matched_minutes / 2
+      - file_minutes: qa_minutes_per_file / 2
+      - record_minutes: qa_minutes_per_record / 2
     """
     wd = _parse_work_date(work_date)
     use_new_modes = wd is None or wd >= QA_NEW_TARGETS_EFFECTIVE_FROM
     if not use_new_modes:
-        return _flat_task_target(task_target, qc_generated_count)
+        res = _flat_task_target(task_target, qc_generated_count)
+        if is_rework and res.get("actual_target"):
+            half_t = _round4(res["actual_target"] / 2.0)
+            qc_c = _float(qc_generated_count)
+            res["actual_target"] = half_t
+            res["qa_target"] = half_t
+            res["hours"] = _round4(qc_c / half_t) if half_t else 0.0
+        return res
 
     ranges = parse_qa_target_ranges(qa_target_ranges)
     if ranges:
         matched_minutes = match_range_minutes(ranges, object_count)
         if matched_minutes is not None:
-            hours = _round4(matched_minutes / 60.0)
+            eff_minutes = (matched_minutes / 2.0) if is_rework else matched_minutes
+            hours = _round4(eff_minutes / 60.0)
             return {
-                "actual_target": _round4(matched_minutes),
-                "qa_target": _round4(matched_minutes),
+                "actual_target": _round4(eff_minutes),
+                "qa_target": _round4(eff_minutes),
                 "hours": hours,
                 "target_mode": "object_range",
             }
 
     file_min = _float(qa_minutes_per_file, default=0.0)
     if file_min > 0:
-        hours = _round4(file_min / 60.0)
+        eff_minutes = (file_min / 2.0) if is_rework else file_min
+        hours = _round4(eff_minutes / 60.0)
         return {
-            "actual_target": _round4(file_min),
-            "qa_target": _round4(file_min),
+            "actual_target": _round4(eff_minutes),
+            "qa_target": _round4(eff_minutes),
             "hours": hours,
             "target_mode": "file_minutes",
         }
 
     rec_min = _float(qa_minutes_per_record, default=0.0)
     if rec_min > 0:
+        eff_rec_min = (rec_min / 2.0) if is_rework else rec_min
         qc_count = _float(qc_generated_count)
-        hours = _round4((qc_count * rec_min) / 60.0)
+        hours = _round4((qc_count * eff_rec_min) / 60.0)
         return {
-            "actual_target": _round4(rec_min),
-            "qa_target": _round4(rec_min),
+            "actual_target": _round4(eff_rec_min),
+            "qa_target": _round4(eff_rec_min),
             "hours": hours,
             "target_mode": "record_minutes",
         }

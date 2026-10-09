@@ -21,6 +21,7 @@ from utils.roster_helpers import (
     is_admin_or_super_admin,
     is_org_holiday_day,
     load_user_monthly_tracker_baseline,
+    umt_goal_is_locked,
     now_str,
     parse_date,
     parse_month_year,
@@ -947,7 +948,7 @@ def _remove_date_from_one_leave(
             right_start.isoformat(),
             end.isoformat(),
             leave.get("reason"),
-            int(leave.get("is_rostered") or 1),
+            int(1 if leave.get("is_rostered") is None else leave.get("is_rostered")),
             int(leave.get("affect_target") or 0),
             int(leave.get("is_half_day") or 0),
             leave.get("created_by"),
@@ -1345,6 +1346,13 @@ def refresh_roster_month_metrics(cursor, roster_month_id: int) -> dict:
     days = get_roster_days(cursor, roster_month_id)
     days = apply_active_leaves_to_days(days, leaves)
     metrics = recalculate_metrics_from_days_and_leaves(days, leaves)
+    roster_month = get_roster_month(cursor, roster_month_id) or {}
+    hours = metrics["monthly_target_hours"]
+    if roster_month.get("user_id") and roster_month.get("month_year"):
+        if umt_goal_is_locked(cursor, int(roster_month["user_id"]), str(roster_month["month_year"])):
+            hours = roster_month.get("monthly_target_hours")
+            if hours is None:
+                hours = metrics["monthly_target_hours"]
     cursor.execute(
         """
         UPDATE roster_month
@@ -1357,11 +1365,12 @@ def refresh_roster_month_metrics(cursor, roster_month_id: int) -> dict:
         (
             metrics["calendar_working_days"],
             metrics["target_working_days"],
-            metrics["monthly_target_hours"],
+            hours,
             now_str(),
             int(roster_month_id),
         ),
     )
+    metrics["monthly_target_hours"] = hours
     return metrics
 
 
