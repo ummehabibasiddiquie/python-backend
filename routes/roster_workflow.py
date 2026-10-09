@@ -85,8 +85,6 @@ from utils.roster_week_lock import (
     week_lock_message_for_dates,
     week_meta_for_date,
     week_meta_for_number,
-    weeks_touched_by_requests,
-    week_has_pending_submitted_requests,
     dates_from_change_request,
     request_touches_week,
     pending_approval_message_for_change,
@@ -727,65 +725,6 @@ def _process_batch_completion(cursor, batch_id: str, reviewer_comment: str, logg
     return finalized
 
 
-def _merge_week_lists(*lists: list[dict] | None) -> list[dict]:
-    seen: set[tuple[str, int]] = set()
-    out: list[dict] = []
-    for weeks in lists:
-        for week in weeks or []:
-            key = (str(week.get("month_year") or ""), int(week.get("week_number") or 0))
-            if not key[0] or key[1] <= 0 or key in seen:
-                continue
-            seen.add(key)
-            out.append(week)
-    return out
-
-
-def _send_roster_email_after_review(
-    cursor,
-    *,
-    month_years: list[str],
-    fallback_requests: list[dict],
-    months_by_id: dict[int, dict],
-    locked_weeks: list[dict] | None,
-    logged_in_user_id: int,
-    role_name: str,
-) -> list[dict]:
-    """
-    Email only weeks touched by this approve/reject, and only if that week
-    has no remaining pending submitted requests. Do not re-mail every week
-    in the month that was approved earlier.
-    """
-    weeks = _merge_week_lists(
-        weeks_touched_by_requests(fallback_requests, months_by_id),
-        locked_weeks,
-    )
-    labels = [str(w.get("label") or f"Week {w.get('week_number')}") for w in weeks]
-    print(f"[roster weekly email] after review, weeks from this approval: {labels}", flush=True)
-    if not weeks:
-        return [{"skipped": True, "sent": False, "reason": "No weeks found to email"}]
-    ready = [w for w in weeks if not week_has_pending_submitted_requests(cursor, w)]
-    deferred = [w for w in weeks if week_has_pending_submitted_requests(cursor, w)]
-    if not ready:
-        labels = ", ".join(
-            str(w.get("label") or f"Week {w.get('week_number')}") for w in deferred
-        )
-        return [
-            {
-                "skipped": True,
-                "sent": False,
-                "deferred": True,
-                "reason": (
-                    f"Weekly roster email waits until pending requests for "
-                    f"{labels or 'this week'} are approved or rejected"
-                ),
-            }
-        ]
-    return send_weekly_roster_after_approval(
-        cursor,
-        weeks=ready,
-        logged_in_user_id=logged_in_user_id,
-        role_name=role_name,
-    )
 
 
 def _approve_single_request(
@@ -953,21 +892,6 @@ def roster_approve_request():
 
         conn.commit()
 
-        email_results = []
-        if roster_month:
-            try:
-                email_results = _send_roster_email_after_review(
-                    cursor,
-                    month_years=[roster_month.get("month_year") or ""],
-                    fallback_requests=[req],
-                    months_by_id={int(roster_month["roster_month_id"]): roster_month},
-                    locked_weeks=locked_weeks,
-                    logged_in_user_id=logged_in_user_id,
-                    role_name=role_name,
-                )
-            except Exception as mail_err:
-                print(f"[roster weekly email] approve mail failed: {mail_err}", flush=True)
-
         return api_response(
             200,
             "Change request approved",
@@ -975,7 +899,6 @@ def roster_approve_request():
                 "request_id": int(request_id),
                 "finalized_cycles": finalized,
                 "locked_weeks": locked_weeks,
-                "weekly_roster_emails": email_results,
             },
         )
     except ValueError as e:
@@ -1137,24 +1060,6 @@ def roster_approve_bulk():
 
         conn.commit()
 
-        email_results = []
-        if approved_reqs:
-            try:
-                email_results = _send_roster_email_after_review(
-                    cursor,
-                    month_years=[
-                        (months_by_id.get(mid) or {}).get("month_year") or ""
-                        for mid in touched_month_ids
-                    ],
-                    fallback_requests=approved_reqs,
-                    months_by_id=months_by_id,
-                    locked_weeks=locked_weeks,
-                    logged_in_user_id=logged_in_user_id,
-                    role_name=role_name,
-                )
-            except Exception as mail_err:
-                print(f"[roster weekly email] bulk approve mail failed: {mail_err}", flush=True)
-
         return api_response(
             200,
             f"Approved {approved} request(s)",
@@ -1163,7 +1068,6 @@ def roster_approve_bulk():
                 "failed": failed,
                 "finalized_cycles": finalized,
                 "locked_weeks": locked_weeks,
-                "weekly_roster_emails": email_results,
             },
         )
     except Exception as e:
@@ -1234,28 +1138,12 @@ def roster_reject_request():
         if batch_id:
             _process_batch_completion(cursor, batch_id, reviewer_comment, logged_in_user_id)
 
-        roster_month = get_roster_month(cursor, int(req["roster_month_id"]))
         conn.commit()
-
-        email_results = []
-        if roster_month:
-            try:
-                email_results = _send_roster_email_after_review(
-                    cursor,
-                    month_years=[roster_month.get("month_year") or ""],
-                    fallback_requests=[req],
-                    months_by_id={int(roster_month["roster_month_id"]): roster_month},
-                    locked_weeks=None,
-                    logged_in_user_id=logged_in_user_id,
-                    role_name=role_name,
-                )
-            except Exception as mail_err:
-                print(f"[roster weekly email] reject mail failed: {mail_err}", flush=True)
 
         return api_response(
             200,
             "Change request rejected",
-            {"request_id": int(request_id), "weekly_roster_emails": email_results},
+            {"request_id": int(request_id)},
         )
     except Exception as e:
         conn.rollback()
@@ -1879,7 +1767,7 @@ def roster_notify_approval():
 
 @roster_bp.route("/week/email", methods=["POST"])
 def roster_email_week():
-    """Admin resend of the weekly roster HTML mail for one week."""
+    """Admin sends the weekly roster HTML mail for one selected week only."""
     data = request.get_json(silent=True) or {}
     logged_in_user_id, err = _require_logged_in_user(data)
     if err:

@@ -309,8 +309,7 @@ def send_weekly_roster_after_approval(
     role_name: str,
 ) -> list[dict]:
     """
-    Email the updated week grid for each approved week.
-    Failures are returned, they do not raise.
+    Email the selected week grid(s) only. Failures are returned, they do not raise.
     """
     to_list, cc_list = roster_weekly_recipients(cursor)
     if not to_list:
