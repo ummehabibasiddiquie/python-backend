@@ -30,6 +30,8 @@ from utils.kra import (
 ATTENDANCE_CHOICES = (
     "PRESENT",
     "HALF DAY",
+    "HALF DAY (ROSTER)",
+    "HALF DAY (UNROSTERED)",
     "ABSENT",
     "LEAVE (ROSTER)",
     "LEAVE (UNROSTERED)",
@@ -42,6 +44,8 @@ ATTENDANCE_CHOICES = (
 ATTENDANCE_FILL = {
     "PRESENT": "D1FAE5",
     "HALF DAY": "FEF3C7",
+    "HALF DAY (ROSTER)": "FEF9C3",
+    "HALF DAY (UNROSTERED)": "FDE68A",
     "ABSENT": "FEE2E2",
     "LEAVE (ROSTER)": "FEF9C3",
     "LEAVE (UNROSTERED)": "FDE68A",
@@ -53,6 +57,8 @@ ATTENDANCE_FILL = {
 ATTENDANCE_FONT = {
     "PRESENT": "065F46",
     "HALF DAY": "92400E",
+    "HALF DAY (ROSTER)": "854D0E",
+    "HALF DAY (UNROSTERED)": "92400E",
     "ABSENT": "991B1B",
     "LEAVE (ROSTER)": "854D0E",
     "LEAVE (UNROSTERED)": "92400E",
@@ -63,6 +69,8 @@ ATTENDANCE_FONT = {
 }
 ATTENDANCE_ROW_TINT = {
     "HALF DAY": "FFFBEB",
+    "HALF DAY (ROSTER)": "FEFCE8",
+    "HALF DAY (UNROSTERED)": "FFFBEB",
     "ABSENT": "FEF2F2",
     "LEAVE (ROSTER)": "FEFCE8",
     "LEAVE (UNROSTERED)": "FFFBEB",
@@ -279,7 +287,7 @@ def _write_rules(ws, report=None):
     ws.column_dimensions["B"].width = 14
     ws.column_dimensions["C"].width = 88
     ws.column_dimensions["D"].width = 3
-    ws.column_dimensions["E"].width = 22
+    ws.column_dimensions["E"].width = 26
     ws.row_dimensions[1].height = 28
     ws.freeze_panes = "A5"
     ws.page_setup.orientation = "landscape"
@@ -304,8 +312,8 @@ def _write_daily(ws, report, first, last):
     ws["A2"] = (
         f"{report.get('month_year')}   ·   Team {team}{as_of}   ·   "
         "Change Attendance (dropdown), hours, QC, or trackers — counts and KRA Score recalculate. "
-        "Prod/Quality working days exclude both leave types. "
-        "Present-column working days exclude Leave (Roster) only."
+        "Productivity and Quality working days drop every leave: roster and unrostered, full day and half day. "
+        "The last Total Working Days drops roster leave only. Unrostered leave is not taken off that total."
     )
     ws["A2"].font = _font(11, False, MUTED)
 
@@ -329,27 +337,41 @@ def _write_daily(ws, report, first, last):
         )
         ws.cell(
             r, 15,
-            f'=IF(OR(Q{r}="PRESENT",Q{r}="HALF DAY",Q{r}="ABSENT",Q{r}="WFH",Q{r}="UNROSTERED"),1,0)',
+            f'=IF(OR(Q{r}="HALF DAY (ROSTER)",Q{r}="HALF DAY (UNROSTERED)"),0.5,'
+            f'IF(OR(Q{r}="PRESENT",Q{r}="HALF DAY",Q{r}="ABSENT",Q{r}="WFH",Q{r}="UNROSTERED"),1,0))',
         )
         ws.cell(
             r, 16,
-            f'=IF(OR(Q{r}="PRESENT",Q{r}="HALF DAY",Q{r}="WFH"),1,0)',
+            f'=IF(OR(Q{r}="HALF DAY (ROSTER)",Q{r}="HALF DAY (UNROSTERED)"),0.5,'
+            f'IF(OR(Q{r}="PRESENT",Q{r}="HALF DAY",Q{r}="WFH"),1,0))',
         )
         ws.cell(
             r, 18,
-            f'=IF(OR(O{r}=1,Q{r}="LEAVE (UNROSTERED)"),1,0)',
+            # Last working-days total: only roster leave is removed.
+            # Full roster leave = 0, half roster leave = 0.5.
+            # Unrostered leave, full or half, stays as a full day.
+            f'=IF(Q{r}="LEAVE (ROSTER)",0,'
+            f'IF(Q{r}="HALF DAY (ROSTER)",0.5,'
+            f'IF(OR(Q{r}="PRESENT",Q{r}="HALF DAY",Q{r}="ABSENT",Q{r}="WFH",Q{r}="UNROSTERED",'
+            f'Q{r}="LEAVE (UNROSTERED)",Q{r}="HALF DAY (UNROSTERED)"),1,0)))',
+        )
+        half_hours = (
+            f'OR(Q{r}="HALF DAY",Q{r}="HALF DAY (ROSTER)",Q{r}="HALF DAY (UNROSTERED)")'
         )
         ws.cell(
             r, 5,
-            f'=IF(O{r}=1,IF(N(D{r})>=IF(Q{r}="HALF DAY",{rules_b("prod_hours")}/2,{rules_b("prod_hours")}),"YES","NO"),"")',
+            f'=IF(O{r}>0,IF(N(D{r})>=IF({half_hours},{rules_b("prod_hours")}/2,{rules_b("prod_hours")}),"YES","NO"),"")',
         )
         ws.cell(r, 6, row.get("qc_score"))
         ws.cell(
             r, 7,
-            f'=IF(O{r}=1,IF(F{r}="","",IF(F{r}>={rules_b("qc_min")},"YES","NO")),"")',
+            f'=IF(O{r}>0,IF(F{r}="","",IF(F{r}>={rules_b("qc_min")},"YES","NO")),"")',
         )
         trackers = row.get("tracker_count")
-        if trackers is None and (row.get("attendance") or "") in ("PRESENT", "HALF DAY", "WFH", "UNROSTERED"):
+        if trackers is None and (row.get("attendance") or "") in (
+            "PRESENT", "HALF DAY", "WFH", "UNROSTERED",
+            "HALF DAY (ROSTER)", "HALF DAY (UNROSTERED)",
+        ):
             trackers = 0
         ws.cell(r, 8, trackers)
         ws.cell(r, 9, row.get("note") or None)
@@ -399,6 +421,8 @@ def _write_daily(ws, report, first, last):
     )
     half_day_tracker = (
         f'COUNTIFS({span},"HALF DAY",{tracker_col},"<{TRACKER_MIN_HALF_DAY}")'
+        f'+0.5*COUNTIFS({span},"HALF DAY (ROSTER)",{tracker_col},"<{TRACKER_MIN_HALF_DAY}")'
+        f'+0.5*COUNTIFS({span},"HALF DAY (UNROSTERED)",{tracker_col},"<{TRACKER_MIN_HALF_DAY}")'
     )
     low_tracker = f"{full_day_tracker}+{half_day_tracker}"
 
@@ -461,19 +485,19 @@ def _write_daily(ws, report, first, last):
 
     # Achieved counts — Productivity | Quality | Present
     merge_label(counts_row, 1, 2, "No. of Days Productivity Achieved")
-    put_value(counts_row, 3, f'=COUNTIF({prod_col},"YES")')
+    put_value(counts_row, 3, f'=SUMPRODUCT(({prod_col}="YES")*({kra_work_col}))', "0.00")
     merge_label(counts_row, 4, 5, "No. of Days Quality Achieved")
-    put_value(counts_row, 6, f'=COUNTIF({qual_col},"YES")')
+    put_value(counts_row, 6, f'=SUMPRODUCT(({qual_col}="YES")*({kra_work_col}))', "0.00")
     merge_label(counts_row, 7, 8, "Present Days")
-    put_value(counts_row, 9, f"={present}")
+    put_value(counts_row, 9, f"={present}", "0.00")
 
     # Working days under each group
     merge_label(working_row, 1, 2, "Total Working Days")
-    put_value(working_row, 3, f"={working}")
+    put_value(working_row, 3, f"={working}", "0.00")
     merge_label(working_row, 4, 5, "Total Working Days")
-    put_value(working_row, 6, f"={working}")
+    put_value(working_row, 6, f"={working}", "0.00")
     merge_label(working_row, 7, 8, "Total Working Days")
-    put_value(working_row, 9, f"={schedule_working}")
+    put_value(working_row, 9, f"={schedule_working}", "0.00")
 
     # Scores
     merge_label(score_row, 1, 2, "Score")
@@ -496,7 +520,7 @@ def _write_daily(ws, report, first, last):
     )
 
     merge_label(low_row, 1, 2, "Days with low trackers (<7 full / <4 half)")
-    put_value(low_row, 3, f"={low_tracker}")
+    put_value(low_row, 3, f"={low_tracker}", "0.00")
 
     for r in (avg_row, counts_row, working_row, score_row, low_row):
         ws.row_dimensions[r].height = 24
@@ -563,7 +587,7 @@ def _write_daily(ws, report, first, last):
         f"H{first}:H{last}",
         FormulaRule(
             formula=[
-                f'AND(ISNUMBER(H{first}),H{first}<IF(Q{first}="HALF DAY",{TRACKER_MIN_HALF_DAY},{rules_b("tracker_min")}))'
+                f'AND(ISNUMBER(H{first}),H{first}<IF(OR(Q{first}="HALF DAY",Q{first}="HALF DAY (ROSTER)",Q{first}="HALF DAY (UNROSTERED)"),{TRACKER_MIN_HALF_DAY},{rules_b("tracker_min")}))'
             ],
             fill=_fill(RED),
             font=_font(10, True, "991B1B"),
@@ -572,9 +596,9 @@ def _write_daily(ws, report, first, last):
 
     # Daily columns stay compact; K:L are the right-side counts only
     for col, width in {
-        "A": 12, "B": 11, "C": 20, "D": 13, "E": 18,
+        "A": 12, "B": 11, "C": 26, "D": 13, "E": 18,
         "F": 12, "G": 14, "H": 10, "I": 22, "J": 2,
-        "K": 22, "L": 9,
+        "K": 26, "L": 9,
     }.items():
         ws.column_dimensions[col].width = width
     for col, label in (
@@ -594,7 +618,7 @@ def _write_daily(ws, report, first, last):
         showDropDown=False,
         showErrorMessage=True,
         errorTitle="Attendance",
-        error="Pick PRESENT, HALF DAY, ABSENT, LEAVE (ROSTER), LEAVE (UNROSTERED), WEEK OFF, WFH, UNROSTERED, or HOLIDAY.",
+        error="Pick PRESENT, HALF DAY, HALF DAY (ROSTER), HALF DAY (UNROSTERED), ABSENT, LEAVE (ROSTER), LEAVE (UNROSTERED), WEEK OFF, WFH, UNROSTERED, or HOLIDAY.",
         promptTitle="Attendance",
         prompt="Select a status. KRA Score updates from this column.",
         showInputMessage=True,
@@ -651,7 +675,7 @@ def _write_score(ws, report, totals_rows):
          f"(No. of Days Quality Achieved / Total Working Days) x 33  — Daily Log!F{counts_row}/F{working_row}"),
         (9, 3, "Schedule Adherence - Rostered Attendance", f"={rules_b('weight_sched')}",
          f"={sched_score}",
-         f"(Present Days / Total Working Days) x 10  — Daily Log!I{counts_row}/I{working_row}. Unrostered leave stays in this working-days count; roster leave does not."),
+         f"(Present Days / Total Working Days) x 10  — Daily Log!I{counts_row}/I{working_row}. This last total drops roster leave only (full day 1, half day 0.5). Unrostered leave is not removed."),
         (11, 4, "Adherence to Reporting in TimeChamp, Project Tracker, and Keka",
          f"={rules_b('weight_reporting')}",
          f'=IF(I14<={rules_b("reporting_full_max")},{rules_b("reporting_full_score")},'

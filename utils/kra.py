@@ -39,13 +39,18 @@ REPORTING_PARTIAL_SCORE = 7
 
 LEAVE_ROSTER = "LEAVE (ROSTER)"
 LEAVE_UNROSTERED = "LEAVE (UNROSTERED)"
+HALF_DAY_ROSTER = "HALF DAY (ROSTER)"
+HALF_DAY_UNROSTER = "HALF DAY (UNROSTERED)"
+HALF_LEAVE_ATTENDANCE = (HALF_DAY_ROSTER, HALF_DAY_UNROSTER)
 
 # Productivity and Quality: both leave types are excluded.
 WORKING_ATTENDANCE = ("PRESENT", "HALF DAY", "ABSENT", "WFH", "UNROSTERED")
+# Half-day roster/unrostered leave is still scored, but only as half a day.
+SCORED_ATTENDANCE = WORKING_ATTENDANCE + HALF_LEAVE_ATTENDANCE
 # Present / schedule column: unrostered leave still counts; roster leave does not.
 SCHEDULE_WORKING_ATTENDANCE = WORKING_ATTENDANCE + (LEAVE_UNROSTERED,)
 PRESENT_ATTENDANCE = ("PRESENT", "HALF DAY", "WFH")
-TRACKER_ATTENDANCE = ("PRESENT", "HALF DAY", "WFH", "UNROSTERED")
+TRACKER_ATTENDANCE = ("PRESENT", "HALF DAY", "WFH", "UNROSTERED") + HALF_LEAVE_ATTENDANCE
 NON_WORKING_CALENDAR = ("", "—", "WEEK OFF", "HOLIDAY")
 BLANK_ATTENDANCE = NON_WORKING_CALENDAR + (LEAVE_ROSTER, LEAVE_UNROSTERED, "LEAVE")
 
@@ -53,20 +58,19 @@ ROSTER_TO_KRA = {
     "Week Off": "WEEK OFF",
     "Holiday": "HOLIDAY",
     "Leave": LEAVE_ROSTER,
-    "Half Day Leave": "HALF DAY",
     "Half Day": "HALF DAY",
     "Working": "PRESENT",
 }
 
 FORMULAS = {
-    "productivity_day": "YES if billable hours meet the daily target on a working day (Present, Half Day, Absent, WFH, Unrostered). Hours on Holiday, Leave (Roster), Leave (Unrostered), or Week Off are extra and stay blank.",
-    "quality_day": "YES if QC score is 98 or above on a working day. NO if a working-day score is below 98. Holiday, both leave types, and Week Off stay blank even if a score exists (extra work).",
-    "productivity_score": "(No. of YES days / Total working days) × 33. Working days exclude both Leave (Roster) and Leave (Unrostered).",
-    "quality_score": "(No. of days with QC score ≥ 98 / Total working days) × 33. Working days exclude both leave types.",
-    "schedule_score": "(Present + Half Day + WFH / Total working days) × 10. This working-days count excludes Leave (Roster) only — Leave (Unrostered) still counts.",
-    "working_days": "Productivity/Quality working days: Present, Half Day, Absent, WFH, Unrostered. Both leave types are excluded. Schedule working days also include Leave (Unrostered).",
-    "present_days": "Present, Half Day, and WFH. This is rostered attendance.",
-    "reporting": "Count Present, WFH, and Unrostered days with fewer than 7 trackers, and Half Day with fewer than 4 trackers. Add warning instances (verbal = 1, email = 2, letter = 3). 0–3 instances = 14%, 4–6 = 7%, more than 6 = 0%.",
+    "productivity_day": "YES if billable hours meet the daily target on a working day (Present, Half Day, Absent, WFH, Unrostered, Half Day Roster, Half Day Unrostered). Half-day leave uses the half-day hour target and counts as 0.5. Hours on Holiday, Leave (Roster), Leave (Unrostered), or Week Off are extra and stay blank.",
+    "quality_day": "YES if QC score is 98 or above on a working day. NO if a working-day score is below 98. Half Day Roster and Half Day Unrostered count as 0.5. Holiday, both full leave types, and Week Off stay blank even if a score exists (extra work).",
+    "productivity_score": "(No. of YES days / Total working days) × 33. Working days exclude both full leave types. Half Day Roster and Half Day Unrostered each count as 0.5.",
+    "quality_score": "(No. of days with QC score ≥ 98 / Total working days) × 33. Working days exclude both full leave types. Half-day leave counts as 0.5.",
+    "schedule_score": "(Present days / last Total Working Days) × 10. That last total drops only roster leave: full roster leave removes 1, half day roster removes 0.5. Unrostered leave, full or half, is not removed.",
+    "working_days": "Productivity and Quality total working days drop every leave: roster and unrostered, full day (remove 1) and half day (remove 0.5). The last Total Working Days drops roster leave only.",
+    "present_days": "Present, Half Day, and WFH count as 1. Half Day Roster and Half Day Unrostered count as 0.5.",
+    "reporting": "Count Present, WFH, and Unrostered days with fewer than 7 trackers, and Half Day with fewer than 4 trackers. Half Day Roster and Half Day Unrostered with fewer than 4 trackers count as 0.5. Add warning instances (verbal = 1, email = 2, letter = 3). 0–3 instances = 14%, 4–6 = 7%, more than 6 = 0%.",
     "timeliness": "Not filled by HRMS. Weight 10% always counts in total weightage. Earned stays blank until typed in the Excel KRA Score sheet (0–10).",
 }
 
@@ -181,15 +185,46 @@ def normalize_attendance(status: str) -> str:
 
 def roster_attendance(day_type, working_type, is_half_day, is_rostered=1) -> str:
     label = roster_day_status_label(day_type, working_type, is_half_day)
+    rostered = int(is_rostered if is_rostered is not None else 1) != 0
+    # Half-day leave cuts 0.5. A half working day stays HALF DAY.
+    if label == "Half Day Leave":
+        return HALF_DAY_ROSTER if rostered else HALF_DAY_UNROSTER
     status = normalize_attendance(ROSTER_TO_KRA.get(label, ""))
     # Leave already on the roster is always Leave (Roster). Unrostered is only when marked 0.
-    if status == LEAVE_ROSTER and int(is_rostered if is_rostered is not None else 1) == 0:
+    if status == LEAVE_ROSTER and not rostered:
         return LEAVE_UNROSTERED
     return status
 
 
+def _half_leave(attendance: str) -> bool:
+    return normalize_attendance(attendance) in HALF_LEAVE_ATTENDANCE
+
+
+def working_units(attendance: str) -> float:
+    status = normalize_attendance(attendance)
+    if _half_leave(status):
+        return 0.5
+    return 1.0 if status in WORKING_ATTENDANCE else 0.0
+
+
+def present_units(attendance: str) -> float:
+    status = normalize_attendance(attendance)
+    if _half_leave(status):
+        return 0.5
+    return 1.0 if status in PRESENT_ATTENDANCE else 0.0
+
+
+def schedule_units(attendance: str) -> float:
+    status = normalize_attendance(attendance)
+    if status == HALF_DAY_ROSTER:
+        return 0.5
+    if status == HALF_DAY_UNROSTER:
+        return 1.0
+    return 1.0 if status in SCHEDULE_WORKING_ATTENDANCE else 0.0
+
+
 def productivity_flag(attendance: str, billable_hours, required_hours: float = PRODUCTIVITY_HOURS) -> str | None:
-    if normalize_attendance(attendance) not in WORKING_ATTENDANCE:
+    if normalize_attendance(attendance) not in SCORED_ATTENDANCE:
         return None
     hours = _num(billable_hours)
     compare = hours if hours is not None else 0
@@ -197,7 +232,7 @@ def productivity_flag(attendance: str, billable_hours, required_hours: float = P
 
 
 def quality_flag(qc_score, attendance: str | None = None) -> str | None:
-    if attendance and normalize_attendance(attendance) not in WORKING_ATTENDANCE:
+    if attendance and normalize_attendance(attendance) not in SCORED_ATTENDANCE:
         return None
     score = _num(qc_score)
     if score is None:
@@ -222,13 +257,13 @@ def is_low_tracker_day(attendance: str, tracker_count) -> bool:
     if attendance not in TRACKER_ATTENDANCE:
         return False
     count = int(_num(tracker_count) or 0)
-    limit = TRACKER_MIN_HALF_DAY if attendance == "HALF DAY" else TRACKER_MIN
+    limit = TRACKER_MIN_HALF_DAY if attendance == "HALF DAY" or _half_leave(attendance) else TRACKER_MIN
     return count < limit
 
 
-def reporting_score(low_tracker_days: int, verbal: int = 0, email: int = 0, letter: int = 0) -> dict:
+def reporting_score(low_tracker_days: float, verbal: int = 0, email: int = 0, letter: int = 0) -> dict:
     extra = int(verbal or 0) + int(email or 0) * 2 + int(letter or 0) * 3
-    instances = int(low_tracker_days or 0) + extra
+    instances = float(low_tracker_days or 0) + extra
     if instances <= REPORTING_FULL_MAX:
         earned = REPORTING_FULL_SCORE
         band = f"0–{REPORTING_FULL_MAX} instances = {REPORTING_FULL_SCORE}%"
@@ -247,7 +282,7 @@ def reporting_score(low_tracker_days: int, verbal: int = 0, email: int = 0, lett
     }
 
 
-def _ratio_score(numerator: int, denominator: int, weight: float) -> float | None:
+def _ratio_score(numerator: float, denominator: float, weight: float) -> float | None:
     if not denominator:
         return None
     return round((numerator / denominator) * weight, 2)
@@ -418,7 +453,7 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
                 rost.get("is_rostered", 1),
             )
         attendance = normalize_attendance(roster_status)
-        is_half = (attendance == "HALF DAY")
+        is_half = attendance == "HALF DAY" or _half_leave(attendance)
         required_hours = half_day_hours if is_half else full_day_hours
 
         hours = _num(bill.get("billable_hours"))
@@ -462,6 +497,7 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
 
     status_counts = {key: 0 for key in (
         "PRESENT", "HALF DAY", "ABSENT", LEAVE_ROSTER, LEAVE_UNROSTERED,
+        HALF_DAY_ROSTER, HALF_DAY_UNROSTER,
         "WEEK OFF", "WFH", "UNROSTERED", "HOLIDAY",
     )}
     productivity_yes = 0
@@ -481,24 +517,22 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
         row["attendance"] = status
         if status in status_counts:
             status_counts[status] += 1
+        credit = 0.5 if _half_leave(status) else 1.0
         if row["productivity"] == "YES":
-            productivity_yes += 1
+            productivity_yes += credit
         elif row["productivity"] == "NO":
-            productivity_no += 1
+            productivity_no += credit
         if row["quality"] == "YES":
-            quality_yes += 1
+            quality_yes += credit
         elif row["quality"] == "NO":
-            quality_no += 1
+            quality_no += credit
         if status and status not in NON_WORKING_CALENDAR:
             actual_working_days += 1
-        if is_working_day(status):
-            working_days += 1
-        if is_schedule_working_day(status):
-            schedule_working_days += 1
-        if is_present_day(status):
-            present_days += 1
+        working_days += working_units(status)
+        schedule_working_days += schedule_units(status)
+        present_days += present_units(status)
         if row["low_tracker"]:
-            low_tracker_days += 1
+            low_tracker_days += 0.5 if _half_leave(status) else 1
         if row["billable_hours"] is not None:
             billable_total += row["billable_hours"]
         if row["qc_score"] is not None:
