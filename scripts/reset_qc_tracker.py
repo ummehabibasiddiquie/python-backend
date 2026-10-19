@@ -93,6 +93,9 @@ def main():
             return
 
         # 4. Perform Deletion in Transaction
+        # The SELECTs above open an implicit transaction; close it before starting ours.
+        if conn.in_transaction:
+            conn.rollback()
         conn.start_transaction()
 
         # Delete qc_audit
