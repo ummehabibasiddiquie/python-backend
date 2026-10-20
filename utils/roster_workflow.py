@@ -585,6 +585,89 @@ def cancel_duplicate_pending_leave_requests(
     return cursor.rowcount
 
 
+def supersede_same_day_draft_requests(
+    cursor,
+    *,
+    roster_month_id: int,
+    user_id: int,
+    change_type: str,
+    change_payload: dict,
+    keep_request_id: int,
+    submitted_by: int,
+) -> int:
+    """
+    One draft change per employee per day: a newer day edit or single-day leave
+    replaces the earlier unsubmitted draft for that same date.
+    Submitted (batched) requests are left alone.
+    """
+    payload = change_payload or {}
+    if change_type == "DAY_UPDATE":
+        start = end = _date_only(payload.get("roster_date"))
+    elif change_type in ("LEAVE_ADD", "LEAVE_UPDATE"):
+        start = _date_only(payload.get("start_date"))
+        end = _date_only(payload.get("end_date")) or start
+    else:
+        return 0
+    if not start or not end:
+        return 0
+
+    cursor.execute(
+        """
+        SELECT request_id, change_type, change_payload
+        FROM roster_change_request
+        WHERE roster_month_id=%s AND status='Pending' AND is_active=1
+          AND (batch_id IS NULL OR batch_id='')
+          AND request_id != %s
+          AND change_type IN ('DAY_UPDATE', 'LEAVE_ADD', 'LEAVE_UPDATE')
+        """,
+        (int(roster_month_id), int(keep_request_id)),
+    )
+    replaced: list[dict] = []
+    for row in cursor.fetchall() or []:
+        row_payload = _parse_payload(row.get("change_payload"))
+        if row.get("change_type") == "DAY_UPDATE":
+            row_date = _date_only(row_payload.get("roster_date"))
+            if row_date and start <= row_date <= end:
+                replaced.append(row)
+        else:
+            # Only single-day leave drafts are replaced; a multi-day leave keeps its other days.
+            row_start = _date_only(row_payload.get("start_date"))
+            row_end = _date_only(row_payload.get("end_date")) or row_start
+            if row_start and row_start == row_end and start <= row_start <= end:
+                replaced.append(row)
+
+    if not replaced:
+        return 0
+
+    now = now_str()
+    for row in replaced:
+        cursor.execute(
+            """
+            UPDATE roster_change_request
+            SET is_active=0,
+                status='Cancelled due to Withdrawal',
+                reviewer_comment='Replaced by a newer change for the same day before submit',
+                reviewed_by=%s,
+                reviewed_date=%s
+            WHERE request_id=%s AND status='Pending' AND is_active=1
+            """,
+            (int(submitted_by), now, int(row["request_id"])),
+        )
+        write_audit_log(
+            cursor,
+            roster_month_id=int(roster_month_id),
+            user_id=int(user_id),
+            action="CHANGE_REQUEST_DRAFT_WITHDRAWN",
+            entity_type="roster_change_request",
+            entity_id=int(row["request_id"]),
+            old_value={"status": "Pending", "change_type": row.get("change_type")},
+            new_value={"status": "Cancelled due to Withdrawal", "replaced_by": int(keep_request_id)},
+            performed_by=int(submitted_by),
+            notes="Replaced by a newer change for the same day before submit",
+        )
+    return len(replaced)
+
+
 def weekoff_swap_preview(cursor, roster_month_id: int, new_week_off_dates: list[str]) -> dict:
     days = get_roster_days(cursor, roster_month_id)
     if not days:

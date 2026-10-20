@@ -64,6 +64,7 @@ from utils.roster_workflow import (
     count_pending_change_requests_for_month,
     cancel_pending_requests_for_roster,
     cancel_duplicate_pending_leave_requests,
+    supersede_same_day_draft_requests,
     finalize_approved_cycle,
     get_pending_requests_for_batch,
     get_roster_days,
@@ -293,6 +294,15 @@ def roster_create_change_request():
                 change_payload=change_payload,
                 submitted_by=logged_in_user_id,
             )
+            supersede_same_day_draft_requests(
+                cursor,
+                roster_month_id=int(roster_month_id),
+                user_id=int(roster_month["user_id"]),
+                change_type=change_type,
+                change_payload=change_payload,
+                keep_request_id=int(request_id),
+                submitted_by=logged_in_user_id,
+            )
             conn.commit()
             message = "Change request created" if created else "Existing pending leave request updated"
             return api_response(201 if created else 200, message, {"request_id": request_id})
@@ -306,8 +316,22 @@ def roster_create_change_request():
             submitted_by=logged_in_user_id,
             batch_id=None,
         )
+        replaced = supersede_same_day_draft_requests(
+            cursor,
+            roster_month_id=int(roster_month_id),
+            user_id=int(roster_month["user_id"]),
+            change_type=change_type,
+            change_payload=change_payload,
+            keep_request_id=int(request_id),
+            submitted_by=logged_in_user_id,
+        )
         conn.commit()
-        return api_response(201, "Change request created", {"request_id": request_id})
+        message = (
+            "Change request created and replaced the earlier change for this day"
+            if replaced
+            else "Change request created"
+        )
+        return api_response(201, message, {"request_id": request_id})
     except Exception as e:
         conn.rollback()
         return api_response(500, f"Create change request failed: {str(e)}")
@@ -962,7 +986,8 @@ def roster_approve_bulk():
                 request_ids = [int(x) for x in raw_ids]
             except (TypeError, ValueError):
                 return api_response(400, "request_ids must be a list of integers")
-            request_ids = list(dict.fromkeys(request_ids))
+            # The queue lists newest first; apply oldest first so the latest change for a day wins.
+            request_ids = sorted(dict.fromkeys(request_ids))
 
         if not request_ids:
             return api_response(400, "No pending requests to approve")
@@ -2760,6 +2785,15 @@ def roster_excel_apply():
                     )
                     created += 1
                     request_ids.append(int(request_id))
+                supersede_same_day_draft_requests(
+                    cursor,
+                    roster_month_id=roster_month_id,
+                    user_id=int(roster_month["user_id"]),
+                    change_type=change_type,
+                    change_payload=change_payload,
+                    keep_request_id=int(request_id),
+                    submitted_by=int(logged_in_user_id),
+                )
             except Exception as row_err:
                 failed.append(
                     {
