@@ -415,6 +415,7 @@ def list_user_monthly_targets():
             SELECT
                 u.user_id,
                 u.user_name,
+                u.user_tenure,
                 t.team_name,
                 umt.user_monthly_tracker_id,
                 {month_year_coalesce} AS month_year,
@@ -447,6 +448,7 @@ def list_user_monthly_targets():
             GROUP BY
                 u.user_id,
                 u.user_name,
+                u.user_tenure,
                 t.team_name,
                 umt.user_monthly_tracker_id,
                 umt.month_year,

@@ -6,7 +6,7 @@ from utils.cloudinary_utils import upload_to_cloudinary, delete_from_cloudinary,
 from datetime import datetime, timedelta, date
 from collections import defaultdict
 from utils.qc_auto_score import AUTO_QC_DAYS_SQL, MANUAL_QC_DAYS_SQL, sync_auto_qc_score_for_day
-from utils.time_ist import today_str as ist_today_str
+from utils.time_ist import now_ist, today_str as ist_today_str
 from utils.roster_helpers import reject_if_read_only, team_leader_scope_sql, team_leader_scope_params
 import logging
 import re
@@ -314,6 +314,18 @@ def _parse_tracker_date_source(date_time_value):
         except Exception:
             continue
     return None
+
+
+def _agent_can_delete_own_tracker(date_time_value, shift) -> bool:
+    """Same day as added. Night trackers added 00:00–09:00 are stored on the previous date, so yesterday counts."""
+    parsed = _parse_tracker_date_source(date_time_value)
+    if not parsed:
+        return False
+    today = now_ist().date()
+    if parsed.date() == today:
+        return True
+    is_night = str(shift or "").strip().upper() == "NIGHT"
+    return is_night and parsed.hour < 9 and parsed.date() == today - timedelta(days=1)
 
 
 def _tracker_work_date(value) -> str | None:
@@ -793,7 +805,7 @@ def delete_tracker():
 
     try:
         cursor.execute(
-            "SELECT tracker_id, user_id, tracker_file, date_time FROM task_work_tracker WHERE tracker_id=%s",
+            "SELECT tracker_id, user_id, tracker_file, date_time, shift FROM task_work_tracker WHERE tracker_id=%s",
             (tracker_id,),
         )
         tracker = cursor.fetchone()
@@ -808,6 +820,11 @@ def delete_tracker():
             )
             if read_only_err:
                 return read_only_err
+
+            if int(actor_id) == int(tracker["user_id"]) and not _agent_can_delete_own_tracker(
+                tracker.get("date_time"), tracker.get("shift")
+            ):
+                return api_response(403, "Trackers can only be deleted on the day they were added")
 
         # ✅ soft delete DB
         cursor.execute(
@@ -1361,6 +1378,7 @@ def view_daily_trackers():
                 dwc.user_id,
                 dwc.shift,
                 u.user_name,
+                u.user_tenure,
 
                 -- ✅ team info in response
                 t.team_id,
