@@ -489,11 +489,13 @@ def dashboard_filter():
                 twt.project_id,
                 p.project_name,
                 twt.task_id,
+                t.task_name,
                 twt.production,
                 twt.billable_hours,
                 twt.date_time,
                 twt.tracker_file
             {base_from}
+            LEFT JOIN task t ON t.task_id = twt.task_id
             {where_sql}
             ORDER BY {TRACKER_DT} DESC
             LIMIT 500
