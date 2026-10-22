@@ -35,14 +35,14 @@ def _require_user(data: dict):
 
 
 def _can_manage(role_name: str, role_id) -> bool:
-    """Only Admin and Super Admin may add or edit. Everyone else can view."""
+    """Admin, Super Admin, Project Manager and Assistant Manager may add or edit. Everyone else can view."""
     name = (role_name or "").strip().lower()
     try:
-        if int(role_id) in (1, 2):
+        if int(role_id) in (1, 2, 3, 4):
             return True
     except (TypeError, ValueError):
         pass
-    return name in ("admin", "super admin")
+    return name in ("admin", "super admin", "project manager", "assistant manager")
 
 
 def _ensure_tables(cursor) -> None:

@@ -5,6 +5,7 @@ from utils.cloudinary_utils import upload_to_cloudinary, delete_from_cloudinary,
 from utils.file_utils import is_allowed_file
 from utils.roster_helpers import reject_read_only_actor
 import json
+import re
 from datetime import datetime
 
 project_bp = Blueprint("project", __name__)
@@ -100,6 +101,72 @@ def _get_uploaded_files():
     return [f for f in files if f and f.filename]
 
 
+MAX_SOP_LINKS = 20
+_sop_links_column_ready = False
+
+
+def _ensure_sop_links_column(cursor) -> None:
+    """Shared-drive SOP links live in their own column so project files stay unchanged."""
+    global _sop_links_column_ready
+    if _sop_links_column_ready:
+        return
+    cursor.execute("SHOW COLUMNS FROM project LIKE 'project_sop_links'")
+    if not cursor.fetchall():
+        cursor.execute("ALTER TABLE project ADD COLUMN project_sop_links TEXT NULL")
+    _sop_links_column_ready = True
+
+
+def parse_sop_links(val) -> list:
+    if not val:
+        return []
+    if isinstance(val, (bytes, bytearray)):
+        val = val.decode("utf-8", errors="ignore")
+    if isinstance(val, str):
+        try:
+            val = json.loads(val)
+        except Exception:
+            return []
+    if not isinstance(val, list):
+        return []
+    out = []
+    for item in val:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        title = str(item.get("title") or "").strip() or url
+        out.append({"title": title, "url": url})
+    return out
+
+
+def _sop_links_from_form(form):
+    """Returns (links, error). links is None when the form did not send sop_links."""
+    raw = form.get("sop_links")
+    if raw is None:
+        return None, None
+    try:
+        items = json.loads(raw) if raw else []
+    except Exception:
+        return None, "sop_links must be a JSON list"
+    if not isinstance(items, list):
+        return None, "sop_links must be a JSON list"
+    links = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not url and not title:
+            continue
+        if not re.match(r"^https?://", url, re.I):
+            return None, f"SOP link must start with http:// or https:// ({title or url})"
+        links.append({"title": (title or url)[:250], "url": url[:1000]})
+    if len(links) > MAX_SOP_LINKS:
+        return None, f"A project can have at most {MAX_SOP_LINKS} SOP links"
+    return links, None
+
+
 # ---------------- CREATE PROJECT ---------------- #
 
 @project_bp.route("/create", methods=["POST"])
@@ -134,6 +201,10 @@ def create_project():
     # NEW FLAGS
     requires_ai_evaluation = str(form.get("requires_ai_evaluation", "false")).lower() in ("true", "1")
     requires_duplicate_check = str(form.get("requires_duplicate_check", "false")).lower() in ("true", "1")
+
+    sop_links, sop_err = _sop_links_from_form(form)
+    if sop_err:
+        return api_response(400, sop_err)
 
     uploaded_files = _get_uploaded_files()
 
@@ -178,6 +249,7 @@ def create_project():
 
     try:
 
+        _ensure_sop_links_column(cursor)
         conn.start_transaction()
 
         cursor.execute(
@@ -191,6 +263,7 @@ def create_project():
                 project_team_id,
                 project_qa_id,
                 project_pprt,
+                project_sop_links,
                 project_category_id,
                 ai_evaluation,
                 duplicate_check,
@@ -198,7 +271,7 @@ def create_project():
                 updated_date,
                 is_active
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1)
             """,
             (
                 project_name,
@@ -209,6 +282,7 @@ def create_project():
                 json.dumps(project_team_id),
                 json.dumps(project_qa_id),
                 json.dumps(saved_urls),
+                json.dumps(sop_links or []),
                 project_category_id,
                 requires_ai_evaluation,
                 requires_duplicate_check,
@@ -312,6 +386,13 @@ def update_project():
         if form.get("requires_duplicate_check") is not None:
             update_values["duplicate_check"] = str(form.get("requires_duplicate_check")).lower() in ("true", "1")
 
+        sop_links, sop_err = _sop_links_from_form(form)
+        if sop_err:
+            return api_response(400, sop_err)
+        if sop_links is not None:
+            _ensure_sop_links_column(cursor)
+            update_values["project_sop_links"] = json.dumps(sop_links)
+
         # Active / inactive toggle (does not delete files)
         if form.get("is_active") is not None:
             v = form.get("is_active")
@@ -363,6 +444,7 @@ def list_projects():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        _ensure_sop_links_column(cursor)
         where_sql = "" if include_inactive else "WHERE is_active = 1"
         cursor.execute(f"""
             SELECT
@@ -376,6 +458,7 @@ def list_projects():
                 project_qa_id,
                 project_category_id,
                 project_pprt,
+                project_sop_links,
                 ai_evaluation,
                 duplicate_check,
                 is_active,
@@ -407,6 +490,7 @@ def list_projects():
                 "project_category_id": proj["project_category_id"],
 
                 "project_files": parse_db_files(proj["project_pprt"]),
+                "sop_links": parse_sop_links(proj.get("project_sop_links")),
 
                 "requires_ai_evaluation": bool(proj["ai_evaluation"]),
                 "requires_duplicate_check": bool(proj["duplicate_check"]),
@@ -425,6 +509,39 @@ def list_projects():
 
     finally:
 
+        cursor.close()
+        conn.close()
+
+
+# ---------------- PROJECT SOP LINKS (view only) ---------------- #
+
+@project_bp.route("/sop_links", methods=["POST"])
+def project_sop_links():
+    """Shared-drive SOP links for one project. Read only; links are managed on Add/Edit Project."""
+    data = request.get_json(silent=True) or {}
+    project_id = data.get("project_id")
+    if not project_id:
+        return api_response(400, "project_id is required")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        _ensure_sop_links_column(cursor)
+        cursor.execute(
+            "SELECT project_id, project_name, project_sop_links FROM project WHERE project_id=%s",
+            (project_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return api_response(404, "Project not found")
+        return api_response(200, "SOP links fetched", {
+            "project_id": row["project_id"],
+            "project_name": row["project_name"],
+            "sop_links": parse_sop_links(row.get("project_sop_links")),
+        })
+    except Exception as e:
+        return api_response(500, f"Failed to fetch SOP links: {str(e)}")
+    finally:
         cursor.close()
         conn.close()
 
