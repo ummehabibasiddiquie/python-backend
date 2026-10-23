@@ -169,11 +169,57 @@ def _sop_links_from_form(form):
 
 # ---------------- CREATE PROJECT ---------------- #
 
+def _reject_without_project_permission(form) -> object | None:
+    """Same rule as the website's canManageProjects (AuthContext.jsx)."""
+    actor_id = form.get("logged_in_user_id")
+    if not actor_id:
+        return None
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT u.role_id, LOWER(TRIM(r.role_name)) AS role_name, p.project_creation_permission
+            FROM tfs_user u
+            LEFT JOIN user_role r ON r.role_id = u.role_id
+            LEFT JOIN user_permission p ON p.user_id = u.user_id
+            WHERE u.user_id = %s
+            ORDER BY p.project_creation_permission DESC
+            LIMIT 1
+            """,
+            (int(actor_id),),
+        )
+        actor = cursor.fetchone() or {}
+    finally:
+        cursor.close()
+        conn.close()
+
+    try:
+        role_id = int(actor.get("role_id") or 0)
+    except (TypeError, ValueError):
+        role_id = 0
+    role_name = (actor.get("role_name") or "").strip()
+    is_team_leader = role_id == 7 or "team leader" in role_name
+    is_assistant_manager = not is_team_leader and (
+        role_id == 4 or "assistant" in role_name or "asst" in role_name
+    )
+    allowed = not is_team_leader and (
+        str(actor.get("project_creation_permission")).strip() == "1"
+        or role_id in (1, 2, 3, 4)
+        or role_name in ("admin", "super admin")
+        or "project manager" in role_name
+        or is_assistant_manager
+    )
+    if not allowed:
+        return api_response(403, "You do not have permission to create projects")
+    return None
+
+
 @project_bp.route("/create", methods=["POST"])
 def create_project():
 
     form = request.form
-    deny = _reject_read_only_from_request(form)
+    deny = _reject_read_only_from_request(form) or _reject_without_project_permission(form)
     if deny:
         return deny
 
@@ -332,6 +378,7 @@ def update_project():
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
+    saved_urls = []
 
     try:
 
@@ -393,6 +440,48 @@ def update_project():
             _ensure_sop_links_column(cursor)
             update_values["project_sop_links"] = json.dumps(sop_links)
 
+        # Project files: existing_files = URLs to keep (when sent); new uploads are appended.
+        uploaded_files = _get_uploaded_files()
+        if uploaded_files or form.get("existing_files") is not None:
+            current_files = parse_db_files(existing.get("project_pprt"))
+
+            if form.get("existing_files") is not None:
+                keep = _get_json_list(form, "existing_files")
+                current_files = [f for f in current_files if f in keep]
+
+            project_name = update_values.get("project_name") or existing.get("project_name")
+            project_code = update_values.get("project_code") or existing.get("project_code")
+            total = len(uploaded_files)
+
+            try:
+                for idx, fs in enumerate(uploaded_files, start=1):
+
+                    if not is_allowed_file(fs.filename):
+                        raise ValueError(f"Unsupported file type: {fs.filename}")
+
+                    custom_name = build_project_filename(
+                        project_name,
+                        project_code,
+                        fs.filename,
+                        idx,
+                        total
+                    )
+
+                    url, _ = upload_to_cloudinary(
+                        fs,
+                        FOLDER_PROJECT,
+                        display_name=custom_name,
+                        resource_type="raw"
+                    )
+
+                    saved_urls.append(url)
+
+            except Exception as e:
+                safe_delete_cloudinary_project_files(saved_urls)
+                return api_response(400, f"File upload failed: {str(e)}")
+
+            update_values["project_pprt"] = json.dumps(current_files + saved_urls)
+
         # Active / inactive toggle (does not delete files)
         if form.get("is_active") is not None:
             v = form.get("is_active")
@@ -423,6 +512,7 @@ def update_project():
     except Exception as e:
 
         conn.rollback()
+        safe_delete_cloudinary_project_files(saved_urls)
         return api_response(500, f"Project update failed: {str(e)}")
 
     finally:

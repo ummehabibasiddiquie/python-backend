@@ -171,6 +171,33 @@ def user_handler():
             deny = reject_read_only_actor(cursor_chk, actor_id)
             if deny:
                 return deny
+
+            # Same rule as the website's canManageUsers (AuthContext.jsx)
+            cursor_chk.execute("""
+                SELECT u.role_id, LOWER(TRIM(r.role_name)) AS role_name, p.user_creation_permission
+                FROM tfs_user u
+                LEFT JOIN user_role r ON r.role_id = u.role_id
+                LEFT JOIN user_permission p ON p.user_id = u.user_id
+                WHERE u.user_id = %s
+                ORDER BY p.user_creation_permission DESC
+                LIMIT 1
+            """, (int(actor_id),))
+            actor = cursor_chk.fetchone() or {}
+            try:
+                actor_role_id = int(actor.get("role_id") or 0)
+            except (TypeError, ValueError):
+                actor_role_id = 0
+            actor_role_name = (actor.get("role_name") or "").strip()
+            has_flag = str(actor.get("user_creation_permission")).strip() == "1"
+            is_tl_actor = actor_role_id == 7 or "team leader" in actor_role_name
+            can_manage_users = not is_tl_actor and (
+                has_flag
+                or actor_role_id in (1, 2, 3)
+                or actor_role_name in ("admin", "super admin")
+                or "project manager" in actor_role_name
+            )
+            if not can_manage_users:
+                return api_response(403, "You do not have permission to create users")
         finally:
             try:
                 cursor_chk.close()
