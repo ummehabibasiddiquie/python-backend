@@ -1,5 +1,3 @@
-import os
-
 from flask import Blueprint, request
 from datetime import datetime
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -127,10 +125,6 @@ def _build_reset_email_html(reset_link: str) -> str:
 @password_reset_bp.route("/forgot-password", methods=["POST"])
 def forgot_password():
     data, err = validate_request(required=["user_email"])
-    print("HOST:", os.getenv("SMTP_HOST"))
-    print("USER:", os.getenv("SMTP_USER"))
-    print("PASS LENGTH:", len(os.getenv("SMTP_PASS")))
-    print("PASS REPR:", repr(os.getenv("SMTP_PASS")))
     if err:
         return err
 
@@ -177,8 +171,6 @@ def forgot_password():
         except Exception as mail_err:
             print(f"[forgot_password] Email send failed for {user_email}: {mail_err}")
 
-        # ✅ Backend-only for now: return token/link so you can test (unchanged)
-        response_data.update({"token": token, "reset_link": reset_link})
         return api_response(200, response_data["message"], response_data)
 
     except Exception as e:
