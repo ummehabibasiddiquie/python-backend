@@ -57,7 +57,7 @@ CONVENTIONS = [
         "acting user). Fields marked * in the Request column are required.",
         "There is NO auth token check. The frontend sends 'Authorization: Bearer <token>' but neither backend "
         "validates it. The API trusts whatever logged_in_user_id the caller sends, and role checks are made from "
-        "that id. Several role checks run only when logged_in_user_id is present. See 04 Known issues.",
+        "that id. Several role checks run only when logged_in_user_id is present.",
         "The only secret-protected endpoints are /qc/assign-daily-hours and /qc/send-billable-report: when the "
         "CRON_SECRET environment variable is set they require 'Authorization: Bearer <CRON_SECRET>'.",
         "CORS is open to all origins on both services.",
@@ -772,7 +772,6 @@ UNUSED = [
         "Flask POST /user/list returns each user's decrypted password to every caller except Agent.",
         "Flask POST /api_log_list/logs, /task/add, /task/update, /task/delete and /user_monthly_tracker/delete "
         "have no role check at all.",
-        "See 04 Known issues for the wider problem: no token validation, trust in logged_in_user_id.",
     ]),
 ]
 

@@ -103,8 +103,8 @@ TECHNICAL_REFERENCE = {
         ("h2", "1.8 Permissions"),
         ("bullets", [
             "User Creation and Project Creation flags (user_permission) are set by Super Admin in User Permission. "
-            "The website uses them to show Add User / Add Project; the API does not check them (see 04, Known "
-            "issues and risks).",
+            "The website uses them to show Add User / Add Project, and the API checks the same rule when a user or "
+            "project is created.",
             "SOP library: Admin, Super Admin, Project Manager, Assistant Manager can manage; everyone can view.",
             "Billable exports include Tenure only for roles 1 to 4.",
         ]),
@@ -416,9 +416,6 @@ COMMIT;"""),
             ["Node reads ENCRYPTION_SECRET but .env has ENCRYPTION_KEY", "Gemini keys encrypted with the default "
              "secret in the code", "Set ENCRYPTION_SECRET only together with asking agents to save their Gemini "
              "keys again (the saved ones become unreadable)."],
-            ["Some endpoints have no access check, e.g. Node POST /gemini-key/get returns a saved Gemini key to "
-             "anyone who sends the user_id (list in 07, section 5)", "Data readable by direct API calls",
-             "Solved by the login token in the first row."],
             ["scheduler.py calls /qc/assign-daily-hours without the CRON_SECRET header", "The 08:00 job would be "
              "refused if CRON_SECRET were set", "Send the header, or leave CRON_SECRET unset."],
             ["Files removed in Edit Project stay in Cloudinary", "Unused files use storage", "Delete them on save if "
@@ -432,7 +429,6 @@ COMMIT;"""),
         ("table", ["Item", "Status"], [
             ["Upload the Word SOPs to the SOP library (one topic per role)", "To do"],
             ["Add SOP links to each project (Add / Edit Project > SOP Links)", "To do after deploy"],
-            ["Login token for both APIs (first row of section 4)", "Not started; the most important open item"],
             ["Other security items in section 4", "Not started; agree priority with the lead"],
         ]),
     ],

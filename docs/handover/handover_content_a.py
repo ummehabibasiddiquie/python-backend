@@ -117,8 +117,7 @@ Flask + Node --> Cloudinary (files) and SMTP (emails)"""),
             "The website decides which API to call per feature. QC form saves and samples go to Node; QC lists, "
             "audits and QC overview come from Flask.",
             "There is no login token. After login the browser keeps the user in sessionStorage and sends "
-            "logged_in_user_id in each request; the APIs look up that user's role in the database. See 04, Known "
-            "issues and risks.",
+            "logged_in_user_id in each request; the APIs look up that user's role in the database.",
             "In development, Vite proxies /api/v1 to Node on 8000; Flask is called directly on 5000.",
         ]),
 
