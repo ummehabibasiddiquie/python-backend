@@ -624,23 +624,31 @@ def send_email(report_date, html_body):
 # -------------------------------
 # MAIN
 # -------------------------------
+def run_billable_report():
+
+    report_date, data = fetch_data()
+
+    if not data:
+        logging.info("No data found")
+        return {"message": "No data found", "sent": False}
+
+    html = generate_html(report_date, data)
+
+    sent = send_email(report_date, html)
+
+    if sent:
+        logging.info("Report sent successfully")
+        return {"message": "Report sent successfully", "sent": True}
+
+    logging.info("Report not sent: no To emails in database")
+    return {"message": "Report not sent: no To emails in database", "sent": False}
+
+
 if __name__ == "__main__":
 
     try:
 
-        report_date, data = fetch_data()
-
-        if not data:
-            logging.info("No data found")
-            exit()
-
-        html = generate_html(report_date, data)
-
-        sent = send_email(report_date, html)
-        if sent:
-            logging.info("Report sent successfully")
-        else:
-            logging.info("Report not sent: no To emails in database")
+        run_billable_report()
 
     except Exception as e:
         print("Error:", str(e))
