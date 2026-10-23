@@ -13,6 +13,13 @@ __pycache__/
 # Logs
 *.log
 
+# Docs: password-protected credentials, local test logins, one-off probes, Word lock files
+docs/handover/confidential/
+docs/sop/test_logins.local.json
+docs/sop/probe/
+docs/sop/probe_roles.py
+~$*
+
 # IDE / editor files
 .vscode/
 .idea/
