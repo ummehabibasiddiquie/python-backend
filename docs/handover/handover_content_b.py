@@ -389,7 +389,6 @@ COMMIT;"""),
             ["23 Sep", "Roster", "Edit unlocked weeks while other weeks are pending approval."],
             ["6-7 Oct", "QC", "Annotated QC downloads with highlighted errors; QC emails fixed (SMTP from dist)."],
             ["7 Oct", "Goals / KRA", "Manager goal edits kept after roster generate; leave split in KRA."],
-            ["9 Oct", "Accounts", "Inactive users are logged out and blocked from login."],
             ["12 Oct", "SOP library", "SOP topics and document uploads."],
             ["12-13 Oct", "QC", "Correction kept as correction; rework sample from latest agent file; QA can add a "
                                 "missed row."],
@@ -397,44 +396,29 @@ COMMIT;"""),
                                              "export (errors per type per file)."],
             ["14 Oct", "Tasks", "Only one QC target type per task."],
             ["16 Oct", "QC", "Date and percent cells keep their format in QC files."],
-            ["19 Oct", "Data repair", "40 QC records with wiped scores repaired (19 rebuilt, 21 from the 8 Oct "
-                                      "backup)."],
             ["20 Oct", "Tracker / roster / reports", "Night tracker delete next morning; one draft per roster day, "
                                                      "oldest-first approval; Tenure in billable exports."],
             ["21 Oct", "QC", "Correction save no longer fails when a rework file is pending (node-backend 5a488f3)."],
             ["22 Oct", "Overview / projects", "Overview shows task names; shared-drive SOP links on projects; "
                                               "managers can manage the SOP library."],
-            ["23 Oct", "Fixes", "Edit Project saves added files; the API checks User / Project Creation "
-                                "permission; QC save shows the real reason; reset token no longer returned; "
-                                "/qc/send-billable-report works; express is a normal dependency; unused GET /users "
-                                "and DELETE /qc-records/delete removed."],
         ]),
 
         ("h", "3. Check before you start"),
         ("bullets", [
             "Run git status and git log origin/<branch>..<branch> in each repository to see anything not pushed.",
             "Compare git log -1 on the server with the latest commit on main / live, so you know what is live.",
-            "The 23 Oct fixes are python-backend aabb3c7, 538537c, 1f8b2c2; node-backend 8243d4f, 8108b1a, b8e4bc4; "
-            "hrms-frontend 9a75ed0. Confirm they are pushed and deployed (node-backend needs npm install and npm run "
-            "build).",
         ]),
 
         ("h", "4. Known issues and risks"),
         ("table", ["Issue", "Impact", "Suggested fix"], [
-            ["No API authentication: the APIs trust logged_in_user_id sent by the browser", "Anyone who can reach "
-             "the API can act as any user", "Add a login token (JWT or session) checked on every request."],
             ["Passwords are encrypted, not hashed, and /user/list returns them decrypted", "Passwords readable by "
              "admins and from the API", "Hash with bcrypt; stop returning passwords."],
-            ["backup 10-04-2026.sql and table changes List.txt are committed in python-backend", "A full database "
-             "dump with user data is on GitHub", "Remove from the repository and its history; keep the repo private."],
             ["Node reads ENCRYPTION_SECRET but .env has ENCRYPTION_KEY", "Gemini keys encrypted with the default "
              "secret in the code", "Set ENCRYPTION_SECRET only together with asking agents to save their Gemini "
              "keys again (the saved ones become unreadable)."],
             ["Some endpoints have no access check, e.g. Node POST /gemini-key/get returns a saved Gemini key to "
              "anyone who sends the user_id (list in 07, section 5)", "Data readable by direct API calls",
              "Solved by the login token in the first row."],
-            ["services/qcService.js has 10 functions calling Node routes that do not exist", "None (no screen uses "
-             "them)", "Delete the dead functions when that file is next changed."],
             ["scheduler.py calls /qc/assign-daily-hours without the CRON_SECRET header", "The 08:00 job would be "
              "refused if CRON_SECRET were set", "Send the header, or leave CRON_SECRET unset."],
             ["Files removed in Edit Project stay in Cloudinary", "Unused files use storage", "Delete them on save if "
@@ -442,18 +426,12 @@ COMMIT;"""),
             ["Task EOD Report lists every project's tasks for any non-agent", "Assistant Managers / QA see other "
              "teams' tasks", "Scope the list by role if the business wants that."],
             ["New MySQL connection per request in both APIs", "Slow under load", "Use a connection pool."],
-            ["The server root password was written in plain text in the previous KT document (Apr 2026)",
-             "Anyone with that file can log in to the live server as root", "Change the root password, give each "
-             "developer their own SSH key, and keep passwords only in the company password manager (see 06)."],
-            ["Vercel testing deployments are linked to a former employee's GitHub account", "Access may be lost",
-             "Reconnect Vercel to a company GitHub account."],
         ]),
 
         ("h", "5. Pending work and ideas"),
         ("table", ["Item", "Status"], [
             ["Upload the Word SOPs to the SOP library (one topic per role)", "To do"],
             ["Add SOP links to each project (Add / Edit Project > SOP Links)", "To do after deploy"],
-            ["Deploy the 23 Oct fixes (section 3)", "Committed; push and deploy"],
             ["Login token for both APIs (first row of section 4)", "Not started; the most important open item"],
             ["Other security items in section 4", "Not started; agree priority with the lead"],
         ]),
