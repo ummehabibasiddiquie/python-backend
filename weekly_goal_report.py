@@ -346,26 +346,27 @@ def build_html(recipient: dict, rows: list[dict], start: date, end: date) -> str
     )
 
 
-def send(to_email: str, subject: str, html: str) -> None:
+def send(to_email: str | list[str], subject: str, html: str) -> None:
+    to_list = [to_email] if isinstance(to_email, str) else list(to_email)
     user = os.getenv("SMTP_USER")
     msg = MIMEMultipart("alternative")
     msg["From"] = user
-    msg["To"] = to_email
+    msg["To"] = ", ".join(to_list)
     msg["Subject"] = subject
     msg.attach(MIMEText(html, "html"))
     with smtplib.SMTP(os.getenv("SMTP_HOST"), int(os.getenv("SMTP_PORT", 587))) as server:
         server.starttls()
         server.login(user, os.getenv("SMTP_PASS"))
-        server.sendmail(user, [to_email], msg.as_string())
+        server.sendmail(user, to_list, msg.as_string())
 
 
 def send_test(test_to: str, start: date, end: date, rows: list[dict]) -> dict:
-    """Send the full (Admin view) report only to the given addresses (comma-separated), marked as a test."""
+    """Send one email with the full (Admin view) report to all given addresses (comma-separated), marked as
+    a test, so every test recipient appears in To."""
     addresses = [a.strip() for a in test_to.split(",") if a.strip()]
-    for address in addresses:
-        reader = {"user_name": address, "role_id": ROLE_ADMIN}
-        send(address, f"[TEST] Weekly goal report: {week_label(start, end)}", build_html(reader, rows, start, end))
-        logging.info("test report sent to %s for %s", address, week_label(start, end))
+    reader = {"user_name": "all" if len(addresses) > 1 else addresses[0], "role_id": ROLE_ADMIN}
+    send(addresses, f"[TEST] Weekly goal report: {week_label(start, end)}", build_html(reader, rows, start, end))
+    logging.info("test report sent to %s for %s", ", ".join(addresses), week_label(start, end))
     result = {"week": week_label(start, end), "agents": len(rows),
               "missed": sum(1 for r in rows if r["achieved"] < r["goal"]), "test_sent_to": addresses}
     print(result)
