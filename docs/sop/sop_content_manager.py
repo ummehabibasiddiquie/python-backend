@@ -244,7 +244,7 @@ MANAGER_REPORTS = {
         ]),
 
         ("h", "10. Weekly goal email (every Monday)"),
-        ("p", "Every Monday at 10:30 the HRMS emails last week's (Monday to Sunday) agents of teams A and B who did "
+        ("p", "Every Monday at 11:00 the HRMS emails last week's (Monday to Sunday) agents of teams A and B who did "
               "not reach their weekly goal. Nothing has to be opened in the HRMS; it arrives in your mailbox."),
         ("table", ["You are", "You receive"], [
             ["Admin or Project Manager", "All agents of teams A and B."],

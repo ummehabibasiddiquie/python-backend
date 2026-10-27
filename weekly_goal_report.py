@@ -13,7 +13,7 @@ Recipients (active users, by role):
   Assistant Manager, Team Leader   -> only the agents assigned to them
 If everyone in a recipient's list reached the goal, they get an "all achieved" email instead.
 
-Usage (from backend-api; server cron runs it every Monday at 10:30 IST):
+Usage (from backend-api; server cron runs it every Monday at 11:00 IST):
     python weekly_goal_report.py                                   # last week, send to everyone
     python weekly_goal_report.py --dry-run                         # show who would get what, send nothing
     python weekly_goal_report.py --week-start 2026-10-19           # send a past week again (any date in it works)

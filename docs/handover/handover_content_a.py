@@ -132,7 +132,7 @@ Flask + Node --> Cloudinary (files) and SMTP (emails)"""),
              "Today's trackers so far to the 'Tracker' recipients."],
             ["Previous-day production (send_tracker_report_full_day.py)", "Daily (server cron)",
              "Yesterday's full production to the 'Tracker full' recipients."],
-            ["Weekly goal report (weekly_goal_report.py)", "Monday 10:30 IST (server cron)",
+            ["Weekly goal report (weekly_goal_report.py)", "Monday 11:00 IST (server cron)",
              "Last week's (Mon-Sun) agents of teams A and B who missed their weekly goal. Admin and Project Manager "
              "get all agents; each Assistant Manager / Team Lead gets only their own agents. If nobody missed, an "
              "'all achieved' email is sent instead (rules: 03, Business rules)."],
@@ -366,8 +366,9 @@ venv/bin/python weekly_goal_report.py --week-start 2026-10-19            # send 
 venv/bin/python weekly_goal_report.py --week-start 2026-10-19 --to a@x   # resend to one recipient
 tail weekly_goal_report.log                              # what was sent, and errors"""),
         ("bullets", [
-            "Schedule: one line in crontab -e. With the server on IST: 30 10 * * 1 cd /root/tfshrms/hrms-backend "
-            "&& venv/bin/python weekly_goal_report.py >> weekly_goal_cron.log 2>&1 (on UTC use 0 5 * * 1). "
+            "Schedule (Monday 11:00 IST): one line in crontab -e. With the server on IST: 0 11 * * 1 cd "
+            "/root/tfshrms/hrms-backend && venv/bin/python weekly_goal_report.py >> weekly_goal_cron.log 2>&1 (on "
+            "UTC use 30 5 * * 1). "
             "Check the zone with timedatectl.",
             "Stop it: put # at the start of that line. Start again: remove the #. Change the time: edit the numbers.",
             "--week-start accepts any date in the week; the report always covers that Monday to Sunday.",
