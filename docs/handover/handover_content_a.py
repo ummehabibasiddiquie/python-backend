@@ -132,9 +132,14 @@ Flask + Node --> Cloudinary (files) and SMTP (emails)"""),
              "Today's trackers so far to the 'Tracker' recipients."],
             ["Previous-day production (send_tracker_report_full_day.py)", "Daily (server cron)",
              "Yesterday's full production to the 'Tracker full' recipients."],
+            ["Weekly goal report (weekly_goal_report.py)", "Monday 10:30 IST (server cron)",
+             "Last week's (Mon-Sun) agents of teams A and B who missed their weekly goal. Admin and Project Manager "
+             "get all agents; each Assistant Manager / Team Lead gets only their own agents. If nobody missed, an "
+             "'all achieved' email is sent instead (rules: 03, Business rules)."],
         ]),
-        ("p", "Recipients for the three report emails are managed by Super Admin in Report emails "
-              "(table report_email_recipient). Check the real schedule on the server with crontab -l."),
+        ("p", "Recipients for the billable and the two tracker report emails are managed by Super Admin in Report "
+              "emails (table report_email_recipient). The weekly goal report has no recipient list: it goes to "
+              "active users by role and reporting line. Check the real schedule on the server with crontab -l."),
 
         ("h", "8. Golden rules"),
         ("bullets", [
@@ -353,6 +358,20 @@ sudo tail -f /var/log/nginx/error.log                # 502 / 504 errors appear h
         ("h2", "11.3 Copying files to and from the server (run on your laptop)"),
         ("code", """scp root@72.62.197.92:/root/backup.sql C:\\Users\\<you>\\Downloads\\
 scp C:\\Users\\<you>\\Downloads\\file.sql root@72.62.197.92:/root/tfshrms"""),
+        ("h2", "11.4 Weekly goal report"),
+        ("p", "A cron script like the other report emails. Run these in /root/tfshrms/hrms-backend."),
+        ("code", """venv/bin/python weekly_goal_report.py --dry-run          # who would get what; sends nothing
+venv/bin/python weekly_goal_report.py --test-to a@x,b@x   # one [TEST] email to these addresses only
+venv/bin/python weekly_goal_report.py --week-start 2026-10-19            # send a past week again
+venv/bin/python weekly_goal_report.py --week-start 2026-10-19 --to a@x   # resend to one recipient
+tail weekly_goal_report.log                              # what was sent, and errors"""),
+        ("bullets", [
+            "Schedule: one line in crontab -e. With the server on IST: 30 10 * * 1 cd /root/tfshrms/hrms-backend "
+            "&& venv/bin/python weekly_goal_report.py >> weekly_goal_cron.log 2>&1 (on UTC use 0 5 * * 1). "
+            "Check the zone with timedatectl.",
+            "Stop it: put # at the start of that line. Start again: remove the #. Change the time: edit the numbers.",
+            "--week-start accepts any date in the week; the report always covers that Monday to Sunday.",
+        ]),
 
         ("h", "12. Where to look when something fails"),
         ("table", ["Symptom", "Look at"], [
@@ -363,6 +382,9 @@ scp C:\\Users\\<you>\\Downloads\\file.sql root@72.62.197.92:/root/tfshrms"""),
             ["Upload fails for large files", "The Nginx upload limit (section 11.2)."],
             ["Report email not received", "crontab -l, the script log files (daily_tracker_report.log, "
                                            "logs/send_tracker_report.log) and Report emails recipients."],
+            ["Weekly goal email not received", "weekly_goal_report.log; the person is active, has an email and is "
+                                               "Admin, Project Manager, or the agents' Assistant Manager / Team "
+                                               "Lead (section 11.4)."],
             ["QC email to agent not received", "pm2 logs node-backend lines starting [Email] or [QC Email]; the "
                                                "agent's user_email."],
         ]),

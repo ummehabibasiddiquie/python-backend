@@ -87,6 +87,7 @@ KT_CHECKLIST = {
             "Has reset a QC for a tracker (on a test copy)",
             "Can find the cause of a failed QC save (\"Could not save QC\" message and pm2 logs)",
             "Can check scheduled report emails (crontab, logs, recipients)",
+            "Can dry-run, test (--test-to), resend and stop or start the weekly goal report (document 02, 11.4)",
         ]),
         *section("3.8 Accounts and access (section 2 and document 06)", [
             "Can push to all three GitHub repositories",

@@ -109,6 +109,21 @@ TECHNICAL_REFERENCE = {
             "Billable exports include Tenure only for roles 1 to 4.",
         ]),
 
+        ("h2", "1.9 Weekly goal report (weekly_goal_report.py)"),
+        ("bullets", [
+            "Covers last week, Monday to Sunday, for agents of teams A and B (team rows such as \"A\" are skipped). "
+            "Agents deactivated during or after that week are still included; agents who left before it are not.",
+            "Week goal = the monthly-target rule (utils/roster_metrics.py) applied to that week: Mon-Fri days that "
+            "are not holidays at the agent's daily hours (9 x tenure), minus half working days, \"Left\" days and "
+            "leave that affects the target. Leave that does not affect the target is not deducted. Example: 45 h; "
+            "36 h with one full-day leave that affects the target or one holiday.",
+            "Achieved = production / tenure target of that week's tracker entries (same as the daily billable "
+            "report). An agent with no roster that week falls back to their daily assigned hours (temp_qc).",
+            "Recipients by role: Admin and Project Manager get all agents; an Assistant Manager / Team Lead gets the "
+            "agents whose asst_manager_id / team_leader_id contains them. Nobody missed: an \"all achieved\" email.",
+            "% achieved colours: below 75 red, 75 to 89 orange, 90 and above green.",
+        ]),
+
         # ---------------------------------------------------------------- codebase
         ("h", "2. Codebase guide"),
         ("h2", "2.1 Flask API (backend-api)"),
@@ -124,6 +139,8 @@ TECHNICAL_REFERENCE = {
             ["scheduler.py", "APScheduler job that calls /qc/assign-daily-hours at 08:00."],
             ["billable_report_autosend.py, send_tracker_report.py, send_tracker_report_full_day.py",
              "Report email scripts run by cron."],
+            ["weekly_goal_report.py", "Monday weekly goal email (cron); --dry-run, --test-to, --week-start, --to "
+                                      "(02, section 11.4; rules in 1.9)."],
             ["report_email_recipients.py", "Reads recipients per report from report_email_recipient."],
             ["scripts/", "Support scripts: reset_qc_tracker.py, repair / restore QC score scripts, roster schema "
                          "check and sync."],
@@ -361,6 +378,11 @@ COMMIT;"""),
             "Super Admin > Report emails: the person is listed with that report switched on.",
             "crontab -l on the server: the job is scheduled; the log file shows a [SUCCESS] line for the day.",
             "SMTP settings in the backend .env are valid (test with test_mail.py).",
+            "Weekly goal report: it has no recipient list. Check the person is an active Admin or Project Manager, "
+            "or is set as Assistant Manager / Team Lead on the agents (Edit User). tail weekly_goal_report.log shows "
+            "every address it was sent to.",
+            "To send a missed week again: venv/bin/python weekly_goal_report.py --week-start <any date in that "
+            "week>, adding --to <email> for one person only (02, section 11.4).",
         ]),
 
         ("h2", "1.8 User cannot log in"),

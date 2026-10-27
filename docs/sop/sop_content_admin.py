@@ -107,6 +107,9 @@ SUPER_ADMIN = {
             "In the list, switch each report on or off per person, or change TO / CC.",
             "Use the bin to remove someone. Search and the All / To / Cc filters help with long lists.",
         ]),
+        ("note", "The Monday weekly goal email is not set up here. It goes automatically to Admins and Project "
+                 "Managers (all agents) and to each Assistant Manager / Team Lead (their own agents). See SOP - "
+                 "Manager - Reports, section 10."),
         ("h", "4. Common problems"),
         ("table", ["Problem", "What to do"], [
             ["Someone did not get an email", "Check they are listed with that report switched on."],
@@ -206,6 +209,8 @@ ASSISTANT_TEAM_LEADER = {
             ["Manage > Roster Management", "Edit your team's days and leave, and submit them for approval "
                                            "(see SOP - Manager - Roster)."],
             ["Manage > SOPs / SOPs", "Read the SOP library."],
+            ["Email (every Monday)", "Weekly goal email listing your agents who missed last week's goal (see SOP - "
+                                     "Manager - Reports, section 10)."],
         ]),
         ("img", "atl_01_overview", "Overview"),
         ("img", "atl_02_tracker_report", "Tracker Report"),

@@ -243,13 +243,32 @@ MANAGER_REPORTS = {
             "tracker is corrected.",
         ]),
 
-        ("h", "10. Rules to remember"),
+        ("h", "10. Weekly goal email (every Monday)"),
+        ("p", "Every Monday at 10:30 the HRMS emails last week's (Monday to Sunday) agents of teams A and B who did "
+              "not reach their weekly goal. Nothing has to be opened in the HRMS; it arrives in your mailbox."),
+        ("table", ["You are", "You receive"], [
+            ["Admin or Project Manager", "All agents of teams A and B."],
+            ["Assistant Manager or Team Lead", "Only the agents assigned to you (Assistant Manager / Team Lead in the "
+                                               "agent's profile). No agents assigned: no email."],
+        ]),
+        ("bullets", [
+            "Week goal = Monday to Friday working days at the agent's daily hours (9 h x tenure), minus holidays, "
+            "half days and leave that affects the target. Leave that does not affect the target still counts in "
+            "the goal. Example: 45 h; 36 h with one full-day leave that affects the target.",
+            "Achieved = billable hours from the agent's tracker entries that week (same as the Billable Report).",
+            "For each agent who missed: week goal, achieved, shortfall and % achieved. Red below 75%, orange 75 to "
+            "89%, green 90% and above.",
+            "If every agent reached the goal you get an \"all achieved\" email instead.",
+            "Agents who left during the week are still included for that week.",
+        ]),
+
+        ("h", "11. Rules to remember"),
         ("bullets", [
             "Billable report exports include a Tenure column for Admin, Super Admin, Project Manager and Assistant Manager.",
             "Working days come from the approved roster; change the roster, not the report, for attendance.",
         ]),
 
-        ("h", "11. Common problems"),
+        ("h", "12. Common problems"),
         ("table", ["Problem", "What to do"], [
             ["Numbers look wrong for a day", "Check the roster for that day and the agent's tracker entries."],
             ["Edit icons not shown", "Your role can view only."],
@@ -260,6 +279,10 @@ MANAGER_REPORTS = {
                                                       "and a target."],
             ["Generate says files were not found", "Ask the listed agents to upload their files again, then Generate "
                                                    "again."],
+            ["No weekly goal email on Monday", "Check Junk / Other. Team Leads and Assistant Managers get it only if "
+                                               "agents are assigned to them. Ask the HRMS team to resend that week."],
+            ["An agent's week goal looks wrong", "Check that week in the roster: leave marked as affecting the target, "
+                                                 "half days and holidays reduce the goal."],
         ]),
     ],
 }
