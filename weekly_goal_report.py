@@ -225,12 +225,12 @@ GOAL_NOTE = ("Week goal = Monday-Friday working days at each agent's daily hours
 
 
 def percent_colours(percent: float) -> tuple[str, str]:
-    """(text / bar colour, light background) for the % achieved badge."""
-    if percent < 50:
+    """(text / bar colour, light background) for the % achieved badge and bar: <75 red, 75-90 orange, 90+ green."""
+    if percent < 75:
         return "#B91C1C", "#FEE2E2"
-    if percent < 80:
-        return "#B45309", "#FEF3C7"
-    return "#1D4ED8", "#DBEAFE"
+    if percent < 90:
+        return "#C2410C", "#FFEDD5"
+    return "#15803D", "#DCFCE7"
 
 
 def summary_box(value, label: str, colour: str, background: str) -> str:
@@ -245,7 +245,7 @@ def summary_box(value, label: str, colour: str, background: str) -> str:
 
 
 def agent_row(r: dict, shaded: bool) -> str:
-    colour, background = percent_colours(r["percent"])
+    colour, background = percent_colours(round(r["percent"]))
     bar = max(2, min(100, int(round(r["percent"]))))
     cell = f"padding:9px 10px;border-bottom:1px solid #E2E8F0;{FONT};font-size:13px;color:#0F172A"
     return (
