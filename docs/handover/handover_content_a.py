@@ -393,6 +393,9 @@ tail weekly_goal_report.log                              # what was sent, and er
                                                "Lead (section 11.4)."],
             ["QC email to agent not received", "pm2 logs node-backend lines starting [Email] or [QC Email]; the "
                                                "agent's user_email."],
+            ["Assistant Team Leader gets 404 'Tracker or file not found' on QC Form",
+             "The ATL must be the agent's Quality Analyst (qa_id); check the role is Assistant Team Leader, not QA. "
+             "Node must be built with the scope = 'qc' change (npm run build, pm2 restart node-backend)."],
         ]),
 
         ("h", "13. Backups"),

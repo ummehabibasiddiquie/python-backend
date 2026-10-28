@@ -730,7 +730,10 @@ JOBS = [
          "POST {PYTHON_URL}/tracker/view",
          "None",
          "Used by GET /tracker/view, POST /tracker/process-excel (without a file), /qc-records/generate-sample, "
-         "/qc-records/lookup-row and /qc-records/download-sample. PYTHON_URL is set in the Node .env."],
+         "/qc-records/lookup-row and /qc-records/download-sample. The three qc-records calls always send "
+         "scope = 'qc', so an Assistant Team Leader gets the trackers of agents where they are the QA (without it "
+         "Flask limits them to their own team and Node answers 404 'Tracker or file not found'). "
+         "PYTHON_URL is set in the Node .env."],
     ]),
 ]
 

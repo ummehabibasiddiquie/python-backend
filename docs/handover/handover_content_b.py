@@ -109,7 +109,9 @@ TECHNICAL_REFERENCE = {
             "it from the top menu.",
             "Assistant Team Leader does QC like a QA when picked as an agent's QA: QC screens send scope = 'qc' so "
             "the backend filters by qa_id / project_qa_id instead of the team (routes/dropdown.py, tracker.py, "
-            "user.py, qc_history_user_based.py); other screens stay team-based and view only.",
+            "user.py, qc_history_user_based.py). The Node QC backend also sends scope = 'qc' when it fetches the "
+            "tracker for the QC sample (controllers/qc-records.controller.ts). Other screens stay team-based and "
+            "view only.",
             "Billable exports include Tenure only for roles 1 to 4.",
         ]),
 
