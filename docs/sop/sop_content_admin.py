@@ -208,7 +208,7 @@ ASSISTANT_TEAM_LEADER = {
                                         "steps as SOP - QA - QC). Includes My QC Report."],
             ["My Report", "Add Tracker for your non-QC work (Feedback, Training, Reporting, Other) and see your daily "
                           "and monthly QA hours (same steps as SOP - QA - Reports and Hours, section 2)."],
-            ["Audit Report", "Audits managers did on your QC."],
+            ["Analytics > Audit Report", "Audits managers did on your QC (only your own)."],
             ["Analytics", "View your team's overview, billable report and KRA. Overview cards are explained in "
                           "SOP - Manager - Reports, section 2."],
             ["Tracker Report", "View your team's tracker entries. The Task EOD Report tab joins all agents' files for "
