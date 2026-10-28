@@ -170,6 +170,23 @@ def qc_audit_report():
         if qc_end_date:
             where.append("DATE(qr.created_at) <= %s")
             params.append(qc_end_date)
+
+        # QA and Assistant Team Leader only see audits on their own QC
+        viewer_id = data.get("logged_in_user_id")
+        if viewer_id:
+            cursor.execute(
+                """
+                SELECT u.role_id, LOWER(TRIM(r.role_name)) AS role_name
+                FROM tfs_user u LEFT JOIN user_role r ON r.role_id = u.role_id
+                WHERE u.user_id = %s
+                """,
+                (viewer_id,),
+            )
+            viewer = cursor.fetchone() or {}
+            viewer_role = viewer.get("role_name") or ""
+            if viewer.get("role_id") in (5, 7) or viewer_role in ("qa", "assistant team leader", "team leader"):
+                where.append("qr.qa_user_id = %s")
+                params.append(viewer_id)
         if where:
             query += " WHERE " + " AND ".join(where)
 
