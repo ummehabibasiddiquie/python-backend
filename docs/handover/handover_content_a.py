@@ -247,12 +247,8 @@ npm run dev"""),
         ("table", ["Tool", "Where", "Use"], [
             ["Backend unit tests", "backend-api/tests", "python -m unittest (QC auto score, roster rules, report "
                                                         "recipients)."],
-            ["SOP screenshots and Word SOPs", "docs/sop", "capture_screenshots.py (Playwright, local only) then "
-                                                          "build_sop_docs.py."],
             ["QC tracker reset script", "backend-api/scripts/reset_qc_tracker.py", "See 04, section 1.1."],
         ]),
-        ("note", "docs/sop/capture_screenshots.py contains test logins. Keep it local; do not commit or share it "
-                 "as it is."),
 
         ("h", "7. Common setup problems"),
         ("table", ["Problem", "Fix"], [
