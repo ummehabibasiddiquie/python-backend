@@ -3,7 +3,7 @@ Build the developer handover documents (Word) from handover_content*.py.
 
 Usage (from backend-api):
     python docs/handover/build_handover_docs.py
-Output: docs/handover/word/<NN> - <title>.docx
+Output: docs/handover/HRMS Developer Guide/<NN> - <title>.docx
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ sys.path.insert(0, str(HERE))
 
 from build_sop_docs import BRAND, Renderer, set_cell_shading  # noqa: E402
 
-OUT = HERE / "word"
+OUT = HERE / "HRMS Developer Guide"
 VERSION = "1.0"
 ISSUED = date(2026, 10, 22).strftime("%d %b %Y")
 

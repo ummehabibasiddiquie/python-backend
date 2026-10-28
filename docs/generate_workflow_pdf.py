@@ -20,7 +20,7 @@ from reportlab.platypus import (
 from reportlab.lib.colors import HexColor
 
 OUT = r"c:\Users\UmmehabibaSiddiquie\Desktop\Hrms_live\output\pdf\HRMS_Role_Based_Workflow.pdf"
-OUT_DOCS = r"c:\Users\UmmehabibaSiddiquie\Desktop\Hrms_live\docs\HRMS_Role_Based_Workflow.pdf"
+OUT_DOCS = r"c:\Users\UmmehabibaSiddiquie\Desktop\Hrms_live\docs\Other Doc\HRMS_Role_Based_Workflow.pdf"
 
 NAVY = HexColor("#1B3A5F")
 BLUE = HexColor("#2E5A88")

@@ -19,9 +19,9 @@ from reportlab.platypus import (
 from reportlab.lib.colors import HexColor
 
 OUT_MGR = r"c:\Users\UmmehabibaSiddiquie\Desktop\Hrms_live\output\pdf\HRMS_Role_Based_Access_Control.pdf"
-OUT_MGR_DOCS = r"c:\Users\UmmehabibaSiddiquie\Desktop\Hrms_live\docs\HRMS_Role_Based_Access_Control.pdf"
+OUT_MGR_DOCS = r"c:\Users\UmmehabibaSiddiquie\Desktop\Hrms_live\docs\Other Doc\HRMS_Role_Based_Access_Control.pdf"
 OUT_ADM = r"c:\Users\UmmehabibaSiddiquie\Desktop\Hrms_live\output\pdf\HRMS_Admin_Super_Admin_Access.pdf"
-OUT_ADM_DOCS = r"c:\Users\UmmehabibaSiddiquie\Desktop\Hrms_live\docs\HRMS_Admin_Super_Admin_Access.pdf"
+OUT_ADM_DOCS = r"c:\Users\UmmehabibaSiddiquie\Desktop\Hrms_live\docs\Other Doc\HRMS_Admin_Super_Admin_Access.pdf"
 
 NAVY = HexColor("#1B3A5F")
 BLUE = HexColor("#2E5A88")
