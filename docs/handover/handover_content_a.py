@@ -70,6 +70,8 @@ START_HERE = {
                         "Report (own audits)."],
             ["6", "Agent", "Only themselves: Tracker, own reports, KRA, QC results, My Roster, AI Evaluation."],
         ]),
+        ("p", "Agents, QA and Assistant Team Leaders also have a view-only Projects tab (their projects with "
+              "files, SOP links and tasks with sample files; POST /project/my_projects)."),
         ("p", "Each user has a role plus reporting lines (project manager, assistant manager, team leader, QA). "
               "Visibility in every report follows these lines. The columns that hold them are in 03, Database "
               "reference."),

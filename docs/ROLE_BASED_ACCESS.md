@@ -68,6 +68,7 @@ Access is based on the user’s **role**. Job designation is for display only an
 | Roster Management | Edit | Edit (team) | Edit (team) | — | — |
 | Roster Approve / Reject | — | — | — | — | — |
 | My Roster | — | — | — | View | View |
+| Projects (details, files, SOP links, tasks) | — | — | View | View | View (own) |
 | Daily Tracker (Agent app) | — | — | — | — | Edit (own) |
 | AI Evaluation | — | — | — | — | Yes |
 | Salary details | View | — | — | — | — |

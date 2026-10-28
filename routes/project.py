@@ -636,6 +636,174 @@ def project_sop_links():
         conn.close()
 
 
+# ---------------- MY PROJECTS (view only: Agent, QA, Assistant Team Leader) ---------------- #
+
+def _id_in_list_sql(col: str) -> str:
+    cleaned = f"REPLACE(REPLACE(REPLACE(REPLACE({col},'[',''),']',''),'\"',''),' ','')"
+    return f"({col} = %s OR FIND_IN_SET(%s, {cleaned}) > 0)"
+
+
+def _json_id_list(val) -> list:
+    if val in (None, ""):
+        return []
+    try:
+        parsed = json.loads(val) if isinstance(val, str) else val
+    except Exception:
+        parsed = str(val).split(",")
+    if not isinstance(parsed, list):
+        parsed = [parsed]
+    out = []
+    for item in parsed:
+        try:
+            out.append(int(str(item).strip()))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+@project_bp.route("/my_projects", methods=["POST"])
+def my_projects():
+    """Active projects and tasks the caller works on, with files, SOP links and sample files. Read only."""
+    data = request.get_json(silent=True) or {}
+    try:
+        uid = int(data.get("logged_in_user_id") or 0)
+    except (TypeError, ValueError):
+        uid = 0
+    if not uid:
+        return api_response(400, "logged_in_user_id is required")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        _ensure_sop_links_column(cursor)
+        cursor.execute(
+            """
+            SELECT u.role_id, LOWER(TRIM(r.role_name)) AS role_name
+            FROM tfs_user u LEFT JOIN user_role r ON r.role_id = u.role_id
+            WHERE u.user_id = %s AND u.is_active = 1 AND u.is_delete = 1
+            """,
+            (uid,),
+        )
+        actor = cursor.fetchone()
+        if not actor:
+            return api_response(404, "User not found")
+        role_id = int(actor.get("role_id") or 0)
+        role_name = actor.get("role_name") or ""
+        is_agent = role_id == 6 or role_name == "agent"
+        is_team_leader = role_id == 7 or "team leader" in role_name
+        is_qa = role_id == 5 or role_name == "qa"
+
+        v = str(uid)
+        where = ["p.is_active = 1"]
+        params: list = []
+        if is_agent:
+            where.append(_id_in_list_sql("p.project_team_id"))
+            params += [v, v]
+        elif is_qa or is_team_leader:
+            scope = [_id_in_list_sql("p.project_team_id"), _id_in_list_sql("p.project_qa_id")]
+            params += [v, v, v, v]
+            if is_team_leader:
+                from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
+                clean_team = "REPLACE(REPLACE(REPLACE(REPLACE(p.project_team_id,'[',''),']',''),'\"',''),' ','')"
+                scope.append(f"""EXISTS (
+                    SELECT 1 FROM tfs_user tu
+                    WHERE tu.is_delete = 1
+                      AND {team_leader_scope_sql("tu")}
+                      AND FIND_IN_SET(CAST(tu.user_id AS CHAR), {clean_team}) > 0
+                )""")
+                params += team_leader_scope_params(uid)
+            where.append("(" + " OR ".join(scope) + ")")
+
+        cursor.execute(
+            f"""
+            SELECT p.project_id, p.project_name, p.project_code, p.project_description,
+                   p.project_manager_id, p.asst_project_manager_id, p.project_qa_id,
+                   p.project_pprt, p.project_sop_links, pc.project_category_name
+            FROM project p
+            LEFT JOIN project_category pc ON pc.project_category_id = p.project_category_id
+            WHERE {' AND '.join(where)}
+            ORDER BY p.project_name
+            """,
+            tuple(params),
+        )
+        projects = cursor.fetchall() or []
+        if not projects:
+            return api_response(200, "Projects fetched successfully", [])
+
+        project_ids = [int(p["project_id"]) for p in projects]
+        task_where = [f"t.project_id IN ({','.join(['%s'] * len(project_ids))})", "t.is_active = 1"]
+        task_params: list = list(project_ids)
+        if is_agent:
+            task_where.append(_id_in_list_sql("t.task_team_id"))
+            task_params += [v, v]
+        cursor.execute(
+            f"""
+            SELECT t.task_id, t.project_id, t.task_name, t.task_description, t.task_target,
+                   t.qc_percentage, t.important_columns, t.task_file
+            FROM task t
+            WHERE {' AND '.join(task_where)}
+            ORDER BY t.task_name
+            """,
+            tuple(task_params),
+        )
+        tasks_by_project: dict[int, list] = {}
+        from routes.task import task_file_url
+        for t in cursor.fetchall() or []:
+            try:
+                important = json.loads(t.get("important_columns") or "[]")
+            except Exception:
+                important = []
+            tasks_by_project.setdefault(int(t["project_id"]), []).append({
+                "task_id": t["task_id"],
+                "task_name": t["task_name"],
+                "task_description": t.get("task_description"),
+                "task_target": t.get("task_target"),
+                "qc_percentage": t.get("qc_percentage"),
+                "important_columns": important if isinstance(important, list) else [],
+                "sample_file": task_file_url(t.get("task_file")),
+            })
+
+        people_ids = set()
+        for p in projects:
+            people_ids.update(_json_id_list(p.get("project_manager_id")))
+            people_ids.update(_json_id_list(p.get("asst_project_manager_id")))
+            people_ids.update(_json_id_list(p.get("project_qa_id")))
+        names: dict[int, str] = {}
+        if people_ids:
+            ids = sorted(people_ids)
+            cursor.execute(
+                f"SELECT user_id, user_name FROM tfs_user WHERE user_id IN ({','.join(['%s'] * len(ids))})",
+                tuple(ids),
+            )
+            names = {int(r["user_id"]): r["user_name"] for r in cursor.fetchall() or []}
+
+        def _names(val) -> list:
+            return [names[i] for i in _json_id_list(val) if i in names]
+
+        result = []
+        for p in projects:
+            pid = int(p["project_id"])
+            result.append({
+                "project_id": pid,
+                "project_name": p["project_name"],
+                "project_code": p.get("project_code"),
+                "project_description": p.get("project_description"),
+                "category": p.get("project_category_name"),
+                "project_manager": _names(p.get("project_manager_id")),
+                "assistant_managers": _names(p.get("asst_project_manager_id")),
+                "qa": _names(p.get("project_qa_id")),
+                "project_files": parse_db_files(p.get("project_pprt")),
+                "sop_links": parse_sop_links(p.get("project_sop_links")),
+                "tasks": tasks_by_project.get(pid, []),
+            })
+        return api_response(200, "Projects fetched successfully", result)
+    except Exception as e:
+        return api_response(500, f"Failed to fetch projects: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
 # ---------------- DELETE PROJECT ---------------- #
 
 @project_bp.route("/delete", methods=["POST"])

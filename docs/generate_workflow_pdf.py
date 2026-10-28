@@ -410,6 +410,7 @@ Also in: QC Report Overview (PM, AM) · QA Agent Audit (PM, AM)
                 ["Manage", "Yes", "Yes", "Roster", "-", "-"],
                 ["My Report", "-", "-", "Yes", "Yes", "-"],
                 ["My Roster", "-", "-", "-", "Yes", "Yes"],
+                ["Projects (view only)", "-", "-", "Yes", "Yes", "Yes"],
                 ["Tracker", "-", "-", "-", "-", "Yes"],
                 ["AI Evaluation", "-", "-", "-", "-", "Yes"],
             ],

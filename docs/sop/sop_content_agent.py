@@ -11,8 +11,9 @@ AGENT_TRACKER = {
               "each one must be added on the day the work is done and with the right file."),
 
         ("h", "2. Screen guide - Tracker page"),
-        ("p", "After login agents land on Tracker. The top menu has Analytics, My Roster, Tracker, AI Evaluation and "
-              "SOPs."),
+        ("p", "After login agents land on Tracker. The top menu has Analytics, My Roster, Tracker, AI Evaluation, "
+              "Projects and SOPs. Projects (view only) lists your projects with their SOP links, project files and "
+              "your tasks (target, QC %, important columns and the sample file to download)."),
         ("img", "agent_01_tracker", "Production Tracker"),
         ("table", ["Part of the screen", "What it does"], [
             ["Add Tracker", "Opens the form to add a new entry."],

@@ -263,6 +263,7 @@ Any role with KRA tab
 | Manage | ✓ | ✓ | ✓ (roster) | — | — |
 | My Report | — | — | ✓ | ✓ | — |
 | My Roster | — | — | — | ✓ | ✓ |
+| Projects (view only) | — | — | ✓ | ✓ | ✓ |
 | Tracker | — | — | — | — | ✓ |
 | AI Evaluation | — | — | — | — | ✓ |
 

@@ -207,6 +207,12 @@ group("Projects, tasks, categories, AFD", None, [
      "projectService.js, ProjectMonthlyReport.jsx"],
     ["POST /project/sop_links", "Get the SOP links of one project", "project_id*", A_NONE,
      "SOP links list", "ProjectSopLinks.jsx"],
+    ["POST /project/my_projects", "View-only Projects tab: caller's active projects with files, SOP links and tasks",
+     "logged_in_user_id*",
+     "Agent: projects and tasks assigned to them (project_team_id / task_team_id). QA: projects where they are "
+     "in the team or Project QA. Asst Team Leader: same as QA plus their team's projects. Others: all active",
+     "List of projects with project_manager, assistant_managers, qa (names), project_files, sop_links and tasks "
+     "(task_target, qc_percentage, important_columns, sample_file)", "MyProjects.jsx"],
     ["POST /project/delete", "Delete a project", "project_id*, logged_in_user_id", A_ATL,
      "Success message", "projectService.js"],
     ["POST /task/add", "Create a task under a project",

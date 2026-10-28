@@ -392,6 +392,7 @@ def build_manager_pdf():
                 ["Roster Management", "Edit", "Edit*", "Edit*", "-", "-"],
                 ["Roster Approve / Reject", "-", "-", "-", "-", "-"],
                 ["My Roster", "-", "-", "-", "View", "View"],
+                ["Projects (view only)", "-", "-", "View", "View", "Own"],
                 ["Daily Tracker (Agent)", "-", "-", "-", "-", "Edit"],
                 ["AI Evaluation", "-", "-", "-", "-", "Yes"],
                 ["Salary details", "View", "-", "-", "-", "-"],
