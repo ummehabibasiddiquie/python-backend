@@ -30,7 +30,7 @@ PROJECTS_TASKS = {
             ("Click Add Project (or Edit on a project).", "proj_01_add_project", "Create New Project"),
             "Fill Project Name and Project Code (required) and an optional Description.",
             "Project Category decides the QC error list (AFD) QA uses. Pick the right one.",
-            "Choose the Project Manager, Assistant Project Manager(s) (required), Quality Analyst(s) (required) and "
+            "Choose the Project Manager, Assistant Project Manager(s) (required), Quality Analyst(s) (required; QA or Assistant Team Leader) and "
             "Agent(s) (required). Only these agents see the project in their tracker; only these QAs get its files.",
             "Requires AI Evaluation: agents must run AI Evaluation on the file before submitting. Requires Duplicate "
             "Check: rows already submitted are rejected.",

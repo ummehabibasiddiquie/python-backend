@@ -80,7 +80,9 @@ CONVENTIONS = [
     ROLE_TABLE,
     ("p", "Role names in the code are compared in lower case (for example 'super admin', 'assistant team leader'). "
           "'Admin-level' in the code means Admin, Super Admin and Project Manager. 'Read-only guard' means the "
-          "Assistant Team Leader is rejected with 403 'Assistant Team Leader has view-only access'."),
+          "Assistant Team Leader is rejected with 403 'Assistant Team Leader has view-only access'. 'scope: qc' (sent "
+          "by the QC and My Report screens) makes the backend treat an Assistant Team Leader like a QA: they see the "
+          "agents and projects where they are the QA instead of their team."),
     ("h2", "Example request"),
     ("p", "Fetch trackers for a user (Flask, JSON body):"),
     ("code",
@@ -156,7 +158,7 @@ group("Auth and password reset", None, [
 
 group("Users and permissions", None, [
     ["POST /user/list", "List users the caller may see",
-     "user_id* (acting user), month_year, date_from, date_to, is_active",
+     "user_id* (acting user), month_year, date_from, date_to, is_active, scope ('qc')",
      "All roles except Agent (Agent gets an empty list)",
      "List of users with role, team, designation and reporting names (includes the decrypted password - see 04)",
      "authService.js, userService.js (Users Management), QAAgentList.jsx"],
@@ -181,7 +183,7 @@ group("Dropdowns", None, [
     ["POST /dropdown/get", "One endpoint for all dropdown lists",
      "dropdown_type* (designations, user roles, teams, project categories, afd, a role name such as agent / qa / "
      "assistant manager / admin, projects with tasks), project_id, team_id, logged_in_user_id, user_id, date_from, "
-     "month_year",
+     "month_year, scope ('qc' = Asst Team Leader filtered like a QA)",
      "None for most types. 'agent' needs logged_in_user_id and a role of Admin, Super Admin, PM, Asst Manager, "
      "Asst Team Leader or QA (else 403); 'projects with tasks' needs logged_in_user_id or user_id",
      "List of {id, label} items (agents also carry user_tenure)",
@@ -258,8 +260,9 @@ group("Tracker and Task EOD", None, [
      "Success message", "Tracker.jsx, QATrackerReport.jsx"],
     ["POST /tracker/view", "List trackers with filters and totals",
      "logged_in_user_id*, tracker_id, user_id, team_id, project_id, shift, date_from, date_to, is_active, "
-     "qc_pending, page, page_size (or limit)",
-     "Any logged-in user. Admin, Super Admin, PM see all; Asst Team Leader by team; others by assignment. "
+     "qc_pending, page, page_size (or limit), scope ('qc')",
+     "Any logged-in user. Admin, Super Admin, PM see all; Asst Team Leader by team (by QA assignment with "
+     "scope = qc); others by assignment. "
      "A user_id filter is applied as sent (unverified for every role combination)",
      "{trackers, totals..., pagination when paged}",
      "Tracker.jsx, QATrackerReport.jsx, QAAgentList.jsx, BillableReport.jsx, OverviewTab.jsx; also called by Node"],
@@ -352,7 +355,7 @@ group("QC (Python side: qc, qc_audit, qc_rework, qc_history_user)", None, [
      "{status: true, message, data: result of the report run}", "-"],
     ["POST /qc/temp-qc", "Save a day's QC score or assigned hours for an agent",
      "user_id*, date* (YYYY-MM-DD), logged_in_user_id*, qc_score, assigned_hours (one of the last two)",
-     "qc_score: QA only. assigned_hours: Admin, Super Admin, PM, Asst Manager",
+     "qc_score: QA or Asst Team Leader. assigned_hours: Admin, Super Admin, PM, Asst Manager",
      "{status, message, data} (boolean status)", "qcService.js (Billable report - Add/Edit QC)"],
     ["POST /qc_audit/add", "Record a QC audit of a QC record",
      "multipart: qc_record_id*, qc_score*, error_notes, qc_checked_file (file)", A_NONE,
@@ -371,7 +374,7 @@ group("QC (Python side: qc, qc_audit, qc_rework, qc_history_user)", None, [
     ["POST /qc_rework/view_pending_qc_files", "QC files still pending review (dashboard)",
      "none", A_NONE, "{count, record: [...]}", "QAAgentList.jsx"],
     ["POST /qc_history_user/view_qc_history_user_based", "QC history limited to the caller's scope",
-     "logged_in_user_id*", "Any logged-in user; Admin-level all, QA, Asst Manager, Team Leader by scope",
+     "logged_in_user_id*", "Any logged-in user; Admin-level all, QA, Asst Manager, Team Leader by scope (with scope = qc, Asst Team Leader like a QA)",
      "{count, records}", "ManagerQCReportsOverview.jsx, AgentQCReportPage.jsx"],
     ["POST /qc_history_user/consolidated_qc_report", "Consolidated QC report for a date range",
      "logged_in_user_id*, start_date, end_date", "Same scope rules as above", "{count, records}",
@@ -388,7 +391,7 @@ group("QA hours", None, [
     ["POST /qa_tracker/add_entry", "Add manual QA hours (Feedback, Training, Reporting, Other)",
      "logged_in_user_id*, hours*, sub_activity or activity_type* (feedback, training, reporting, other), work_date, "
      "agent_id, project_id, notes, qa_user_id",
-     "QA for self (today only); Super Admin, Admin, PM, Asst Manager for any QA; Asst Team Leader blocked",
+     "QA or Asst Team Leader for self (today only); Super Admin, Admin, PM, Asst Manager for any QA",
      "Entry and updated day", "qaTrackerService.js (QA Tracker)"],
     ["POST /qa_tracker/save", "Alias of add_entry", "Same as add_entry", "Same as add_entry", "Same as add_entry", "-"],
     ["POST /qa_tracker/update_entry", "Edit a manual QA entry",
@@ -514,15 +517,15 @@ group("SOP library", None, [
     ["POST /sop/list", "Load the SOP library (topics and items)", "logged_in_user_id*", "Any logged-in user",
      "{topics, can_manage}", "SopLibrary.jsx (SOP Library)"],
     ["POST /sop/topic/save", "Add or rename an SOP topic",
-     "logged_in_user_id*, title*, description, sop_topic_id (to edit)", "Super Admin, Admin, PM, Asst Manager",
+     "logged_in_user_id*, title*, description, sop_topic_id (to edit)", "Super Admin, Admin, PM",
      "{topics: [...]}", "SopLibrary.jsx"],
     ["POST /sop/topic/delete", "Remove a topic", "logged_in_user_id*, sop_topic_id*",
-     "Super Admin, Admin, PM, Asst Manager", "{topics: [...]}", "SopLibrary.jsx"],
+     "Super Admin, Admin, PM", "{topics: [...]}", "SopLibrary.jsx"],
     ["POST /sop/item/save", "Add or edit an SOP link or file",
      "JSON or multipart: logged_in_user_id*, title*, sop_topic_id*, item_type* (link/file), link_url, file (file), "
-     "sop_item_id (to edit)", "Super Admin, Admin, PM, Asst Manager", "{topics: [...]}", "SopLibrary.jsx"],
+     "sop_item_id (to edit)", "Super Admin, Admin, PM", "{topics: [...]}", "SopLibrary.jsx"],
     ["POST /sop/item/delete", "Remove an SOP item", "logged_in_user_id*, sop_item_id*",
-     "Super Admin, Admin, PM, Asst Manager", "{topics: [...]}", "SopLibrary.jsx"],
+     "Super Admin, Admin, PM", "{topics: [...]}", "SopLibrary.jsx"],
 ])
 
 group("Report emails", None, [

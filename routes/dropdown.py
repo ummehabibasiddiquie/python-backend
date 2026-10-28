@@ -238,6 +238,11 @@ def get():
                     return api_response(400, "logged_in_user_id is required")
 
                 user_role = get_user_role(cursor, logged_in_user_id)
+                # QC screens send scope=qc: a team leader then sees agents where they are the QA, like a QA.
+                qc_as_qa = (
+                    str(data.get("scope") or "").strip().lower() == "qc"
+                    and user_role in ("assistant team leader", "team leader")
+                )
 
                 clean_pm = "REPLACE(REPLACE(REPLACE(REPLACE(u.project_manager_id,'[',''),']',''), '\"',''),' ','')"
                 clean_am = "REPLACE(REPLACE(REPLACE(REPLACE(u.asst_manager_id,'[',''),']',''), '\"',''),' ','')"
@@ -299,7 +304,7 @@ def get():
                     params = (*visible_users_params, logged_in_user_id)
 
                 # ---------------- TEAM LEADER (assignees OR same team, view-only) ---------------- #
-                elif user_role in ("assistant team leader", "team leader"):
+                elif user_role in ("assistant team leader", "team leader") and not qc_as_qa:
                     from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
                     query = f"""
                         SELECT u.user_id, u.user_name AS label, u.user_tenure
@@ -314,8 +319,8 @@ def get():
                     """
                     params = (*visible_users_params, *team_leader_scope_params(logged_in_user_id))
 
-                # ---------------- QA ---------------- #
-                elif user_role == "qa":
+                # ---------------- QA (and team leader on QC screens) ---------------- #
+                elif user_role == "qa" or qc_as_qa:
                     query = f"""
                         SELECT u.user_id, u.user_name AS label, u.user_tenure
                         FROM tfs_user u
@@ -358,6 +363,12 @@ def get():
                     """
                     params = (dropdown_type,)
                 else:
+                    # Assistant Team Leaders also do QC, so they are listed as QAs too.
+                    role_sql = (
+                        "LOWER(r.role_name) IN (%s, 'assistant team leader', 'team leader')"
+                        if dropdown_type == "qa"
+                        else "LOWER(r.role_name) = %s"
+                    )
                     query = f"""
                         SELECT
                             u.user_id,
@@ -366,7 +377,7 @@ def get():
                         JOIN user_role r ON r.role_id = u.role_id
                         WHERE u.is_delete = 1
                           AND r.is_active = 1
-                          AND LOWER(r.role_name) = %s
+                          AND {role_sql}
                           AND {visible_users_sql}
                         ORDER BY u.user_name
                     """
@@ -418,9 +429,13 @@ def get():
                     return api_response(404, "User not found")
                 params: list = []
                 where_sql = "WHERE p.is_active = 1"
+                qc_as_qa = (
+                    str(data.get("scope") or "").strip().lower() == "qc"
+                    and user_role in ("assistant team leader", "team leader")
+                )
                 if user_role in ["admin", "super admin", "project manager"]:
                     pass
-                elif user_role == "qa":
+                elif user_role == "qa" or qc_as_qa:
                     v = str(filter_id)
                     where_sql += " AND " + multi_id_match_sql("p.project_qa_id")
                     params.extend([v, v])

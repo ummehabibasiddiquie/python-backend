@@ -254,7 +254,11 @@ def list_users():
 
         # ✅ Role-based filtering (MariaDB-safe; supports BOTH JSON arrays and comma/bracket strings)
         # This avoids: invalid JSON errors + missing matches when stored value isn't valid JSON
-        if role == "qa":
+        qc_as_qa = (
+            role in ("assistant team leader", "team leader")
+            and str(data.get("scope") or "").strip().lower() == "qc"
+        )
+        if role == "qa" or qc_as_qa:
             query += """
                 AND (
                     TRIM(COALESCE(u.qa_id, '')) = %s

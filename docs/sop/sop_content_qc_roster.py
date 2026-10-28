@@ -14,7 +14,7 @@ Block types used by build_sop_docs.py:
 QC_PROCESS = {
     "file": "SOP - QA - QC Process (Agent Files, QC Form, Correction and Rework)",
     "title": "QC Process - Agent Files, QC Form, Correction and Rework",
-    "roles": "QA (checks files); Agent (corrects / reworks); Managers and Admin (view results)",
+    "roles": "QA and Assistant Team Leader (checks files); Agent (corrects / reworks); Managers and Admin (view results)",
     "blocks": [
         ("h", "1. Purpose"),
         ("p", "This SOP explains the full quality-check cycle in the HRMS: how QA picks an agent file, checks "

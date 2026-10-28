@@ -122,12 +122,13 @@ SUPER_ADMIN = {
 SOP_LIBRARY = {
     "file": "SOP - Admin - SOP Library",
     "title": "SOP Library",
-    "roles": "Admin, Super Admin, Project Manager, Assistant Manager (manage); everyone (view)",
+    "roles": "Admin, Super Admin, Project Manager (manage); everyone else (view)",
     "blocks": [
         ("h", "1. Purpose"),
         ("p", "The SOP library holds the organisation's procedures, grouped by topic. Each item is a link (for example "
               "a shared-drive file) or an uploaded document."),
         ("h", "2. Manage the library"),
+        ("p", "Admin, Super Admin and Project Manager open it from Manage > SOPs (it is not in their top menu)."),
         ("img", "admin_09_sops_manage", "SOP library"),
         ("steps", [
             ("Click New topic, enter the topic (for example Attendance, Leave, Quality) and an optional description, "
@@ -138,8 +139,8 @@ SOP_LIBRARY = {
         ]),
         ("h", "3. View the library"),
         ("img", "qa_12_sops", "SOP library - view"),
-        ("p", "Everyone opens SOPs from the top menu. Links open in a new tab; documents download. Only managers and "
-              "admins see the add and remove buttons."),
+        ("p", "Agents, QA, Assistant Team Leaders and Assistant Managers open SOPs from the top menu (view only). "
+              "Links open in a new tab; documents download."),
         ("h", "4. Tips"),
         ("bullets", [
             "Upload these Word SOPs here, one topic per role (Agent, QA, Manager, Admin).",
@@ -152,7 +153,7 @@ SOP_LIBRARY = {
 QA_REPORTS = {
     "file": "SOP - QA - Reports and Hours",
     "title": "QA Reports, Hours and Roster",
-    "roles": "QA",
+    "roles": "QA, Assistant Team Leader",
     "blocks": [
         ("h", "1. Purpose"),
         ("p", "QA hours are counted from QC work (automatically, from each task's QA hour criteria) plus the "
@@ -198,17 +199,23 @@ ASSISTANT_TEAM_LEADER = {
     "roles": "Assistant Team Leader",
     "blocks": [
         ("h", "1. Purpose"),
-        ("p", "Assistant Team Leaders follow their own team's work and keep the team roster. Everything except the "
-              "roster is view only."),
+        ("p", "Assistant Team Leaders follow their own team's work, keep the team roster and do QC like a QA on the "
+              "agents and projects where they are set as the QA. Apart from the roster and QC work, the team screens "
+              "are view only."),
         ("h", "2. What you can use"),
         ("table", ["Screen", "What you can do"], [
+            ["Agent Files & QC Report", "Fill QC forms, rework and correction for agents where you are the QA (same "
+                                        "steps as SOP - QA - QC). Includes My QC Report."],
+            ["My Report", "Add Tracker for your non-QC work (Feedback, Training, Reporting, Other) and see your daily "
+                          "and monthly QA hours (same steps as SOP - QA - Reports and Hours, section 2)."],
+            ["Audit Report", "Audits managers did on your QC."],
             ["Analytics", "View your team's overview, billable report and KRA. Overview cards are explained in "
                           "SOP - Manager - Reports, section 2."],
             ["Tracker Report", "View your team's tracker entries. The Task EOD Report tab joins all agents' files for "
                                "a task and day into one Excel (see SOP - Manager - Reports, section 9)."],
             ["Manage > Roster Management", "Edit your team's days and leave, and submit them for approval "
                                            "(see SOP - Manager - Roster)."],
-            ["Manage > SOPs / SOPs", "Read the SOP library."],
+            ["SOPs", "Read the SOP library."],
             ["Email (every Monday)", "Weekly goal email listing your agents who missed last week's goal (see SOP - "
                                      "Manager - Reports, section 10)."],
         ]),
@@ -218,7 +225,9 @@ ASSISTANT_TEAM_LEADER = {
         ("h", "3. Rules"),
         ("bullets", [
             "You only see your own team (the Task EOD Report is the exception: it lists every project's tasks).",
-            "You cannot change users, projects or tracker entries; ask your manager.",
+            "For QC, you only see agents and projects where an admin or manager has picked you as the QA (Quality "
+            "Analyst / Project QA). Ask them to add you if an agent is missing.",
+            "You cannot change users, projects or agents' tracker entries; ask your manager.",
             "Roster changes go to admin for approval and approved weeks lock.",
         ]),
     ],

@@ -69,7 +69,7 @@ def view_qc_history_user_based():
             # Admin, Super Admin, and Project Manager get all records
             pass
 
-        elif "qa" in role:
+        elif "qa" in role or ("team leader" in role and str((data or {}).get("scope") or "").strip().lower() == "qc"):
             # QA only gets records of users where they are the assigned QA, records they evaluated themselves, or their own records
             where_clauses.append("(JSON_CONTAINS(u.qa_id, %s) OR qr.qa_user_id = %s OR u.user_id = %s)")
             params.extend([f"{logged_in_user_id}", logged_in_user_id, logged_in_user_id])
@@ -258,7 +258,7 @@ def consolidated_qc_report():
             # Admin, Super Admin, and Project Manager get all records
             pass
 
-        elif "qa" in role:
+        elif "qa" in role or ("team leader" in role and str((data or {}).get("scope") or "").strip().lower() == "qc"):
             # QA only gets records of users where they are the assigned QA, records they evaluated themselves, or their own records
             where_clauses.append("(JSON_CONTAINS(u.qa_id, %s) OR qr.qa_user_id = %s OR u.user_id = %s)")
             params.extend([f"{logged_in_user_id}", logged_in_user_id, logged_in_user_id])

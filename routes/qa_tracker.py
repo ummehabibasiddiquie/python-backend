@@ -221,7 +221,7 @@ def _active_qa_user_ids(cursor) -> list[int]:
         FROM tfs_user u
         JOIN user_role r ON r.role_id = u.role_id
         WHERE u.is_active=1 AND u.is_delete=1
-          AND (LOWER(TRIM(r.role_name)) = 'qa' OR LOWER(TRIM(r.role_name)) LIKE '%qa%')
+          AND (LOWER(TRIM(r.role_name)) = 'qa' OR LOWER(TRIM(r.role_name)) LIKE '%qa%' OR LOWER(TRIM(r.role_name)) IN ('assistant team leader', 'team leader'))
         """
     )
     return [int(r["user_id"]) for r in (cursor.fetchall() or []) if r.get("user_id")]
@@ -257,10 +257,11 @@ def _ctx_can_view_as_manager(ctx: dict) -> bool:
 
 
 def _is_qa_role(role_name: str, role_id=None) -> bool:
-    if _int(role_id) == 5:
+    """QA, and Assistant Team Leader who also does QC."""
+    if _int(role_id) in (5, 7):
         return True
     r = (role_name or "").strip().lower()
-    return r == "qa" or "qa" in r
+    return r == "qa" or "qa" in r or r in ("assistant team leader", "team leader")
 
 
 def _user_is_qa(cursor, user_id: int) -> bool:
@@ -429,7 +430,7 @@ def _qa_users_list(cursor) -> list:
         FROM tfs_user u
         JOIN user_role r ON r.role_id = u.role_id
         WHERE u.is_active=1 AND u.is_delete=1
-          AND (LOWER(TRIM(r.role_name)) = 'qa' OR LOWER(TRIM(r.role_name)) LIKE '%qa%')
+          AND (LOWER(TRIM(r.role_name)) = 'qa' OR LOWER(TRIM(r.role_name)) LIKE '%qa%' OR LOWER(TRIM(r.role_name)) IN ('assistant team leader', 'team leader'))
         ORDER BY u.user_name
         """
     )
@@ -1385,10 +1386,7 @@ def qa_tracker_add_entry():
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        from utils.roster_helpers import reject_read_only_actor
-        deny = reject_read_only_actor(cursor, logged_in_user_id)
-        if deny:
-            return deny
+        # No read-only block: Assistant Team Leaders add their own QA hours like a QA (checked below).
         target_id, ctx, auth_err = _resolve_target_qa(cursor, logged_in_user_id, requested_qa)
         if auth_err:
             return auth_err
@@ -1462,10 +1460,7 @@ def qa_tracker_delete_entry():
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        from utils.roster_helpers import reject_read_only_actor
-        deny = reject_read_only_actor(cursor, logged_in_user_id)
-        if deny:
-            return deny
+        # No read-only block: Assistant Team Leaders delete their own QA hours like a QA (checked below).
         cursor.execute(
             """
             SELECT qa_tracker_id, qa_user_id, work_date, activity_type, created_at
@@ -1953,7 +1948,7 @@ def qa_tracker_list():
                 FROM tfs_user u
                 JOIN user_role r ON r.role_id = u.role_id
                 WHERE u.is_active=1 AND u.is_delete=1
-                  AND (LOWER(TRIM(r.role_name)) = 'qa' OR LOWER(TRIM(r.role_name)) LIKE '%qa%')
+                  AND (LOWER(TRIM(r.role_name)) = 'qa' OR LOWER(TRIM(r.role_name)) LIKE '%qa%' OR LOWER(TRIM(r.role_name)) IN ('assistant team leader', 'team leader'))
                 ORDER BY u.user_name
                 """
             )
@@ -2180,7 +2175,7 @@ def qa_tracker_monthly():
                 FROM tfs_user u
                 JOIN user_role r ON r.role_id = u.role_id
                 WHERE u.is_active=1 AND u.is_delete=1
-                  AND (LOWER(TRIM(r.role_name)) = 'qa' OR LOWER(TRIM(r.role_name)) LIKE '%qa%')
+                  AND (LOWER(TRIM(r.role_name)) = 'qa' OR LOWER(TRIM(r.role_name)) LIKE '%qa%' OR LOWER(TRIM(r.role_name)) IN ('assistant team leader', 'team leader'))
                 ORDER BY u.user_name
                 """
             )

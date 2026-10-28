@@ -105,7 +105,11 @@ TECHNICAL_REFERENCE = {
             "User Creation and Project Creation flags (user_permission) are set by Super Admin in User Permission. "
             "The website uses them to show Add User / Add Project, and the API checks the same rule when a user or "
             "project is created.",
-            "SOP library: Admin, Super Admin, Project Manager, Assistant Manager can manage; everyone can view.",
+            "SOP library: Admin, Super Admin and Project Manager manage it from Manage > SOPs; everyone else views "
+            "it from the top menu.",
+            "Assistant Team Leader does QC like a QA when picked as an agent's QA: QC screens send scope = 'qc' so "
+            "the backend filters by qa_id / project_qa_id instead of the team (routes/dropdown.py, tracker.py, "
+            "user.py, qc_history_user_based.py); other screens stay team-based and view only.",
             "Billable exports include Tenure only for roles 1 to 4.",
         ]),
 

@@ -63,7 +63,9 @@ START_HERE = {
             ["2", "Admin", "Everything except Report emails. Approves roster changes, locks weeks, holidays."],
             ["3", "Project Manager", "All users' data; projects, roster, reports, QC overview, audit."],
             ["4", "Assistant Manager", "Only users assigned to them (asst_manager_id)."],
-            ["7", "Assistant Team Leader", "Own team, view only except the roster (submits changes)."],
+            ["7", "Assistant Team Leader", "Own team, view only except the roster (submits changes). Also does QC "
+                                           "like a QA on agents where they are the QA (QC forms, My Report hours, "
+                                           "audit results)."],
             ["5", "QA", "Agents assigned to them (qa_id): Agent Files & QC, My Report hours, audit results."],
             ["6", "Agent", "Only themselves: Tracker, own reports, KRA, QC results, My Roster, AI Evaluation."],
         ]),

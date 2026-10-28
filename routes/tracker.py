@@ -932,10 +932,14 @@ def view_trackers():
             placeholders = ",".join(["%s"] * len(user_ids_filter))
             where_clauses.append(f"twt.user_id IN ({placeholders})")
             params.extend(user_ids_filter)
-        elif role_name in ("assistant team leader", "team leader"):
+        elif (
+            role_name in ("assistant team leader", "team leader")
+            and str(data.get("scope") or "").strip().lower() != "qc"
+        ):
             where_clauses.append(team_leader_scope_sql("u"))
             params.extend(team_leader_scope_params(logged_in_user_id))
         elif role_name not in ("admin", "super admin", "project manager"):
+            # Also used by team leaders on QC screens (scope=qc): agents where they are the QA.
             manager_id_str = str(logged_in_user_id)
             manager_id_int = int(logged_in_user_id)
             where_clauses.append(
