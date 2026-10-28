@@ -5,8 +5,8 @@ DATABASE_SCHEMA = {'number': '08',
  'audience': 'Developers',
  'blocks': [('h', '1. About this document'),
             ('bullets',
-             ['Generated from the structure of database tfs_hrms on 23 Oct 2026 with '
-              'docs/handover/build_db_schema.py. Run it again after a migration, then rebuild the documents.',
+             ['Taken from the structure of database tfs_hrms on 23 Oct 2026. After a migration, update the '
+              'affected tables in this document.',
               'Live database: mytfs on the VPS. Local copy: tfs_hrms. Tables added by the code on first use '
               'exist only after that code has run.',
               'Only two real foreign keys exist; every other link between tables is kept by the code '

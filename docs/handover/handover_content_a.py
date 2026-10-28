@@ -249,7 +249,6 @@ npm run dev"""),
                                                         "recipients)."],
             ["SOP screenshots and Word SOPs", "docs/sop", "capture_screenshots.py (Playwright, local only) then "
                                                           "build_sop_docs.py."],
-            ["Handover documents", "docs/handover", "build_handover_docs.py rebuilds these files."],
             ["QC tracker reset script", "backend-api/scripts/reset_qc_tracker.py", "See 04, section 1.1."],
         ]),
         ("note", "docs/sop/capture_screenshots.py contains test logins. Keep it local; do not commit or share it "

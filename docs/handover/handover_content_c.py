@@ -74,7 +74,7 @@ KT_CHECKLIST = {
             "Can take a backup with mysqldump and restore it",
             "Knows the main tables and the is_delete / is_active rule",
             "Can find any table and column, and how tables link, in the Database Schema (08)",
-            "Regenerates 08 after a migration (python docs/handover/build_db_schema.py, then rebuild the documents)",
+            "Updates 08 after a migration so new tables and columns are listed",
             "Runs support SQL safely: SELECT first, then a transaction, never from a laptop against live",
         ]),
         *section("3.6 Business rules (document 03 section 1 and the SOPs)", [

@@ -184,8 +184,8 @@ def build_spec(database: str, tables, columns, indexes) -> dict:
     blocks = [
         ("h", "1. About this document"),
         ("bullets", [
-            f"Generated from the structure of database {database} on {date.today():%d %b %Y} with "
-            "docs/handover/build_db_schema.py. Run it again after a migration, then rebuild the documents.",
+            f"Taken from the structure of database {database} on {date.today():%d %b %Y}. After a migration, "
+            "update the affected tables in this document.",
             "Live database: mytfs on the VPS. Local copy: tfs_hrms. Tables added by the code on first use exist "
             "only after that code has run.",
             "Only two real foreign keys exist; every other link between tables is kept by the code (section 2).",
