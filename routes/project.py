@@ -661,6 +661,43 @@ def _json_id_list(val) -> list:
     return out
 
 
+def _num_text(value) -> str:
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(int(n)) if n.is_integer() else f"{n:g}"
+
+
+def _qc_target_text(task: dict) -> str | None:
+    """Task's QA hour criteria as one readable line (only one type is set per task)."""
+    ranges = task.get("qa_target_ranges")
+    if isinstance(ranges, (bytes, bytearray)):
+        ranges = ranges.decode("utf-8", errors="ignore")
+    if isinstance(ranges, str):
+        try:
+            ranges = json.loads(ranges or "[]")
+        except Exception:
+            ranges = []
+    if isinstance(ranges, list) and ranges:
+        parts = []
+        for r in ranges:
+            if not isinstance(r, dict):
+                continue
+            minutes = r.get("minutes", r.get("target"))
+            if minutes in (None, ""):
+                continue
+            parts.append(f"{_num_text(r.get('min'))}-{_num_text(r.get('max'))}: {_num_text(minutes)} min")
+        if parts:
+            column = (task.get("qa_count_column") or "").strip()
+            return (f"By '{column}' count: " if column else "By object count: ") + "; ".join(parts)
+    if task.get("qa_minutes_per_file") not in (None, "", 0, "0"):
+        return f"{_num_text(task['qa_minutes_per_file'])} min per file"
+    if task.get("qa_minutes_per_record") not in (None, "", 0, "0"):
+        return f"{_num_text(task['qa_minutes_per_record'])} min per QC record"
+    return None
+
+
 @project_bp.route("/my_projects", methods=["POST"])
 def my_projects():
     """Active projects and tasks the caller works on, with files, SOP links and sample files. Read only."""
@@ -739,7 +776,8 @@ def my_projects():
         cursor.execute(
             f"""
             SELECT t.task_id, t.project_id, t.task_name, t.task_description, t.task_target,
-                   t.qc_percentage, t.important_columns, t.task_file
+                   t.qc_percentage, t.important_columns, t.task_file,
+                   t.qa_minutes_per_record, t.qa_minutes_per_file, t.qa_count_column, t.qa_target_ranges
             FROM task t
             WHERE {' AND '.join(task_where)}
             ORDER BY t.task_name
@@ -749,19 +787,25 @@ def my_projects():
         tasks_by_project: dict[int, list] = {}
         from routes.task import task_file_url
         for t in cursor.fetchall() or []:
-            try:
-                important = json.loads(t.get("important_columns") or "[]")
-            except Exception:
-                important = []
-            tasks_by_project.setdefault(int(t["project_id"]), []).append({
+            # Agents only see the task's own target (not tenure-wise); QC details are for QA / Team Leader
+            task = {
                 "task_id": t["task_id"],
                 "task_name": t["task_name"],
-                "task_description": t.get("task_description"),
                 "task_target": t.get("task_target"),
-                "qc_percentage": t.get("qc_percentage"),
-                "important_columns": important if isinstance(important, list) else [],
-                "sample_file": task_file_url(t.get("task_file")),
-            })
+            }
+            if not is_agent:
+                try:
+                    important = json.loads(t.get("important_columns") or "[]")
+                except Exception:
+                    important = []
+                task.update({
+                    "task_description": t.get("task_description"),
+                    "qc_percentage": t.get("qc_percentage"),
+                    "qc_target": _qc_target_text(t),
+                    "important_columns": important if isinstance(important, list) else [],
+                    "sample_file": task_file_url(t.get("task_file")),
+                })
+            tasks_by_project.setdefault(int(t["project_id"]), []).append(task)
 
         people_ids = set()
         for p in projects:
@@ -793,7 +837,7 @@ def my_projects():
                 "assistant_managers": _names(p.get("asst_project_manager_id")),
                 "qa": _names(p.get("project_qa_id")),
                 "project_files": parse_db_files(p.get("project_pprt")),
-                "sop_links": parse_sop_links(p.get("project_sop_links")),
+                "sop_links": [] if is_agent else parse_sop_links(p.get("project_sop_links")),
                 "tasks": tasks_by_project.get(pid, []),
             })
         return api_response(200, "Projects fetched successfully", result)

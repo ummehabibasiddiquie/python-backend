@@ -182,7 +182,7 @@ QA_REPORTS = {
             ["KRA", "Your monthly KRA."],
             ["My Roster", "Your schedule."],
             ["Projects", "View only: your projects (where you are in the team or the Project QA) with SOP links, "
-                         "project files and tasks (target, QC %, important columns, sample file)."],
+                         "project files and tasks (target, QC target, QC %, important columns, sample file)."],
             ["SOPs", "The SOP library (view only)."],
         ]),
         ("img", "qa_09_audit_report", "Audit Report"),
@@ -219,7 +219,7 @@ ASSISTANT_TEAM_LEADER = {
             ["Manage > Roster Management", "Edit your team's days and leave, and submit them for approval "
                                            "(see SOP - Manager - Roster)."],
             ["Projects", "View only: your team's projects and the ones where you are the QA, with SOP links, "
-                         "project files and tasks (target, QC %, important columns, sample file)."],
+                         "project files and tasks (target, QC target, QC %, important columns, sample file)."],
             ["SOPs", "Read the SOP library."],
             ["Email (every Monday)", "Weekly goal email listing your agents who missed last week's goal (see SOP - "
                                      "Manager - Reports, section 10)."],
