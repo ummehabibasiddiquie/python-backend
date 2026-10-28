@@ -787,11 +787,12 @@ def my_projects():
         tasks_by_project: dict[int, list] = {}
         from routes.task import task_file_url
         for t in cursor.fetchall() or []:
-            # Agents only see the task's own target (not tenure-wise); QC details are for QA / Team Leader
+            # Agents see the task's own target (not tenure-wise) and files; QC details are for QA / Team Leader
             task = {
                 "task_id": t["task_id"],
                 "task_name": t["task_name"],
                 "task_target": t.get("task_target"),
+                "sample_file": task_file_url(t.get("task_file")),
             }
             if not is_agent:
                 try:
@@ -803,7 +804,6 @@ def my_projects():
                     "qc_percentage": t.get("qc_percentage"),
                     "qc_target": _qc_target_text(t),
                     "important_columns": important if isinstance(important, list) else [],
-                    "sample_file": task_file_url(t.get("task_file")),
                 })
             tasks_by_project.setdefault(int(t["project_id"]), []).append(task)
 
@@ -837,7 +837,7 @@ def my_projects():
                 "assistant_managers": _names(p.get("asst_project_manager_id")),
                 "qa": _names(p.get("project_qa_id")),
                 "project_files": parse_db_files(p.get("project_pprt")),
-                "sop_links": [] if is_agent else parse_sop_links(p.get("project_sop_links")),
+                "sop_links": parse_sop_links(p.get("project_sop_links")),
                 "tasks": tasks_by_project.get(pid, []),
             })
         return api_response(200, "Projects fetched successfully", result)
