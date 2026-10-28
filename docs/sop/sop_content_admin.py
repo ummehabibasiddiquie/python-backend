@@ -140,7 +140,8 @@ SOP_LIBRARY = {
         ("h", "3. View the library"),
         ("img", "qa_12_sops", "SOP library - view"),
         ("p", "Agents, QA, Assistant Team Leaders and Assistant Managers open SOPs from the top menu (view only). "
-              "Links open in a new tab; documents download."),
+              "Links open in a new tab. Open on a document shows it in the browser (PDF and images directly; Word, "
+              "Excel and PowerPoint in the Microsoft online viewer); Download saves a copy."),
         ("h", "4. Tips"),
         ("bullets", [
             "Upload these Word SOPs here, one topic per role (Agent, QA, Manager, Admin).",
