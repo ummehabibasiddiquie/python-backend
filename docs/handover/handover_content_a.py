@@ -65,8 +65,9 @@ START_HERE = {
             ["4", "Assistant Manager", "Only users assigned to them (asst_manager_id)."],
             ["7", "Assistant Team Leader", "Own team, view only except the roster (submits changes). Also does QC "
                                            "like a QA on agents where they are the QA (QC forms, My Report hours, "
-                                           "audit results)."],
-            ["5", "QA", "Agents assigned to them (qa_id): Agent Files & QC, My Report hours, audit results."],
+                                           "Analytics > Audit Report with own audits)."],
+            ["5", "QA", "Agents assigned to them (qa_id): Agent Files & QC, My Report hours, Analytics > Audit "
+                        "Report (own audits)."],
             ["6", "Agent", "Only themselves: Tracker, own reports, KRA, QC results, My Roster, AI Evaluation."],
         ]),
         ("p", "Each user has a role plus reporting lines (project manager, assistant manager, team leader, QA). "

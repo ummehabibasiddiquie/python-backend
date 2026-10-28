@@ -43,7 +43,7 @@ Agent
 Managers / QA see the same work in:
   Header → Tracker Report
   Analytics → Billable Report
-  Header → Agent Files & QC Report  (PM, QA; not Team Leader)
+  Header → Agent Files & QC Report  (PM, QA, Team Leader as QA)
 ```
 
 | Role | From where | What they can do |
@@ -109,14 +109,14 @@ Agent / QA
 ### 2.4 QC / Agent Files
 
 ```
-PM / QA
+PM / QA / Team Leader (as QA)
   Header → Agent Files & QC Report
   → Agent's Tracker File / Rework
   → Open QC Form
         ↓
 Results also appear in:
   Header → QC Report Overview   (PM, AM)
-  Header → QA Agent Audit       (PM, AM; QA limited)
+  Header → QA Agent Audit       (PM, AM)
 ```
 
 | Role | From where | What they can do |
@@ -124,7 +124,7 @@ Results also appear in:
 | Project Manager | Agent Files & QC · QC Overview · QA Audit | View / export; open QC Form |
 | Assistant Manager | QC Overview · QA Audit | View / export (scoped) |
 | QA | Agent Files & QC · My Report | QC on assigned agents; enter **own** QA hours |
-| Team Leader / Agent | — | No Agent Files / QC Overview in normal nav |
+| Team Leader | Agent Files & QC · My Report · Analytics → Audit Report | QC like a QA on agents where set as the QA; enter **own** QA hours; see own audits |
 
 ---
 
@@ -202,7 +202,7 @@ Any role with KRA tab
 
 **Login → Dashboard**
 
-**Header:** Analytics · Tracker Report · Manage
+**Header:** Analytics · My Report · Tracker Report · Agent Files & QC Report · Manage
 
 | From where | What they can do | Scope |
 |------------|------------------|-------|
@@ -211,8 +211,8 @@ Any role with KRA tab
 | Manage → Roster Management | **Edit + Submit for approval** | Team |
 | Manage → Users / Projects / other manage tabs | Hidden | — |
 
-**Cannot:** Edit monthly goal hours, manage users/projects, QC Overview / Agent Files (normal nav), approve roster.  
-**Note:** Outside roster, this role is treated as **read-only**.
+**Cannot:** Edit monthly goal hours, manage users/projects, QC Report Overview / manager QA Agent Audit, approve roster.  
+**Note:** Outside roster and their own QC work, this role is treated as **read-only**.
 
 ---
 
@@ -224,7 +224,7 @@ Any role with KRA tab
 
 | From where | What they can do | Scope |
 |------------|------------------|-------|
-| Analytics → Overview / Agents Billable / Audit / KRA | View (KRA notes/export) | Assigned agents |
+| Analytics → Overview / Agents Billable / KRA | View (KRA notes/export) | Assigned agents |
 | My Report | Enter / edit **own** QA hours | Self |
 | My Roster | View | Self |
 | Tracker Report | View | Assigned |
@@ -257,11 +257,11 @@ Any role with KRA tab
 |-------------|:--:|:--:|:-----------:|:--:|:-----:|
 | Analytics | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Tracker Report | ✓ | ✓ | ✓ | ✓ | — |
-| Agent Files & QC Report | ✓ | — | — | ✓ | — |
+| Agent Files & QC Report | ✓ | — | ✓ (as QA) | ✓ | — |
 | QC Report Overview | ✓ | ✓ | — | — | — |
-| QA Agent Audit | ✓ | ✓ | — | Limited | — |
+| QA Agent Audit | ✓ | ✓ | — | — | — |
 | Manage | ✓ | ✓ | ✓ (roster) | — | — |
-| My Report | — | — | — | ✓ | — |
+| My Report | — | — | ✓ | ✓ | — |
 | My Roster | — | — | — | ✓ | ✓ |
 | Tracker | — | — | — | — | ✓ |
 | AI Evaluation | — | — | — | — | ✓ |
@@ -276,7 +276,7 @@ Any role with KRA tab
 | Monthly goals Extra Hours | PM / AM (TL view only) | Saved / submitted on Goals screen |
 | Roster generate | PM / AM / Admin | Creates goal baseline |
 | Roster day change | PM / AM / Team Leader | **Admin / Super Admin** approve |
-| QC scoring | QA / PM via QC Form | Visible in QC Overview / Audit |
+| QC scoring | QA / Team Leader (as QA) / PM via QC Form | Visible in QC Overview / Audit |
 | KRA export | Any role with KRA tab | Download on same screen |
 
 ---
@@ -290,8 +290,8 @@ Any role with KRA tab
 | Set Extra Assign Hours | Analytics → **User Monthly Goal/Report** | PM / AM |
 | Change roster days | Manage → **Roster Management** | PM / AM / TL |
 | Approve roster | Manage → **Approval Queue** | Admin / Super Admin only |
-| Score QC on a file | Agent Files → **QC Form** | PM / QA |
-| Enter my QA hours | Header → **My Report** | QA |
+| Score QC on a file | Agent Files → **QC Form** | PM / QA / TL (as QA) |
+| Enter my QA hours | Header → **My Report** | QA / TL |
 | Download KRA Excel | Analytics → **KRA** → Export | PM / AM / TL / QA / Agent (own) |
 | See my shift plan | Header → **My Roster** | Agent / QA |
 

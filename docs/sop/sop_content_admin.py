@@ -177,7 +177,8 @@ QA_REPORTS = {
             ["Tracker Report", "Agents' tracker entries. The Task EOD Report tab joins all agents' files for a task and "
                                "day into one Excel (see SOP - Manager - Reports, section 9)."],
             ["Agents Billable Report", "Agents' billable hours by day and month."],
-            ["Audit Report", "Audits managers did on your QC (audit score vs your score)."],
+            ["Analytics > Audit Report", "Audits managers did on your QC, only your own (audit score vs your "
+                                         "score)."],
             ["KRA", "Your monthly KRA."],
             ["My Roster", "Your schedule."],
             ["SOPs", "The SOP library (view only)."],

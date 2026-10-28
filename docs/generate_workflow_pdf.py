@@ -190,7 +190,7 @@ def build():
             """Agent → Header → Tracker → Submit
         ↓
 Managers / QA see it in:
-  Tracker Report · Billable Report · Agent Files & QC (PM, QA)"""
+  Tracker Report · Billable Report · Agent Files & QC (PM, QA, TL as QA)"""
         )
     )
     story.append(
@@ -263,9 +263,10 @@ Agent / QA → My Roster (view only)"""
     story.append(p("2.4 QC / Agent Files", "H2Doc"))
     story.append(
         flow(
-            """PM / QA → Agent Files & QC Report → QC Form
+            """PM / QA / TL (as QA) → Agent Files & QC Report → QC Form
         ↓
-Also in: QC Report Overview (PM, AM) · QA Agent Audit"""
+Also in: QC Report Overview (PM, AM) · QA Agent Audit (PM, AM)
+        · Analytics → Audit Report (QA, TL: own audits)"""
         )
     )
     story.append(
@@ -276,7 +277,8 @@ Also in: QC Report Overview (PM, AM) · QA Agent Audit"""
                 ["Project Manager", "Agent Files · QC Overview · QA Audit", "View / export; open QC Form"],
                 ["Assistant Manager", "QC Overview · QA Audit", "View / export (scoped)"],
                 ["QA", "Agent Files · My Report", "QC on assigned agents; own QA hours"],
-                ["Team Leader / Agent", "—", "No Agent Files / QC Overview in normal nav"],
+                ["Team Leader", "Agent Files · My Report · Analytics → Audit Report", "QC like a QA where set as the QA; own QA hours; own audits"],
+                ["Agent", "—", "No Agent Files / QC Overview in normal nav"],
             ],
             [1.4 * inch, 2.4 * inch, 2.7 * inch],
         )
@@ -342,7 +344,7 @@ Also in: QC Report Overview (PM, AM) · QA Agent Audit"""
     )
 
     story.append(p("3.3 Assistant Team Leader", "H2Doc"))
-    story.append(p("<b>Login → Dashboard</b> · Header: Analytics · Tracker Report · Manage · Mostly view-only except roster.", "BodyDoc"))
+    story.append(p("<b>Login → Dashboard</b> · Header: Analytics · My Report · Tracker Report · Agent Files &amp; QC · Manage · Mostly view-only except roster and own QC work.", "BodyDoc"))
     story.append(
         tbl(
             st,
@@ -350,6 +352,9 @@ Also in: QC Report Overview (PM, AM) · QA Agent Audit"""
             [
                 ["Analytics (all tabs including Goals / KRA)", "View only", "Team"],
                 ["Tracker Report", "View", "Team"],
+                ["Agent Files & QC Report", "QC Form, rework, correction", "Agents where set as the QA"],
+                ["My Report", "Enter own QA hours", "Self"],
+                ["Analytics → Audit Report", "View audits on own QC", "Self"],
                 ["Manage → Roster Management", "Edit + Submit for approval", "Team"],
                 ["Manage → Users / Projects / other tabs", "Hidden", "—"],
             ],
@@ -364,7 +369,8 @@ Also in: QC Report Overview (PM, AM) · QA Agent Audit"""
             st,
             ["From where", "What they can do", "Scope"],
             [
-                ["Analytics → Overview / Billable / Audit / KRA", "View (KRA notes/export)", "Assigned"],
+                ["Analytics → Overview / Billable / KRA", "View (KRA notes/export)", "Assigned"],
+                ["Analytics → Audit Report", "View audits on own QC", "Self"],
                 ["My Report", "Enter / edit own QA hours", "Self"],
                 ["My Roster", "View", "Self"],
                 ["Tracker Report / Agent Files & QC", "View; QC Form", "Assigned"],
@@ -398,11 +404,11 @@ Also in: QC Report Overview (PM, AM) · QA Agent Audit"""
             [
                 ["Analytics", "Yes", "Yes", "Yes", "Yes", "Yes"],
                 ["Tracker Report", "Yes", "Yes", "Yes", "Yes", "-"],
-                ["Agent Files & QC Report", "Yes", "-", "-", "Yes", "-"],
+                ["Agent Files & QC Report", "Yes", "-", "Yes", "Yes", "-"],
                 ["QC Report Overview", "Yes", "Yes", "-", "-", "-"],
-                ["QA Agent Audit", "Yes", "Yes", "-", "Ltd", "-"],
+                ["QA Agent Audit", "Yes", "Yes", "-", "-", "-"],
                 ["Manage", "Yes", "Yes", "Roster", "-", "-"],
-                ["My Report", "-", "-", "-", "Yes", "-"],
+                ["My Report", "-", "-", "Yes", "Yes", "-"],
                 ["My Roster", "-", "-", "-", "Yes", "Yes"],
                 ["Tracker", "-", "-", "-", "-", "Yes"],
                 ["AI Evaluation", "-", "-", "-", "-", "Yes"],
@@ -421,7 +427,7 @@ Also in: QC Report Overview (PM, AM) · QA Agent Audit"""
                 ["Monthly goals Extra Hours", "PM / AM (TL view only)", "Saved on Goals screen"],
                 ["Roster generate", "PM / AM / Admin", "Creates goal baseline"],
                 ["Roster day change", "PM / AM / Team Leader", "Admin / Super Admin approve"],
-                ["QC scoring", "QA / PM via QC Form", "QC Overview / Audit"],
+                ["QC scoring", "QA / TL (as QA) / PM via QC Form", "QC Overview / Audit"],
                 ["KRA export", "Any role with KRA tab", "Same screen download"],
             ],
             [2.0 * inch, 2.3 * inch, 2.2 * inch],
@@ -439,8 +445,8 @@ Also in: QC Report Overview (PM, AM) · QA Agent Audit"""
                 ["Set Extra Assign Hours", "Analytics → User Monthly Goal/Report", "PM / AM"],
                 ["Change roster days", "Manage → Roster Management", "PM / AM / TL"],
                 ["Approve roster", "Manage → Approval Queue", "Admin / Super Admin"],
-                ["Score QC on a file", "Agent Files → QC Form", "PM / QA"],
-                ["Enter my QA hours", "Header → My Report", "QA"],
+                ["Score QC on a file", "Agent Files → QC Form", "PM / QA / TL"],
+                ["Enter my QA hours", "Header → My Report", "QA / TL"],
                 ["Download KRA Excel", "Analytics → KRA → Export", "Scoped by role"],
                 ["See my shift plan", "Header → My Roster", "Agent / QA"],
             ],

@@ -41,7 +41,7 @@ Access is based on the user’s **role**. Job designation is for display only an
 |------|-------------------------|
 | Project Manager | Entire organization |
 | Assistant Manager | Own team / assigned agents |
-| Assistant Team Leader | Own team only |
+| Assistant Team Leader | Own team only (for QC: agents where they are set as the QA) |
 | QA | Agents assigned to them (+ their own data) |
 | Agent | Own data only |
 
@@ -60,9 +60,9 @@ Access is based on the user’s **role**. Job designation is for display only an
 | Project Monthly Report | View | View | View | — | — |
 | KRA | View + Export | View (scoped) | View (team) | View (scoped) | View (own) |
 | Tracker Report | View | View | View | View | — |
-| Agent Files & QC | View | View | — | View | — |
+| Agent Files & QC | View | View | Edit (as QA) | View | — |
 | QC Report Overview | View | View | — | — | — |
-| QA Agent Audit | View | View | — | Limited | — |
+| QA Agent Audit | View | View | — | — | — |
 | Manage Users | Manage | — | — | — | — |
 | Manage Projects | Manage | Manage | — | — | — |
 | Roster Management | Edit | Edit (team) | Edit (team) | — | — |
@@ -120,7 +120,7 @@ Roster **approve / reject** is Admin and Super Admin only (separate document).
 
 ### 5.3 Assistant Team Leader (Team Leader)
 
-**Mostly view-only**, with one important exception.
+**Mostly view-only**, with two exceptions: the team roster and their own QC work (like a QA).
 
 **Can**
 
@@ -132,8 +132,8 @@ Roster **approve / reject** is Admin and Super Admin only (separate document).
 - Edit User Monthly Goals hours
 - Manage users or projects
 - Approve roster
-- Access QC overview / agent files modules typically shown to managers
-- Make other write changes (system treats them as read-only outside roster)
+- Access QC Report Overview or the manager QA Agent Audit
+- Make other write changes (system treats them as read-only outside roster and their own QC work)
 
 ---
 
@@ -143,7 +143,7 @@ Roster **approve / reject** is Admin and Super Admin only (separate document).
 
 **Can**
 
-- View analytics, billable, audit, and KRA for assigned agents
+- View analytics, billable and KRA for assigned agents, and the Audit Report for audits on their own QC
 - Maintain own QA hours (My Report)
 - View own roster
 - View Tracker Report and Agent Files & QC for assigned agents
@@ -180,7 +180,7 @@ Default landing page after login: Agent Tracker (not the manager dashboard).
 1. **Roster approval** is not available to roles in this document — only Admin / Super Admin (see separate doc).
 2. **Project Manager** can see org-wide data but cannot approve roster.
 3. **Assistant Manager** is locked to their team for monthly goals and roster filters.
-4. **Team Leader** is view-only except roster edit/submit.
+4. **Team Leader** is view-only except roster edit/submit and their own QC work (only on agents where they are set as the QA).
 5. **Agents** and **QA** use “My Roster” (view only), not Roster Management.
 6. Creating a user with the wrong role will immediately change what they can see and do — choose roles carefully.
 
@@ -192,7 +192,7 @@ Default landing page after login: Agent Tracker (not the manager dashboard).
 |-------------------------|------------------|
 | See all teams/reports, manage users/projects, but not approve roster | Project Manager |
 | Manage one team’s goals, projects, and roster (no user management) | Assistant Manager |
-| View team reports and update roster only | Assistant Team Leader |
+| View team reports, update roster, and do QC where set as QA | Assistant Team Leader |
 | Review QC / assigned agents and enter QA hours | QA |
 | Enter daily work and view own reports only | Agent |
 | Full system control / roster approval | See **Admin & Super Admin** document |
