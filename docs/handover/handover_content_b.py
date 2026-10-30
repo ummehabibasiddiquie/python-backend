@@ -155,7 +155,7 @@ TECHNICAL_REFERENCE = {
         ]),
         ("p", "Every endpoint answers {status, message, data} through utils/response.api_response. Most are POST "
               "with a JSON body (multipart for uploads) and expect logged_in_user_id. Every endpoint with its "
-              "request and access is in 07, API Reference."),
+              "request and access is in 05, API Reference."),
         ("table", ["Blueprint (prefix)", "Main endpoints"], [
             ["/auth", "POST /auth/user: login (JSON) and create user (multipart)."],
             ["/password_reset", "forgot-password, verify-reset-token, reset-password."],
@@ -228,7 +228,7 @@ TECHNICAL_REFERENCE = {
         # ---------------------------------------------------------------- database
         ("h", "3. Database reference"),
         ("p", "Live database: mytfs (MySQL 8 on the VPS). Local copy: tfs_hrms. Both APIs share it. This section "
-              "covers the main tables; every table and column is in 08, Database Schema."),
+              "covers the main tables; every table and column is in 06, Database Schema."),
         ("note", "Soft delete: in tfs_user and the sop_* tables, is_delete = 1 means the row is LIVE and 0 means "
                  "deleted. Most other tables use is_active (1 active, 0 removed)."),
 

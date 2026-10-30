@@ -1,4 +1,4 @@
-"""Handover document 07: API Reference (Flask API and Node QC API) for developers.
+"""Handover document 05: API Reference (Flask API and Node QC API) for developers.
 
 Built from a read-only pass over backend-api (Flask), qc-backend (Node/Express) and the
 frontend call sites in hrms-frontend-live/src. No secret values are copied here.
@@ -793,7 +793,7 @@ UNUSED = [
 # ASSEMBLY
 # =========================================================================================
 API_REFERENCE = {
-    "number": "07",
+    "number": "05",
     "title": "API Reference",
     "audience": "Developers",
     "blocks": CONVENTIONS + _flask_blocks() + _node_blocks() + JOBS + UNUSED,

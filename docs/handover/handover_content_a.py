@@ -23,13 +23,11 @@ START_HERE = {
                                           "the database tables."],
             ["04", "Support and Known Issues", "Step-by-step fixes for the requests that come up most often, what "
                                                "changed lately, known bugs and risks, and what is still open."],
-            ["05", "KT Checklist and Sign-off", "The access the new developer needs, and the sign-off sheet ticked "
-                                                "by both people at the end."],
-            ["06", "Credentials Register", "All logins, passwords and keys. A separate password-protected file; the "
+            ["-", "Credentials Register (confidential folder)", "All logins, passwords and keys. A separate password-protected file; the "
                                            "lead gives the file password in person."],
-            ["07", "API Reference", "Every Flask and Node QC endpoint: request, access, response and the screen "
+            ["05", "API Reference", "Every Flask and Node QC endpoint: request, access, response and the screen "
                                     "that uses it."],
-            ["08", "Database Schema", "Every table and column, how the tables link, generated from the database."],
+            ["06", "Database Schema", "Every table and column, how the tables link, generated from the database."],
         ]),
         ("p", "The user SOPs (one Word file per role and module) are in docs/sop/word. Read them too: they show "
               "every screen with screenshots and are the quickest way to learn what users see."),
@@ -200,7 +198,7 @@ cd hrms-frontend-live && git checkout live"""),
                  "fix a live problem by changing your local database."),
 
         ("h", "4. Environment files"),
-        ("p", "Each repository needs a .env file (not in git). Ask the lead for the values (06 lists which ones are "
+        ("p", "Each repository needs a .env file (not in git). Ask the lead for the values (the Credentials Register lists which ones are "
               "secret); the names are:"),
         ("table", ["Repository", "Variables"], [
             ["backend-api/.env", "DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD; ENCRYPTION_KEY; "
@@ -272,7 +270,7 @@ npm run dev"""),
         ("h", "9. The server"),
         ("table", ["Item", "Value"], [
             ["Host", "Hostinger VPS srv1255447, IP 72.62.197.92 (Ubuntu), domain tfshrms.cloud"],
-            ["Login", "ssh root@72.62.197.92 (password or SSH key from the lead; never written in documents, see 06)"],
+            ["Login", "ssh root@72.62.197.92 (password or SSH key from the lead; never written in documents, see the Credentials Register)"],
             ["Website source / served files", "/root/tfshrms/hrms-frontend  ->  /var/www/tfshrms-frontend (Nginx)"],
             ["Flask API folder", "/root/tfshrms/hrms-backend (venv, pm2 app python-backend)"],
             ["Node QC API folder", "/root/tfshrms/qc-backend (pm2 app node-backend, runs dist/index.js)"],
