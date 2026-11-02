@@ -403,7 +403,7 @@ def run(week_start: date | None = None, dry_run: bool = False, only_to: str | No
     if only_to:
         recipients = [r for r in recipients if r["user_email"].strip().lower() == only_to.strip().lower()]
         if not recipients:
-            print(f"{only_to} is not an active Admin, Project Manager, Assistant Manager or Team Lead; nothing sent.")
+            print(f"{only_to} is not an active Super Admin, Admin, Project Manager, Assistant Manager or Team Lead; nothing sent.")
 
     subject = f"Weekly goal report: {week_label(start, end)}"
     summary = defaultdict(int)
