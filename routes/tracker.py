@@ -1010,6 +1010,33 @@ def view_trackers():
         where_sql = " WHERE " + " AND ".join(where_clauses)
         filtered_query_suffix = f"{from_clause}{where_sql}"
 
+        tracker_sort_columns = {
+            "date_time": "CAST(twt.date_time AS DATETIME)",
+            "agent": "LOWER(COALESCE(u.user_name, ''))",
+            "project": "LOWER(COALESCE(p.project_name, ''))",
+            "task": "LOWER(COALESCE(tk.task_name, ''))",
+            "tenure_target": "COALESCE(twt.tenure_target, 0)",
+            "production": "COALESCE(twt.production, 0)",
+            "billable_hours": "COALESCE(twt.production / NULLIF(twt.tenure_target, 0), 0)",
+            "notes": "LOWER(COALESCE(twt.tracker_note, ''))",
+            "shift": "LOWER(COALESCE(twt.shift, ''))",
+        }
+        sort_by = str(data.get("sort_by") or "date_time").strip().lower()
+        sort_dir = str(data.get("sort_dir") or "desc").strip().lower()
+        if sort_by not in tracker_sort_columns:
+            sort_by = "date_time"
+        if sort_dir not in ("asc", "desc"):
+            sort_dir = "desc"
+        sort_expr = tracker_sort_columns[sort_by]
+        # Keep numeric 0 in the result: ASC shows 0 first, DESC shows 0 last.
+        if sort_by in ("production", "tenure_target", "billable_hours"):
+            if sort_dir == "asc":
+                order_sql = f"({sort_expr} = 0) DESC, {sort_expr} ASC, twt.tracker_id ASC"
+            else:
+                order_sql = f"({sort_expr} = 0) ASC, {sort_expr} DESC, twt.tracker_id DESC"
+        else:
+            order_sql = f"{sort_expr} {sort_dir.upper()}, twt.tracker_id {sort_dir.upper()}"
+
         count_query = f"""
             SELECT COUNT(*) AS total_records
             {filtered_query_suffix}
@@ -1051,7 +1078,7 @@ def view_trackers():
             tk.task_name, tk.qc_percentage, t.team_name,
             (twt.production / NULLIF(twt.tenure_target, 0)) AS billable_hours
             {filtered_query_suffix}
-            ORDER BY CAST(twt.date_time AS DATETIME) DESC
+            ORDER BY {order_sql}
             {pagination_sql}
         """
         cursor.execute(query, tuple(data_params))
