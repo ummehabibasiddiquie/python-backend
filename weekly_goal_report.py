@@ -16,6 +16,7 @@ The table also shows consecutive missed weeks (including this week) and a sugges
 2 verbal warning, 3 email warning, 4 issue warning 1, 5 issue warning 2, 6+ issue warning 3.
 Missed = below 90% of the week goal; 90% or above is achieved.
 Agents who missed 2 or more consecutive weeks also get a warning email.
+Consecutive weeks start from the first week of November 2026 (not earlier).
 
 Usage (from backend-api; server cron runs it every Monday at 11:00 IST):
     python weekly_goal_report.py                                   # last week, send to everyone
@@ -49,6 +50,7 @@ from dotenv import load_dotenv
 HERE = Path(__file__).resolve().parent
 load_dotenv(dotenv_path=HERE / ".env")
 
+from utils.kra import warnings_streak_start_monday  # noqa: E402
 from utils.roster_helpers import FULL_DAY_HOURS, daily_hours_for_tenure  # noqa: E402
 from utils.roster_metrics import (  # noqa: E402
     apply_active_leaves_to_days,
@@ -228,12 +230,19 @@ def add_consecutive_misses(cursor, rows: list[dict], week_start: date) -> None:
 
     Weeks with no goal (full leave / not yet joined) are skipped: they do not
     add to the streak and they do not reset it.
+    Misses before the first week of November 2026 do not count.
     """
+    streak_start = warnings_streak_start_monday()
+    if week_start < streak_start:
+        for row in rows:
+            row["consecutive_misses"] = 0
+            row["suggested_action"] = suggested_action(0)
+        return
     streaks = {r["user_id"]: 1 if missed_goal(r) else 0 for r in rows}
     still = {uid for uid, n in streaks.items() if n > 0}
     look_start = week_start - timedelta(days=7)
     for _ in range(MAX_STREAK_WEEKS - 1):
-        if not still:
+        if not still or look_start < streak_start:
             break
         look_end = look_start + timedelta(days=6)
         previous = {p["user_id"]: p for p in fetch_week(cursor, look_start, look_end)}
@@ -279,12 +288,6 @@ def week_label(start: date, end: date) -> str:
 
 FONT = "font-family:Segoe UI,Arial,Helvetica,sans-serif"
 BRAND = "#1D4ED8"
-GOAL_NOTE = ("Week goal = Monday-Friday working days at each agent's daily hours, minus holidays, half days and "
-             "leave that affects the target. Leave that does not affect the target still counts in the goal. "
-             "Missed = below 90% of the week goal; 90% or above is achieved. "
-             "Consecutive weeks = missed weeks in a row, including this week (full-leave weeks are skipped). "
-             "Suggested action: 2 consecutive weeks = verbal warning, 3 = email warning, "
-             "4 = issue warning 1, 5 = issue warning 2, 6 or more = issue warning 3.")
 
 
 def percent_colours(percent: float) -> tuple[str, str]:
@@ -425,19 +428,13 @@ def build_html(recipient: dict, rows: list[dict], start: date, end: date) -> str
             table += agent_row(r, i % 2 == 1)
     table += "</table>"
     content = intro + summary + banner + table
-
-    footer = (
-        f'<tr><td style="padding:14px 26px 22px;{FONT};font-size:11px;color:#64748B">'
-        f"{GOAL_NOTE}<br>Automated report from TFS HRMS.</td></tr>"
-    )
     return (
         f'<table width="100%" cellpadding="0" cellspacing="0" style="background:#F1F5F9;padding:20px 0">'
         '<tr><td align="center">'
         '<table width="860" cellpadding="0" cellspacing="0" '
         'style="background:#FFFFFF;border-radius:10px;border:1px solid #E2E8F0">'
         f"{header}"
-        f'<tr><td style="padding:22px 26px 6px;{FONT}">{content}</td></tr>'
-        f"{footer}"
+        f'<tr><td style="padding:22px 26px 22px;{FONT}">{content}</td></tr>'
         "</table></td></tr></table>"
     )
 

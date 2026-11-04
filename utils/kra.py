@@ -569,6 +569,13 @@ def warnings_apply_for_month(month_year: str) -> bool:
     return (year, month) >= (start_year, start_month)
 
 
+def warnings_streak_start_monday() -> date:
+    """First Monday of the month consecutive misses start counting (November 2026)."""
+    year, month = parse_month_year(KRA_WARNINGS_START_MONTH)
+    first = date(year, month, 1)
+    return first + timedelta(days=(7 - first.weekday()) % 7)
+
+
 def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: str) -> dict:
     ensure_kra_note_table(cursor)
     ensure_kra_month_input_table(cursor)
