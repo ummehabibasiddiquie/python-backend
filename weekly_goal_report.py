@@ -6,7 +6,7 @@ are not holidays at the agent's daily hours (9 x tenure), minus half working day
 affects the target. Leave that does not affect the target still counts in the goal. Agents with no roster for
 the week fall back to their daily assigned hours (temp_qc).
 Achieved = billable hours from tracker entries (production / tenure target), the same figures as the daily
-billable report. Agents of teams A and B only.
+billable report. Agents of teams A and B only. Deactivated agents are not included.
 
 Recipients (active users, by role):
   Super Admin, Admin, Project Manager -> all agents
@@ -140,10 +140,10 @@ def fetch_week(cursor, week_start: date, week_end: date) -> list[dict]:
           AND t.team_name IN ('A', 'B')
           AND LOWER(TRIM(u.user_name)) <> LOWER(TRIM(t.team_name))
           AND DATE(u.created_date) <= %s
-          AND (u.is_active = 1 OR (u.deactivated_at IS NOT NULL AND DATE(u.deactivated_at) >= %s))
+          AND u.is_active = 1
         ORDER BY t.team_name, u.user_name
         """,
-        (week_end, week_start),
+        (week_end,),
     )
     agents = cursor.fetchall()
     if not agents:
