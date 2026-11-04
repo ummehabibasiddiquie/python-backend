@@ -6,7 +6,7 @@ On the server it reads /root/tfshrms/hrms-backend/.env — that file already has
 the live database (mytfs on 127.0.0.1). It does not use your Windows .env.
 
 Filename example:
-    hrms_mytfs_backup_2026-11-08_Sunday.sql.gz
+    hrms_mytfs_backup_2026-11-08_Sunday.sql
 
 Usage on the server:
     python backup_hrms_db.py --dir /root/hrms-db-backups
@@ -154,7 +154,11 @@ def main() -> int:
         default=os.getenv("HRMS_BACKUP_DIR", str(HERE / "db_backups")),
         help="folder to save the dump (created if missing)",
     )
-    parser.add_argument("--no-gzip", action="store_true", help="write a plain .sql file instead of .sql.gz")
+    parser.add_argument(
+        "--gzip",
+        action="store_true",
+        help="compress the dump to .sql.gz (default is a plain .sql file)",
+    )
     parser.add_argument(
         "--keep",
         type=int,
@@ -163,7 +167,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        run_backup(Path(args.dir).expanduser(), gzip_file=not args.no_gzip, keep=args.keep)
+        run_backup(Path(args.dir).expanduser(), gzip_file=args.gzip, keep=args.keep)
         return 0
     except Exception:
         logging.exception("HRMS database backup failed")
