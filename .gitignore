@@ -13,6 +13,9 @@ __pycache__/
 # Logs
 *.log
 
+# Local / cron database dumps
+db_backups/
+
 # Docs: password-protected credentials, local test logins, one-off probes, Word lock files
 docs/handover/confidential/
 docs/sop/test_logins.local.json

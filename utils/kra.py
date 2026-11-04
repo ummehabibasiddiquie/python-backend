@@ -1,23 +1,33 @@
 """
 Monthly agent KRA.
 
-The sheet is calculated from billable hours, QC scores, roster, and tracker counts.
-Daily notes can be added when needed. Everything else is read-only.
+The sheet is calculated from billable hours, QC scores, roster, tracker counts,
+and weekly-goal consecutive misses (verbal / email / letter). Warning counts
+auto-fill and stay editable. Daily notes can be added when needed.
 Active from SEP2026. For the current month, days are shown only through today (IST).
 """
 
 from __future__ import annotations
 
 import calendar
-from datetime import date, timedelta
+from collections import defaultdict
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from utils.qc_auto_score import AUTO_QC_DAYS_SQL
-from utils.roster_helpers import parse_month_year, roster_day_status_label
+from utils.roster_helpers import (
+    FULL_DAY_HOURS,
+    daily_hours_for_tenure,
+    parse_month_year,
+    roster_day_status_label,
+)
+from utils.roster_metrics import apply_active_leaves_to_days, recalculate_metrics_from_days_and_leaves
 from utils.time_ist import now_ist, now_str
 
 # KRA starts from this calendar month (MonYYYY). Earlier months are not available.
 KRA_GO_LIVE_MONTH = "SEP2026"
+# Weekly-goal verbal/email/letter counts in the Excel sheet start from this month.
+KRA_WARNINGS_START_MONTH = "NOV2026"
 
 PRODUCTIVITY_HOURS = 9
 QUALITY_MIN = 98
@@ -70,7 +80,7 @@ FORMULAS = {
     "schedule_score": "(Present days / last Total Working Days) × 10. That last total drops only roster leave: full roster leave removes 1, half day roster removes 0.5. Unrostered leave, full or half, is not removed.",
     "working_days": "Productivity and Quality total working days drop every leave: roster and unrostered, full day (remove 1) and half day (remove 0.5). The last Total Working Days drops roster leave only.",
     "present_days": "Present, Half Day, and WFH count as 1. Half Day Roster and Half Day Unrostered count as 0.5.",
-    "reporting": "Count Present, WFH, and Unrostered days with fewer than 7 trackers, and Half Day with fewer than 4 trackers. Half Day Roster and Half Day Unrostered with fewer than 4 trackers count as 0.5. Add warning instances (verbal = 1, email = 2, letter = 3). 0–3 instances = 14%, 4–6 = 7%, more than 6 = 0%.",
+    "reporting": "Count Present, WFH, and Unrostered days with fewer than 7 trackers, and Half Day with fewer than 4 trackers. Half Day Roster and Half Day Unrostered with fewer than 4 trackers count as 0.5. From Nov 2026, add weekly-goal warnings: 2 consecutive missed weeks = verbal (1), 3rd week = email (2), 4th week = letter (3). 0–3 instances = 14%, 4–6 = 7%, more than 6 = 0%.",
     "timeliness": "Not filled by HRMS. Weight 10% always counts in total weightage. Earned stays blank until typed in the Excel KRA Score sheet (0–10).",
 }
 
@@ -150,6 +160,32 @@ def ensure_kra_note_table(cursor) -> None:
     )
 
 
+def ensure_kra_month_input_table(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kra_month_input (
+            kra_month_input_id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            month_year VARCHAR(12) NOT NULL,
+            verbal_warnings INT NOT NULL DEFAULT 0,
+            email_warnings INT NOT NULL DEFAULT 0,
+            letter_warnings INT NOT NULL DEFAULT 0,
+            timeliness_percent DECIMAL(5,2) NULL,
+            warnings_overridden TINYINT NOT NULL DEFAULT 0,
+            updated_by INT NULL,
+            updated_date DATETIME NULL,
+            UNIQUE KEY uq_kra_month_input (user_id, month_year)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cursor.execute("SHOW COLUMNS FROM kra_month_input LIKE 'warnings_overridden'")
+    if not cursor.fetchone():
+        cursor.execute(
+            "ALTER TABLE kra_month_input "
+            "ADD COLUMN warnings_overridden TINYINT NOT NULL DEFAULT 0"
+        )
+
+
 def _num(value) -> float | None:
     if value is None or value == "":
         return None
@@ -164,6 +200,8 @@ def _num(value) -> float | None:
 def _date_key(value) -> date | None:
     if value is None:
         return None
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
     text = str(value).strip()[:10]
@@ -282,6 +320,213 @@ def reporting_score(low_tracker_days: float, verbal: int = 0, email: int = 0, le
     }
 
 
+def _week_mondays(start: date, end: date) -> list[date]:
+    day = start - timedelta(days=start.weekday())
+    mondays = []
+    while day <= end:
+        mondays.append(day)
+        day += timedelta(days=7)
+    return mondays
+
+
+def _week_goal_hours(days: list[dict], leaves: list[dict], tenure) -> float:
+    if not days:
+        return 0.0
+    merged = apply_active_leaves_to_days(days, leaves)
+    hours = float(recalculate_metrics_from_days_and_leaves(merged, leaves)["monthly_target_hours"] or 0)
+    if not any((d.get("day_type") or "") == "Working" for d in days):
+        hours = hours * daily_hours_for_tenure(tenure) / FULL_DAY_HOURS
+    return round(hours, 2)
+
+
+def auto_warning_counts(
+    cursor,
+    user_id: int,
+    tenure,
+    month_start: date,
+    month_end: date,
+    as_of: date | None = None,
+) -> dict:
+    """Verbal / email / letter points from completed weeks that start in this month.
+
+    Prior weeks are used only to measure the consecutive streak.
+    The current week is ignored until Sunday.
+    """
+    as_of = as_of or month_end
+    look_from = month_start - timedelta(weeks=12)
+    look_from = look_from - timedelta(days=look_from.weekday())
+    mondays = _week_mondays(look_from, month_end)
+    range_end = mondays[-1] + timedelta(days=6) if mondays else month_end
+    uid = int(user_id)
+
+    cursor.execute(
+        """
+        SELECT rm.user_id, rd.roster_date, rd.day_type, rd.working_type, rd.working_hours,
+               rd.holiday_id, rd.leave_id
+        FROM roster_day rd
+        JOIN roster_month rm ON rm.roster_month_id = rd.roster_month_id AND rm.is_active = 1
+        WHERE rd.is_active = 1 AND rd.roster_date BETWEEN %s AND %s AND rm.user_id = %s
+        ORDER BY rd.roster_date
+        """,
+        (look_from, range_end, uid),
+    )
+    days_by_week: dict[date, list[dict]] = defaultdict(list)
+    for row in cursor.fetchall() or []:
+        if (row.get("day_type") or "").strip() == "PreJoin":
+            continue
+        work_date = _date_key(row.get("roster_date"))
+        if not work_date:
+            continue
+        monday = work_date - timedelta(days=work_date.weekday())
+        days_by_week[monday].append(row)
+
+    cursor.execute(
+        """
+        SELECT rm.user_id, rl.leave_id, rl.start_date, rl.end_date, rl.affect_target, rl.is_half_day,
+               rl.is_rostered, rl.leave_type, rl.is_active
+        FROM roster_leave rl
+        JOIN roster_month rm ON rm.roster_month_id = rl.roster_month_id AND rm.is_active = 1
+        WHERE rl.is_active = 1 AND rl.start_date <= %s AND rl.end_date >= %s AND rm.user_id = %s
+        """,
+        (range_end, look_from, uid),
+    )
+    leaves = list(cursor.fetchall() or [])
+
+    cursor.execute(
+        """
+        SELECT DATE(CAST(date_time AS DATETIME)) AS work_date,
+               COALESCE(SUM(production / NULLIF(tenure_target, 0)), 0) AS hours
+        FROM task_work_tracker
+        WHERE is_active = 1 AND user_id = %s AND DATE(CAST(date_time AS DATETIME)) BETWEEN %s AND %s
+        GROUP BY DATE(CAST(date_time AS DATETIME))
+        """,
+        (uid, look_from, range_end),
+    )
+    hours_by_day = {}
+    for row in cursor.fetchall() or []:
+        key = _date_key(row.get("work_date"))
+        if key:
+            hours_by_day[key] = float(row.get("hours") or 0)
+
+    cursor.execute(
+        """
+        SELECT DATE(`date`) AS work_date, COALESCE(SUM(assigned_hours), 0) AS hours
+        FROM temp_qc
+        WHERE user_id = %s AND DATE(`date`) BETWEEN %s AND %s
+        GROUP BY DATE(`date`)
+        """,
+        (uid, look_from, range_end),
+    )
+    assigned_by_day = {}
+    for row in cursor.fetchall() or []:
+        key = _date_key(row.get("work_date"))
+        if key:
+            assigned_by_day[key] = float(row.get("hours") or 0)
+
+    missed_by_week: dict[date, bool | None] = {}
+    for monday in mondays:
+        week_end = monday + timedelta(days=6)
+        week_goal = _week_goal_hours(days_by_week.get(monday, []), leaves, tenure)
+        if week_goal <= 0:
+            assigned = 0.0
+            day = monday
+            while day <= week_end:
+                assigned += assigned_by_day.get(day, 0.0)
+                day += timedelta(days=1)
+            week_goal = round(assigned, 2)
+        if week_goal <= 0:
+            missed_by_week[monday] = None
+            continue
+        done = 0.0
+        day = monday
+        while day <= week_end:
+            done += hours_by_day.get(day, 0.0)
+            day += timedelta(days=1)
+        missed_by_week[monday] = (round(done, 2) / week_goal * 100) < 90.0
+
+    verbal = email = letter = 0
+    for monday in mondays:
+        week_end = monday + timedelta(days=6)
+        if monday < month_start or monday > month_end:
+            continue
+        if week_end > as_of:
+            continue
+        if missed_by_week.get(monday) is not True:
+            continue
+        streak = 0
+        cursor_day = monday
+        while cursor_day >= look_from:
+            flag = missed_by_week.get(cursor_day)
+            if flag is True:
+                streak += 1
+                cursor_day -= timedelta(days=7)
+            elif flag is None:
+                cursor_day -= timedelta(days=7)
+            else:
+                break
+        # 2 weeks = verbal 1; 3rd week = email 2; 4th week = letter 3.
+        if streak == 2:
+            verbal = 1
+        elif streak == 3:
+            email = 2
+        elif streak >= 4:
+            letter = 3
+    return {"verbal_warnings": verbal, "email_warnings": email, "letter_warnings": letter}
+
+
+def load_kra_month_input(cursor, user_id: int, month_year: str) -> dict | None:
+    ensure_kra_month_input_table(cursor)
+    cursor.execute(
+        """
+        SELECT verbal_warnings, email_warnings, letter_warnings, timeliness_percent, warnings_overridden
+        FROM kra_month_input
+        WHERE user_id = %s AND month_year = %s
+        LIMIT 1
+        """,
+        (int(user_id), month_year),
+    )
+    return cursor.fetchone()
+
+
+def save_kra_month_warnings(
+    cursor,
+    actor_id: int,
+    user_id: int,
+    month_year: str,
+    verbal: int,
+    email: int,
+    letter: int,
+    *,
+    overridden: bool,
+) -> None:
+    ensure_kra_month_input_table(cursor)
+    cursor.execute(
+        """
+        INSERT INTO kra_month_input
+            (user_id, month_year, verbal_warnings, email_warnings, letter_warnings,
+             warnings_overridden, updated_by, updated_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            verbal_warnings=VALUES(verbal_warnings),
+            email_warnings=VALUES(email_warnings),
+            letter_warnings=VALUES(letter_warnings),
+            warnings_overridden=VALUES(warnings_overridden),
+            updated_by=VALUES(updated_by),
+            updated_date=VALUES(updated_date)
+        """,
+        (
+            int(user_id),
+            month_year,
+            max(0, int(verbal or 0)),
+            max(0, int(email or 0)),
+            max(0, int(letter or 0)),
+            1 if overridden else 0,
+            int(actor_id),
+            now_str(),
+        ),
+    )
+
+
 def _ratio_score(numerator: float, denominator: float, weight: float) -> float | None:
     if not denominator:
         return None
@@ -315,8 +560,18 @@ def is_kra_month_allowed(month_year: str) -> bool:
     return (year, month) >= (go_year, go_month)
 
 
+def warnings_apply_for_month(month_year: str) -> bool:
+    try:
+        year, month = parse_month_year(month_year)
+        start_year, start_month = parse_month_year(KRA_WARNINGS_START_MONTH)
+    except ValueError:
+        return False
+    return (year, month) >= (start_year, start_month)
+
+
 def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: str) -> dict:
     ensure_kra_note_table(cursor)
+    ensure_kra_month_input_table(cursor)
     start = date(year, month, 1)
     today = now_ist().date()
     end = kra_period_end(year, month, today)
@@ -538,11 +793,29 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
         if row["qc_score"] is not None:
             quality_scores.append(row["qc_score"])
 
-    verbal = 0
-    email = 0
-    letter = 0
+    saved_input = load_kra_month_input(cursor, int(user_id), month_year)
+    if warnings_apply_for_month(month_year):
+        month_last = date(year, month, calendar.monthrange(year, month)[1])
+        auto_warnings = auto_warning_counts(
+            cursor, int(user_id), raw_tenure, start, month_last, as_of=end
+        )
+        warnings_overridden = False
+        verbal = int(auto_warnings["verbal_warnings"] or 0)
+        email = int(auto_warnings["email_warnings"] or 0)
+        letter = int(auto_warnings["letter_warnings"] or 0)
+    else:
+        auto_warnings = {
+            "verbal_warnings": None,
+            "email_warnings": None,
+            "letter_warnings": None,
+        }
+        verbal = email = letter = None
+        warnings_overridden = False
     timeliness = None
-    reporting = reporting_score(low_tracker_days, verbal, email, letter)
+    if saved_input and saved_input.get("timeliness_percent") is not None:
+        timeliness = saved_input.get("timeliness_percent")
+    # Screen score uses tracker misses only. Verbal/email/letter stay in Excel I11–I13.
+    reporting = reporting_score(low_tracker_days, 0, 0, 0)
 
     productivity_earned = _ratio_score(productivity_yes, working_days, WEIGHT_PRODUCTIVITY)
     quality_earned = _ratio_score(quality_yes, working_days, WEIGHT_QUALITY)
@@ -622,6 +895,10 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
             "email_warnings": email,
             "letter_warnings": letter,
             "timeliness_percent": timeliness_earned,
+            "warnings_overridden": warnings_overridden,
+            "auto_verbal_warnings": auto_warnings["verbal_warnings"],
+            "auto_email_warnings": auto_warnings["email_warnings"],
+            "auto_letter_warnings": auto_warnings["letter_warnings"],
         },
         "scores": [
             {
@@ -674,8 +951,18 @@ def build_kra_report(cursor, user_id: int, year: int, month: int, month_year: st
     }
 
 
-def save_kra_notes(cursor, actor_id: int, user_id: int, notes: list[dict], *, period_start: date, period_end: date) -> None:
-    """Save optional daily notes only. Does not change calculated KRA fields."""
+def save_kra_notes(
+    cursor,
+    actor_id: int,
+    user_id: int,
+    notes: list[dict],
+    *,
+    period_start: date,
+    period_end: date,
+    warnings: dict | None = None,
+    month_year: str | None = None,
+) -> None:
+    """Save daily notes and optional warning counts (editable auto-fill)."""
     ensure_kra_note_table(cursor)
     stamp = now_str()
     for item in notes or []:
@@ -700,5 +987,16 @@ def save_kra_notes(cursor, actor_id: int, user_id: int, notes: list[dict], *, pe
                 updated_date=VALUES(updated_date)
             """,
             (int(user_id), work_date, note, int(actor_id), stamp),
+        )
+    if warnings is not None and month_year:
+        save_kra_month_warnings(
+            cursor,
+            actor_id,
+            user_id,
+            month_year,
+            warnings.get("verbal_warnings"),
+            warnings.get("email_warnings"),
+            warnings.get("letter_warnings"),
+            overridden=bool(warnings.get("warnings_overridden", True)),
         )
 

@@ -207,6 +207,8 @@ def kra_save_notes():
             data.get("notes") or [],
             period_start=period_start,
             period_end=period_end,
+            warnings=data.get("warnings"),
+            month_year=month_year,
         )
         conn.commit()
         report = build_kra_report(cursor, int(target_id), year, month, month_year)

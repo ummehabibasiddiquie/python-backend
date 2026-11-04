@@ -25,6 +25,7 @@ from utils.kra import (
     WEIGHT_REPORTING,
     WEIGHT_SCHEDULE,
     WEIGHT_TIMELINESS,
+    warnings_apply_for_month,
 )
 
 ATTENDANCE_CHOICES = (
@@ -86,7 +87,11 @@ SLATE = "F4F7F8"
 AMBER = "FFF6DE"
 LINE = "D5DEE3"
 GREEN = "E5F6ED"
+ORANGE = "FFEDD5"
 RED = "FDECEC"
+GREEN_TEXT = "166534"
+ORANGE_TEXT = "9A3412"
+RED_TEXT = "991B1B"
 MUTED = "5C6B73"
 WHITE = "FFFFFF"
 
@@ -127,6 +132,44 @@ def _fill(hex_color: str) -> PatternFill:
 
 def _font(size=11, bold=False, color="1F2933"):
     return Font(name="Calibri", size=size, bold=bold, color=color)
+
+
+def _add_ratio_bands(ws, target: str, num: str, den: str, size=12) -> None:
+    """Green ≥ 90%, orange 75–89%, red below 75% — same bands as the KRA screen."""
+    bands = (
+        (f"AND(ISNUMBER({num}),ISNUMBER({den}),{den}<>0,{num}/{den}>=0.9)", GREEN, GREEN_TEXT),
+        (f"AND(ISNUMBER({num}),ISNUMBER({den}),{den}<>0,{num}/{den}>=0.75)", ORANGE, ORANGE_TEXT),
+        (f"AND(ISNUMBER({num}),ISNUMBER({den}),{den}<>0,{num}/{den}<0.75)", RED, RED_TEXT),
+    )
+    for formula, fill, color in bands:
+        ws.conditional_formatting.add(
+            target,
+            FormulaRule(
+                formula=[formula],
+                fill=_fill(fill),
+                font=_font(size, True, color),
+                stopIfTrue=True,
+            ),
+        )
+
+
+def _add_reporting_bands(ws, target: str, instances: str, size=12) -> None:
+    """0–3 missed tracker days green, 4–6 orange, more than 6 red."""
+    bands = (
+        (f"AND(ISNUMBER({instances}),{instances}<=3)", GREEN, GREEN_TEXT),
+        (f"AND(ISNUMBER({instances}),{instances}<=6)", ORANGE, ORANGE_TEXT),
+        (f"AND(ISNUMBER({instances}),{instances}>6)", RED, RED_TEXT),
+    )
+    for formula, fill, color in bands:
+        ws.conditional_formatting.add(
+            target,
+            FormulaRule(
+                formula=[formula],
+                fill=_fill(fill),
+                font=_font(size, True, color),
+                stopIfTrue=True,
+            ),
+        )
 
 
 def _header(cell):
@@ -577,12 +620,37 @@ def _write_daily(ws, report, first, last):
             ),
         )
 
-    yes_rule = FormulaRule(formula=[f'E{first}="YES"'], fill=_fill(GREEN), font=_font(10, True, "166534"))
-    no_rule = FormulaRule(formula=[f'E{first}="NO"'], fill=_fill(RED), font=_font(10, True, "991B1B"))
+    yes_rule = FormulaRule(formula=[f'E{first}="YES"'], fill=_fill(GREEN), font=_font(10, True, GREEN_TEXT))
+    no_rule = FormulaRule(formula=[f'E{first}="NO"'], fill=_fill(RED), font=_font(10, True, RED_TEXT))
     ws.conditional_formatting.add(f"E{first}:E{last}", yes_rule)
     ws.conditional_formatting.add(f"E{first}:E{last}", no_rule)
-    ws.conditional_formatting.add(f"G{first}:G{last}", FormulaRule(formula=[f'G{first}="YES"'], fill=_fill(GREEN), font=_font(10, True, "166534")))
-    ws.conditional_formatting.add(f"G{first}:G{last}", FormulaRule(formula=[f'G{first}="NO"'], fill=_fill(RED), font=_font(10, True, "991B1B")))
+    ws.conditional_formatting.add(f"G{first}:G{last}", FormulaRule(formula=[f'G{first}="YES"'], fill=_fill(GREEN), font=_font(10, True, GREEN_TEXT)))
+    ws.conditional_formatting.add(f"G{first}:G{last}", FormulaRule(formula=[f'G{first}="NO"'], fill=_fill(RED), font=_font(10, True, RED_TEXT)))
+    ws.conditional_formatting.add(
+        f"D{first}:D{last}",
+        FormulaRule(formula=[f'E{first}="YES"'], fill=_fill(GREEN), font=_font(10, True, GREEN_TEXT)),
+    )
+    ws.conditional_formatting.add(
+        f"D{first}:D{last}",
+        FormulaRule(formula=[f'E{first}="NO"'], fill=_fill(RED), font=_font(10, True, RED_TEXT)),
+    )
+    ws.conditional_formatting.add(
+        f"F{first}:F{last}",
+        FormulaRule(formula=[f'G{first}="YES"'], fill=_fill(GREEN), font=_font(10, True, GREEN_TEXT)),
+    )
+    ws.conditional_formatting.add(
+        f"F{first}:F{last}",
+        FormulaRule(formula=[f'G{first}="NO"'], fill=_fill(RED), font=_font(10, True, RED_TEXT)),
+    )
+
+    # Summary totals: same 90 / 75 bands as the KRA screen (5 of 21 productivity = red).
+    _add_ratio_bands(ws, f"C{counts_row}", f"$C${counts_row}", f"$C${working_row}")
+    _add_ratio_bands(ws, f"C{score_row}", f"$C${score_row}", rules_b("weight_prod"))
+    _add_ratio_bands(ws, f"F{counts_row}", f"$F${counts_row}", f"$F${working_row}")
+    _add_ratio_bands(ws, f"F{score_row}", f"$F${score_row}", rules_b("weight_qual"))
+    _add_ratio_bands(ws, f"I{counts_row}", f"$I${counts_row}", f"$I${working_row}")
+    _add_ratio_bands(ws, f"I{score_row}", f"$I${score_row}", rules_b("weight_sched"))
+    _add_reporting_bands(ws, f"C{low_row}", f"$C${low_row}")
     ws.conditional_formatting.add(
         f"H{first}:H{last}",
         FormulaRule(
@@ -646,14 +714,6 @@ def _write_score(ws, report, totals_rows):
     ws.merge_cells("A1:F1")
     ws["A1"] = f"KRA score — {report.get('user_name') or 'Agent'} — {report.get('month_year')}"
     ws["A1"].font = _font(18, True, NAVY)
-    ws.merge_cells("A2:F2")
-    ws["A2"] = (
-        "Points 1–4 are formulas from Daily Log (and Rules). "
-        "Edit attendance, hours, QC, or trackers on Daily Log and this sheet updates. "
-        "Point 5 (Timeliness): type earned in D13 (0–10)."
-    )
-    ws["A2"].font = _font(11, False, MUTED)
-
     for col, label in enumerate(("Sr", "Objective", "Weight %", "Earned %", "How it is calculated", "% of weight"), 1):
         _header(ws.cell(4, col, label))
 
@@ -680,7 +740,7 @@ def _write_score(ws, report, totals_rows):
          f"={rules_b('weight_reporting')}",
          f'=IF(I14<={rules_b("reporting_full_max")},{rules_b("reporting_full_score")},'
          f'IF(I14<={rules_b("reporting_partial_max")},{rules_b("reporting_partial_score")},0))',
-         "0-3 instances = 14%. 4-6 = 7%. More than 6 = 0%. Verbal warning = 1, email = 2, letter = 3."),
+         "0-3 instances = 14%. 4-6 = 7%. More than 6 = 0%. From Nov 2026: 2 consecutive missed weeks = verbal (1), 3rd week = email (2), 4th week = letter (3)."),
         (13, 5, "Timeliness - Adherence to break and login schedule", f"={rules_b('weight_timeliness')}",
          None,
          "Weight 10% always counts in total. Type earned in D13 (0–10) when ready — total earned then updates. Example: up to 3 non-compliances = 10%, 4–5 = 5%, more than 5 = 0%."),
@@ -743,14 +803,16 @@ def _write_score(ws, report, totals_rows):
 
     ws["H10"] = "Low tracker days"
     ws["I10"] = f"={low_tracker}"
-    ws["H11"] = "Verbal warnings (x1)"
-    ws["I11"] = 0
-    ws["H12"] = "Email warnings (x2)"
-    ws["I12"] = 0
-    ws["H13"] = "Letter warnings (x3)"
-    ws["I13"] = 0
+    inputs = report.get("inputs") or {}
+    warnings_on = warnings_apply_for_month(report.get("month_year") or "")
+    ws["H11"] = "Verbal warning"
+    ws["I11"] = int(inputs["verbal_warnings"]) if warnings_on and inputs.get("verbal_warnings") is not None else None
+    ws["H12"] = "Email warning"
+    ws["I12"] = int(inputs["email_warnings"]) if warnings_on and inputs.get("email_warnings") is not None else None
+    ws["H13"] = "Letter warning"
+    ws["I13"] = int(inputs["letter_warnings"]) if warnings_on and inputs.get("letter_warnings") is not None else None
     ws["H14"] = "Total instances"
-    ws["I14"] = "=I10+I11+I12*2+I13*3"
+    ws["I14"] = "=SUM(I10:I13)"
     for r in range(10, 15):
         ws.cell(r, 8).font = _font(10, r == 14)
         ws.cell(r, 8).border = thin
@@ -763,7 +825,7 @@ def _write_score(ws, report, totals_rows):
     ws["B15"] = "Total earned"
     ws["C15"] = "=C5+C7+C9+C11+C13"
     ws["D15"] = '=IF(D5="",0,D5)+IF(D7="",0,D7)+IF(D9="",0,D9)+D11+IF(D13="",0,D13)'
-    ws["E15"] = "Weight always includes Timeliness 10% (100% total). Leave D13 blank until you type earned; then total earned updates."
+    ws["E15"] = ""
     ws["F15"] = '=IF(C15=0,"",D15/C15)'
     for col in range(2, 7):
         cell = ws.cell(15, col)
@@ -776,9 +838,18 @@ def _write_score(ws, report, totals_rows):
     ws["F15"].number_format = "0.0%"
     ws.row_dimensions[15].height = 28
 
-    ws.merge_cells("A17:F17")
-    ws["A17"] = "User input cells (light yellow): Timeliness earned % in D13, and warning counts in I11–I13. Other yellow cells are formulas."
-    ws["A17"].font = _font(10, False, MUTED)
+    _add_ratio_bands(ws, "D5", "$D$5", "$C$5")
+    _add_ratio_bands(ws, "F5", "$F$5", "1")
+    _add_ratio_bands(ws, "D7", "$D$7", "$C$7")
+    _add_ratio_bands(ws, "F7", "$F$7", "1")
+    _add_ratio_bands(ws, "D9", "$D$9", "$C$9")
+    _add_ratio_bands(ws, "F9", "$F$9", "1")
+    _add_reporting_bands(ws, "D11", "$I$14")
+    _add_reporting_bands(ws, "F11", "$I$14")
+    _add_reporting_bands(ws, "I10", "$I$10")
+    _add_reporting_bands(ws, "I14", "$I$14")
+    _add_ratio_bands(ws, "D15", "$D$15", "$C$15")
+    _add_ratio_bands(ws, "F15", "$F$15", "1")
 
     for col, width in {"A": 8, "B": 64, "C": 12, "D": 14, "E": 78, "F": 14, "G": 3, "H": 26, "I": 18}.items():
         ws.column_dimensions[col].width = width

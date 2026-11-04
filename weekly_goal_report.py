@@ -14,6 +14,8 @@ Recipients (active users, by role):
 If everyone in a recipient's list reached the goal, they get an "all achieved" email instead.
 The table also shows consecutive missed weeks (including this week) and a suggested action:
 verbal warning, email warning, written warning, or escalate to HR.
+Missed = below 90% of the week goal; 90% or above is achieved.
+Agents who missed 2 or more consecutive weeks also get a warning email.
 
 Usage (from backend-api; server cron runs it every Monday at 11:00 IST):
     python weekly_goal_report.py                                   # last week, send to everyone
@@ -59,6 +61,8 @@ logging.basicConfig(
 ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_PM, ROLE_AM, ROLE_TL = 1, 2, 3, 4, 7
 FULL_LIST_ROLES = (ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_PM)
 MAX_STREAK_WEEKS = 12
+AGENT_WARNING_MIN_WEEKS = 2
+ACHIEVE_PERCENT = 90.0
 
 
 def get_db_connection():
@@ -131,7 +135,7 @@ def roster_week_goals(cursor, ids: list[int], tenure: dict[int, object], week_st
 def fetch_week(cursor, week_start: date, week_end: date) -> list[dict]:
     cursor.execute(
         """
-        SELECT u.user_id, u.user_name, t.team_name, u.asst_manager_id, u.team_leader_id, u.user_tenure
+        SELECT u.user_id, u.user_name, u.user_email, t.team_name, u.asst_manager_id, u.team_leader_id, u.user_tenure
         FROM tfs_user u
         JOIN user_role r ON r.role_id = u.role_id
         LEFT JOIN team t ON t.team_id = u.team_id
@@ -185,6 +189,7 @@ def fetch_week(cursor, week_start: date, week_end: date) -> list[dict]:
         rows.append({
             "user_id": a["user_id"],
             "name": a["user_name"],
+            "email": (a.get("user_email") or "").strip(),
             "team": a["team_name"],
             "am_ids": id_list(a["asst_manager_id"]),
             "tl_ids": id_list(a["team_leader_id"]),
@@ -194,6 +199,11 @@ def fetch_week(cursor, week_start: date, week_end: date) -> list[dict]:
             "percent": round(done / week_goal * 100, 1),
         })
     return rows
+
+
+def missed_goal(row: dict) -> bool:
+    """Below 90% of the week goal is a miss; 90% or above is achieved."""
+    return float(row.get("percent") or 0) < ACHIEVE_PERCENT
 
 
 def suggested_action(consecutive: int) -> str:
@@ -214,7 +224,7 @@ def add_consecutive_misses(cursor, rows: list[dict], week_start: date) -> None:
     Weeks with no goal (full leave / not yet joined) are skipped: they do not
     add to the streak and they do not reset it.
     """
-    streaks = {r["user_id"]: 1 if r["achieved"] < r["goal"] else 0 for r in rows}
+    streaks = {r["user_id"]: 1 if missed_goal(r) else 0 for r in rows}
     still = {uid for uid, n in streaks.items() if n > 0}
     look_start = week_start - timedelta(days=7)
     for _ in range(MAX_STREAK_WEEKS - 1):
@@ -226,7 +236,7 @@ def add_consecutive_misses(cursor, rows: list[dict], week_start: date) -> None:
             prev = previous.get(uid)
             if not prev:
                 continue
-            if prev["achieved"] < prev["goal"]:
+            if missed_goal(prev):
                 streaks[uid] += 1
             else:
                 still.discard(uid)
@@ -266,6 +276,7 @@ FONT = "font-family:Segoe UI,Arial,Helvetica,sans-serif"
 BRAND = "#1D4ED8"
 GOAL_NOTE = ("Week goal = Monday-Friday working days at each agent's daily hours, minus holidays, half days and "
              "leave that affects the target. Leave that does not affect the target still counts in the goal. "
+             "Missed = below 90% of the week goal; 90% or above is achieved. "
              "Consecutive weeks = missed weeks in a row, including this week (full-leave weeks are skipped). "
              "Suggested action: 1 verbal warning, 2 email warning, 3 written warning, 4+ escalate to HR.")
 
@@ -306,7 +317,7 @@ def agent_row(r: dict, shaded: bool) -> str:
     colour, background = percent_colours(round(r["percent"]))
     bar = max(2, min(100, int(round(r["percent"]))))
     cell = f"padding:9px 8px;border-bottom:1px solid #E2E8F0;{FONT};font-size:13px;color:#0F172A"
-    shortfall_color = "#15803D" if r["shortfall"] == 0 else "#B91C1C"
+    shortfall_color = "#15803D" if not missed_goal(r) else "#B91C1C"
     consecutive = int(r.get("consecutive_misses") or 0)
     action = r.get("suggested_action") or "—"
     action_fg, action_bg = action_colours(consecutive)
@@ -338,7 +349,7 @@ def agent_row(r: dict, shaded: bool) -> str:
 
 def build_html(recipient: dict, rows: list[dict], start: date, end: date) -> str:
     label = week_label(start, end)
-    missed = [r for r in rows if r["achieved"] < r["goal"]]
+    missed = [r for r in rows if missed_goal(r)]
     achieved_count = len(rows) - len(missed)
     own_team = int(recipient["role_id"]) not in FULL_LIST_ROLES
     scope_str = f"your {len(rows)} agents" if own_team else f"{len(rows)} agents (teams A and B)"
@@ -394,7 +405,7 @@ def build_html(recipient: dict, rows: list[dict], start: date, end: date) -> str
         by_team[r["team"]].append(r)
 
     for team, members in by_team.items():
-        team_achieved = sum(1 for m in members if m["achieved"] >= m["goal"])
+        team_achieved = sum(1 for m in members if not missed_goal(m))
         table += (
             f'<tr><td colspan="7" style="background:#EFF6FF;padding:7px 10px;{FONT};font-size:12px;'
             f'font-weight:700;color:{BRAND};border-bottom:1px solid #E2E8F0">Team {team} - '
@@ -423,13 +434,105 @@ def build_html(recipient: dict, rows: list[dict], start: date, end: date) -> str
     )
 
 
-def send(to_email: str | list[str], subject: str, html: str) -> None:
+def agents_due_warning(rows: list[dict]) -> list[dict]:
+    return [
+        r for r in rows
+        if int(r.get("consecutive_misses") or 0) >= AGENT_WARNING_MIN_WEEKS
+    ]
+
+
+def _week_count_phrase(consecutive: int) -> str:
+    words = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
+    return words.get(consecutive, str(consecutive))
+
+
+def agent_warning_text(agent: dict) -> str:
+    name = (agent.get("name") or "").strip() or "there"
+    n = int(agent.get("consecutive_misses") or 0)
+    weeks = _week_count_phrase(n)
+    return (
+        f"Hi {name}\n\n"
+        "We regret to inform you that, upon careful examination of your performance records "
+        f"for the past {weeks} weeks, it has been observed that your performance has consistently "
+        "fallen below our minimum expected standards of 90%.\n\n"
+        f"As outlined in our procedure, {weeks} consecutive weeks of low performance necessitate "
+        "the issuance of notice for non-performance. Consequently, you are being officially notified "
+        f"of your below-standard performance during these {weeks} consecutive weeks.\n\n"
+        "We hope that you will consider this warning as a chance to improve yourself and your "
+        "actions moving forward.\n\n"
+        "We value your contributions and believe in your potential to excel.\n\n"
+        "Regards,"
+    )
+
+
+def build_agent_warning_html(agent: dict, start: date, end: date) -> str:
+    name = (agent.get("name") or "").strip() or "there"
+    n = int(agent.get("consecutive_misses") or 0)
+    weeks = _week_count_phrase(n)
+    p = f"margin:0 0 14px;font-size:14px;line-height:1.6;color:#334155;{FONT}"
+    return (
+        f'<table width="100%" cellpadding="0" cellspacing="0" style="background:#F1F5F9;padding:20px 0">'
+        '<tr><td align="center">'
+        '<table width="640" cellpadding="0" cellspacing="0" '
+        'style="background:#FFFFFF;border-radius:10px;border:1px solid #E2E8F0">'
+        f'<tr><td style="padding:28px 32px 8px;{FONT}">'
+        f'<p style="margin:0 0 16px;font-size:14px;color:#0F172A">Hi {name}</p>'
+        f'<p style="{p}">We regret to inform you that, upon careful examination of your performance '
+        f"records for the past {weeks} weeks, it has been observed that your performance has "
+        "consistently fallen below our minimum expected standards of 90%.</p>"
+        f'<p style="{p}">As outlined in our procedure, {weeks} consecutive weeks of low performance '
+        "necessitate the issuance of notice for non-performance. Consequently, you are being "
+        "officially notified of your below-standard performance during these "
+        f"{weeks} consecutive weeks.</p>"
+        f'<p style="{p}">We hope that you will consider this warning as a chance to improve yourself '
+        "and your actions moving forward.</p>"
+        f'<p style="{p}">We value your contributions and believe in your potential to excel.</p>'
+        f'<p style="margin:18px 0 0;font-size:14px;color:#0F172A">Regards,</p>'
+        "</td></tr>"
+        f'<tr><td style="padding:18px 32px 24px;{FONT};font-size:11px;color:#64748B">'
+        f"{week_label(start, end)}</td></tr>"
+        "</table></td></tr></table>"
+    )
+
+
+def send_agent_warnings(rows: list[dict], start: date, end: date, dry_run: bool = False) -> dict:
+    summary = defaultdict(int)
+    for agent in agents_due_warning(rows):
+        email = agent.get("email") or ""
+        line = (f"{agent['name']}: {agent['consecutive_misses']} consecutive weeks, "
+                f"{agent['suggested_action']}")
+        if not email:
+            logging.warning("no email for agent warning - %s", line)
+            summary["agent_warning_skipped_no_email"] += 1
+            continue
+        if dry_run:
+            print("[dry-run] agent warning", email, "-", line)
+            summary["agent_warning_would_send"] += 1
+            continue
+        try:
+            send(
+                email,
+                "Notice for non-performance",
+                build_agent_warning_html(agent, start, end),
+                text=agent_warning_text(agent),
+            )
+            logging.info("agent warning sent to %s - %s", email, line)
+            summary["agent_warning_sent"] += 1
+        except Exception:
+            logging.exception("failed to send agent warning to %s", email)
+            summary["agent_warning_failed"] += 1
+    return summary
+
+
+def send(to_email: str | list[str], subject: str, html: str, text: str | None = None) -> None:
     to_list = [to_email] if isinstance(to_email, str) else list(to_email)
     user = os.getenv("SMTP_USER")
     msg = MIMEMultipart("alternative")
     msg["From"] = user
     msg["To"] = ", ".join(to_list)
     msg["Subject"] = subject
+    if text:
+        msg.attach(MIMEText(text, "plain"))
     msg.attach(MIMEText(html, "html"))
     with smtplib.SMTP(os.getenv("SMTP_HOST"), int(os.getenv("SMTP_PORT", 587))) as server:
         server.starttls()
@@ -444,8 +547,20 @@ def send_test(test_to: str, start: date, end: date, rows: list[dict]) -> dict:
     reader = {"user_name": "all" if len(addresses) > 1 else addresses[0], "role_id": ROLE_ADMIN}
     send(addresses, f"[TEST] Weekly goal report: {week_label(start, end)}", build_html(reader, rows, start, end))
     logging.info("test report sent to %s for %s", ", ".join(addresses), week_label(start, end))
+    warned = agents_due_warning(rows)
+    if warned:
+        sample = warned[0]
+        send(
+            addresses,
+            "[TEST] Notice for non-performance",
+            build_agent_warning_html(sample, start, end),
+            text=agent_warning_text(sample),
+        )
+        logging.info("test agent warning sent to %s (%s agents would be warned)",
+                     ", ".join(addresses), len(warned))
     result = {"week": week_label(start, end), "agents": len(rows),
-              "missed": sum(1 for r in rows if r["achieved"] < r["goal"]), "test_sent_to": addresses}
+              "missed": sum(1 for r in rows if missed_goal(r)),
+              "agent_warnings": len(warned), "test_sent_to": addresses}
     print(result)
     return result
 
@@ -483,7 +598,7 @@ def run(week_start: date | None = None, dry_run: bool = False, only_to: str | No
         if not own_rows:
             summary["skipped_no_agents"] += 1
             continue
-        missed = sum(1 for r in own_rows if r["achieved"] < r["goal"])
+        missed = sum(1 for r in own_rows if missed_goal(r))
         line = (f"{recipient['user_name']} (role {recipient['role_id']}): {len(own_rows)} agents, "
                 f"{missed} missed the goal")
         if dry_run:
@@ -498,8 +613,11 @@ def run(week_start: date | None = None, dry_run: bool = False, only_to: str | No
             logging.exception("failed to send to %s", recipient["user_email"])
             summary["failed"] += 1
 
+    if not only_to:
+        summary.update(send_agent_warnings(rows, start, end, dry_run=dry_run))
+
     result = {"week": week_label(start, end), "agents": len(rows),
-              "missed": sum(1 for r in rows if r["achieved"] < r["goal"]), **summary}
+              "missed": sum(1 for r in rows if missed_goal(r)), **summary}
     logging.info("weekly goal report done: %s", result)
     print(result)
     return result
