@@ -12,11 +12,8 @@ Usage on the server:
     python backup_hrms_db.py --dir /root/hrms-db-backups
     python backup_hrms_db.py --dir /root/hrms-db-backups --keep 8
 
-Crontab (server is IST). Sunday 02:00:
-    0 2 * * 0 cd /root/tfshrms/hrms-backend && venv/bin/python backup_hrms_db.py --dir /root/hrms-db-backups --keep 8 >> backup_hrms_db_cron.log 2>&1
-
-Saturday 02:00 instead:
-    0 2 * * 6 cd /root/tfshrms/hrms-backend && venv/bin/python backup_hrms_db.py --dir /root/hrms-db-backups --keep 8 >> backup_hrms_db_cron.log 2>&1
+Crontab — 2nd Sunday of every month at 02:00 IST:
+    0 2 8-14 * 0 cd /root/tfshrms/hrms-backend && venv/bin/python backup_hrms_db.py --dir /root/hrms-db-backups --keep 8 >> backup_hrms_db_cron.log 2>&1
 """
 
 from __future__ import annotations
