@@ -58,7 +58,7 @@ def fetch_data():
         report_date = today - timedelta(days=1)
 
         # TEST DATE
-        report_date = datetime.strptime("2026-10-31", "%Y-%m-%d").date()
+        report_date = datetime.strptime("2026-11-01", "%Y-%m-%d").date()
         
         report_month = report_date.strftime("%b%Y").upper()
 
@@ -608,7 +608,7 @@ def send_email(report_date, html_body):
     msg["To"] = ", ".join(recipients)
     if cc_recipients:
         msg["Cc"] = ", ".join(cc_recipients)
-    msg["Subject"] = f"Delivered billable hours on {report_date.strftime('%dth %B %Y')}"
+    msg["Subject"] = f"Delivered billable hours on {report_date.strftime('%d %B %Y')}"
 
     msg.attach(MIMEText(html_body, "html"))
 
