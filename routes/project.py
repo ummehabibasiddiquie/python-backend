@@ -205,8 +205,8 @@ def _reject_without_project_permission(form) -> object | None:
     )
     allowed = not is_team_leader and (
         str(actor.get("project_creation_permission")).strip() == "1"
-        or role_id in (1, 2, 3, 4)
-        or role_name in ("admin", "super admin")
+        or role_id in (1, 2, 3, 4, 8)
+        or role_name in ("admin", "super admin", "operations")
         or "project manager" in role_name
         or is_assistant_manager
     )

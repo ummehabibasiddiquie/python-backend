@@ -62,7 +62,7 @@ def main() -> None:
             print(f"  {table}: OK rows={n}")
 
         print("\n--- tfs_user columns ---")
-        for col in ("joining_date", "deactivated_at"):
+        for col in ("joining_date", "company_joining_date", "deactivated_at"):
             n = _count(
                 cursor,
                 """

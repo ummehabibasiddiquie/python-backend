@@ -1139,12 +1139,24 @@ def _assert_leave_not_on_holiday(cursor, roster_month_id: int, start, end) -> No
             )
 
 
+def _leave_roster_affect_flags(payload: dict) -> tuple[int, int]:
+    """Affect target is only allowed on planned (rostered) leave."""
+    is_rostered = int(payload.get("is_rostered", 1))
+    affect_target = int(payload.get("affect_target", 0))
+    if affect_target:
+        is_rostered = 1
+    if is_rostered == 0:
+        affect_target = 0
+    return is_rostered, affect_target
+
+
 def apply_leave_add(cursor, roster_month: dict, payload: dict, created_by: int) -> int:
     roster_month_id = int(roster_month["roster_month_id"])
     _assert_leave_not_on_holiday(
         cursor, roster_month_id, payload.get("start_date"), payload.get("end_date")
     )
     now = now_str()
+    is_rostered, affect_target = _leave_roster_affect_flags(payload)
     cursor.execute(
         """
         INSERT INTO roster_leave (
@@ -1159,8 +1171,8 @@ def apply_leave_add(cursor, roster_month: dict, payload: dict, created_by: int) 
             payload.get("start_date"),
             payload.get("end_date"),
             payload.get("reason"),
-            int(payload.get("is_rostered", 1)),
-            int(payload.get("affect_target", 0)),
+            is_rostered,
+            affect_target,
             int(payload.get("is_half_day", 0)),
             int(created_by),
             now,
@@ -1179,6 +1191,7 @@ def apply_leave_update(cursor, roster_month: dict, payload: dict) -> None:
         cursor, roster_month_id, payload.get("start_date"), payload.get("end_date")
     )
     now = now_str()
+    is_rostered, affect_target = _leave_roster_affect_flags(payload)
 
     cursor.execute(
         """
@@ -1192,8 +1205,8 @@ def apply_leave_update(cursor, roster_month: dict, payload: dict) -> None:
             payload.get("start_date"),
             payload.get("end_date"),
             payload.get("reason"),
-            int(payload.get("is_rostered", 1)),
-            int(payload.get("affect_target", 0)),
+            is_rostered,
+            affect_target,
             int(payload.get("is_half_day", 0)),
             now,
             int(leave_id),

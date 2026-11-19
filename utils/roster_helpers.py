@@ -264,10 +264,20 @@ def is_super_admin(role_name: str) -> bool:
     return (role_name or "").strip().lower() == "super admin"
 
 
+def is_project_manager_like(role_name: str, role_id=None) -> bool:
+    """Project Manager screens and data scope. Operations is included; weekly auto-mail is not."""
+    try:
+        if int(role_id) in (3, 8):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return _norm_role(role_name) in ("project manager", "operations")
+
+
 def is_admin_or_super_admin(role_name: str) -> bool:
-    """Org-wide admin-level access: Admin, Super Admin, and Project Manager."""
+    """Org-wide admin-level access: Admin, Super Admin, Project Manager, Operations."""
     r = (role_name or "").strip().lower()
-    return r in ("admin", "super admin", "project manager")
+    return r in ("admin", "super admin", "project manager", "operations")
 
 
 def _norm_role(role_name: str) -> str:
@@ -309,6 +319,7 @@ def can_manage_roster_employees(role_name: str) -> bool:
         "super admin",
         "admin",
         "project manager",
+        "operations",
         "assistant manager",
         "assistant team leader",
         "team leader",  # legacy
@@ -346,29 +357,18 @@ def same_team_sql(user_alias: str = "u") -> str:
 
 def team_leader_scope_sql(user_alias: str = "u") -> str:
     """
-    Team Leader visibility:
-    - users with this TL in team_leader_id, OR
-    - users on the same team_id as the TL
-    Bind the TL user_id three times: (id_str, id_str, id_int_for_team_subquery).
+    Team Leader visibility: agents currently on the same team as the TL.
+    A leftover Assistant Team Leader assignment on another team does not count.
+    Bind the TL user_id once.
     """
-    clean_tl = (
-        f"REPLACE(REPLACE(REPLACE(REPLACE(COALESCE({user_alias}.team_leader_id,''),"
-        f"'[',''),']',''),'\"',''),' ','')"
+    return (
+        f"{user_alias}.team_id IS NOT NULL "
+        f"AND {user_alias}.team_id = (SELECT team_id FROM tfs_user WHERE user_id = %s LIMIT 1)"
     )
-    return f"""(
-        TRIM(COALESCE({user_alias}.team_leader_id, '')) = %s
-        OR FIND_IN_SET(%s, {clean_tl}) > 0
-        OR (
-            {user_alias}.team_id IS NOT NULL
-            AND {user_alias}.team_id = (SELECT team_id FROM tfs_user WHERE user_id = %s LIMIT 1)
-        )
-    )"""
 
 
 def team_leader_scope_params(logged_in_user_id: int) -> list:
-    mid = str(int(logged_in_user_id))
-    uid = int(logged_in_user_id)
-    return [mid, mid, uid]
+    return [int(logged_in_user_id)]
 
 
 def can_modify_holiday_master(role_name: str) -> bool:
@@ -413,10 +413,10 @@ def get_roster_role_ids(cursor) -> dict[str, int | None]:
 def _employee_scope_sql(role_name: str, logged_in_user_id: int) -> tuple[str, list]:
     """
     Reuses the same assignment filter pattern as user_monthly_report/list_users.
-    Team Leader: team_leader_id assignees OR same team.
+    Team Leader: agents currently on the same team.
     """
     role_name = (role_name or "").strip().lower()
-    if role_name in ("admin", "super admin", "project manager"):
+    if role_name in ("admin", "super admin", "project manager", "operations"):
         return "", []
     if role_name in ("agent", "qa"):
         return " AND u.user_id = %s", [int(logged_in_user_id)]

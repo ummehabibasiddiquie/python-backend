@@ -42,7 +42,7 @@ def _can_manage(role_name: str, role_id) -> bool:
             return True
     except (TypeError, ValueError):
         pass
-    return name in ("admin", "super admin", "project manager")
+    return name in ("admin", "super admin", "project manager", "operations")
 
 
 def _ensure_tables(cursor) -> None:

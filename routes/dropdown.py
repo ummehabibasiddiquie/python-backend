@@ -249,7 +249,7 @@ def get():
                 clean_qa = "REPLACE(REPLACE(REPLACE(REPLACE(u.qa_id,'[',''),']',''), '\"',''),' ','')"
 
                 # ---------------- ADMIN / SUPER ADMIN ---------------- #
-                if user_role in ["admin", "super admin", "project manager"]:
+                if user_role in ["admin", "super admin", "project manager", "operations"]:
                     query = f"""
                         SELECT u.user_id, u.user_name AS label, u.user_tenure
                         FROM tfs_user u
@@ -303,7 +303,7 @@ def get():
                     """
                     params = (*visible_users_params, logged_in_user_id)
 
-                # ---------------- TEAM LEADER (assignees OR same team, view-only) ---------------- #
+                # ---------------- TEAM LEADER (current team only, view-only) ---------------- #
                 elif user_role in ("assistant team leader", "team leader") and not qc_as_qa:
                     from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
                     query = f"""
@@ -433,7 +433,7 @@ def get():
                     str(data.get("scope") or "").strip().lower() == "qc"
                     and user_role in ("assistant team leader", "team leader")
                 )
-                if user_role in ["admin", "super admin", "project manager"]:
+                if user_role in ["admin", "super admin", "project manager", "operations"]:
                     pass
                 elif user_role == "qa" or qc_as_qa:
                     v = str(filter_id)

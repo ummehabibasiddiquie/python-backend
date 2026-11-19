@@ -9,10 +9,10 @@ from utils.email_utils import send_email
 from utils.roster_week_lock import week_has_pending_submitted_requests
 from utils.roster_excel import (
     LABEL_HALF_DAY,
-    LABEL_HALF_DAY_AFFECT_TARGET,
+    LABEL_HALF_DAY_ROSTER,
     LABEL_HOLIDAY,
     LABEL_LEAVE,
-    LABEL_LEAVE_AFFECT_TARGET,
+    LABEL_LEAVE_ROSTER,
     LABEL_WEEK_OFF,
     day_to_excel_label,
     format_day_header,
@@ -136,14 +136,23 @@ def send_roster_approval_needed_email(
 
 
 def _email_cell_label(day: dict | None, role_name: str | None) -> str:
-    """Leave in weekly mail is only Leave / Half day — never Affect Target."""
+    """Mail: rostered leave is Leave (Roster); unrostered is just Leave. No Affect Target."""
+    if day and (day.get("day_type") or "").strip() == "Leave":
+        working_type = (day.get("working_type") or "Full").strip()
+        is_half = working_type == "Half" or bool(int(day.get("leave_is_half_day") or 0))
+        rostered = day.get("leave_is_rostered")
+        if rostered is None:
+            rostered = day.get("is_rostered", 1)
+        is_rostered = int(1 if rostered is None else rostered) != 0
+        if is_half:
+            return LABEL_HALF_DAY_ROSTER if is_rostered else LABEL_HALF_DAY
+        return LABEL_LEAVE_ROSTER if is_rostered else LABEL_LEAVE
+
     label = day_to_excel_label(day, role_name) or ""
-    if label == LABEL_LEAVE_AFFECT_TARGET:
-        return LABEL_LEAVE
-    if label == LABEL_HALF_DAY_AFFECT_TARGET:
-        return LABEL_HALF_DAY
-    if " (Affect Target)" in label:
-        return label.replace(" (Affect Target)", "").strip()
+    label = label.replace(" - Affect Target", "").replace(" (Affect Target)", "").strip()
+    lower = label.lower()
+    if "half" in lower:
+        return LABEL_HALF_DAY_ROSTER
     return label
 
 

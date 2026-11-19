@@ -1,10 +1,11 @@
 """
 Weekly goal report: every Monday, email last week's (Mon-Sun) agents who did not reach their weekly goal.
 
-Weekly goal = the monthly-target rule (utils.roster_metrics) applied to the week's roster: Mon-Fri days that
-are not holidays at the agent's daily hours (9 x tenure), minus half working days, "Left" days and leave that
-affects the target. Leave that does not affect the target still counts in the goal. Agents with no roster for
-the week fall back to their daily assigned hours (temp_qc).
+Weekly goal = that week's roster, at each agent's daily hours (9 x tenure, capped at 9):
+Working days count, half days count as half, WeekOff / Holiday / Left / PreJoin do not count,
+and every leave day that week is subtracted (rostered or unrostered, affect-target or not).
+Achievement % = billable hours / that remaining goal. Below 90% is a miss for consecutive weeks.
+Agents with no roster for the week fall back to their daily assigned hours (temp_qc).
 Achieved = billable hours from tracker entries (production / tenure target), the same figures as the daily
 billable report. Agents of teams A and B only. Deactivated agents are not included.
 
@@ -51,9 +52,10 @@ HERE = Path(__file__).resolve().parent
 load_dotenv(dotenv_path=HERE / ".env")
 
 from utils.kra import warnings_streak_start_monday  # noqa: E402
-from utils.roster_helpers import FULL_DAY_HOURS, daily_hours_for_tenure  # noqa: E402
+from utils.roster_helpers import FULL_DAY_HOURS, daily_hours_for_tenure, parse_date  # noqa: E402
 from utils.roster_metrics import (  # noqa: E402
     apply_active_leaves_to_days,
+    infer_full_day_hours_from_days,
     recalculate_metrics_from_days_and_leaves,
 )
 
@@ -93,7 +95,7 @@ def id_list(value) -> set[int]:
 
 def roster_week_goals(cursor, ids: list[int], tenure: dict[int, object], week_start: date,
                       week_end: date) -> dict[int, float]:
-    """Week goal per agent from the roster, with the same rules as the monthly target."""
+    """Week goal from that week's roster. WeekOff in this week does not count."""
     ph = ",".join(["%s"] * len(ids))
     cursor.execute(
         f"""
@@ -130,10 +132,22 @@ def roster_week_goals(cursor, ids: list[int], tenure: dict[int, object], week_st
         leaves = leaves_by_user.get(uid, [])
         merged = apply_active_leaves_to_days(days, leaves)
         hours = float(recalculate_metrics_from_days_and_leaves(merged, leaves)["monthly_target_hours"] or 0)
-        if not any((d.get("day_type") or "") == "Working" for d in days):
-            # No working day to read the agent's daily hours from, so scale the 9 h default by tenure.
-            hours = hours * daily_hours_for_tenure(tenure.get(uid)) / FULL_DAY_HOURS
-        goals[uid] = round(hours, 2)
+        full_day = infer_full_day_hours_from_days(merged)
+        if not any((d.get("day_type") or "").strip() == "Working" for d in merged):
+            full_day = daily_hours_for_tenure(tenure.get(uid))
+            hours = hours * full_day / FULL_DAY_HOURS
+        # Monthly target keeps extra week-offs (settled later). This week's goal must not.
+        for day in merged:
+            d = parse_date(day.get("roster_date"))
+            if (day.get("day_type") or "").strip() != "WeekOff":
+                continue
+            if d is None or d.weekday() >= 5:
+                continue
+            if day.get("holiday_id"):
+                continue
+            wt = (day.get("working_type") or "Full").strip()
+            hours -= full_day / 2 if wt == "Half" else full_day
+        goals[uid] = round(max(0.0, hours), 2)
     return goals
 
 

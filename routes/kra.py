@@ -58,7 +58,7 @@ def _clean_id_match(col: str) -> str:
 
 def _scope_clause(role_name: str, logged_in_user_id: int):
     role_name = (role_name or "").strip().lower()
-    if role_name in ("admin", "super admin", "project manager"):
+    if role_name in ("admin", "super admin", "project manager", "operations"):
         return "", []
     if role_name == "agent":
         return " AND u.user_id = %s", [int(logged_in_user_id)]

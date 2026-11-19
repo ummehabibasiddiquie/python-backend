@@ -192,9 +192,10 @@ def user_handler():
             is_tl_actor = actor_role_id == 7 or "team leader" in actor_role_name
             can_manage_users = not is_tl_actor and (
                 has_flag
-                or actor_role_id in (1, 2, 3)
+                or actor_role_id in (1, 2, 3, 8)
                 or actor_role_name in ("admin", "super admin")
                 or "project manager" in actor_role_name
+                or actor_role_name == "operations"
             )
             if not can_manage_users:
                 return api_response(403, "You do not have permission to create users")
@@ -270,6 +271,16 @@ def user_handler():
         except ValueError:
             return api_response(400, "Invalid joining_date format. Expected YYYY-MM-DD")
 
+    company_joining_date_raw = (form.get("company_joining_date") or "").strip()
+    company_joining_date = None
+    if company_joining_date_raw:
+        try:
+            company_joining_date = datetime.strptime(
+                company_joining_date_raw[:10], "%Y-%m-%d"
+            ).date().isoformat()
+        except ValueError:
+            return api_response(400, "Invalid company_joining_date format. Expected YYYY-MM-DD")
+
     if not is_valid_username(user_name):
         return api_response(400, "Username must contain only alphabets")
 
@@ -343,9 +354,10 @@ def user_handler():
                 device_id,
                 device_type,
                 joining_date,
+                company_joining_date,
                 created_date,
                 updated_date
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             user_name,
             profile_picture,
@@ -367,6 +379,7 @@ def user_handler():
             device_id,
             device_type,
             joining_date,
+            company_joining_date,
             now,
             now
         ))

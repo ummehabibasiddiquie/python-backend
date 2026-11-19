@@ -36,8 +36,16 @@ LABEL_HOLIDAY = "Holiday"
 LABEL_LEAVE = "Leave"
 LABEL_LEAVE_ROSTER = "Leave (Roster)"
 LABEL_LEAVE_UNROSTERED = "Leave (Unrostered)"
+LABEL_LEAVE_ROSTER_AFFECT = "Leave (Roster) - Affect Target"
+LABEL_LEAVE_UNROSTER_AFFECT = "Leave (Unrostered) - Affect Target"
+# Legacy Excel value — still parsed as rostered + affect target
 LABEL_LEAVE_AFFECT_TARGET = "Leave (Affect Target)"
 LABEL_HALF_DAY = "Half day"
+LABEL_HALF_DAY_ROSTER = "Half day (Roster)"
+LABEL_HALF_DAY_UNROSTERED = "Half day (Unrostered)"
+LABEL_HALF_DAY_ROSTER_AFFECT = "Half day (Roster) - Affect Target"
+LABEL_HALF_DAY_UNROSTER_AFFECT = "Half day (Unrostered) - Affect Target"
+# Legacy Excel value — still parsed as half-day rostered + affect target
 LABEL_HALF_DAY_AFFECT_TARGET = "Half day (Affect Target)"
 LABEL_LEFT = "Left"
 
@@ -48,12 +56,46 @@ DROPDOWN_VALUES = [
     LABEL_HOLIDAY,
     LABEL_WEEK_OFF,
     LABEL_LEAVE_ROSTER,
+    LABEL_LEAVE_ROSTER_AFFECT,
     LABEL_LEAVE_UNROSTERED,
-    LABEL_LEAVE_AFFECT_TARGET,
-    LABEL_HALF_DAY,
-    LABEL_HALF_DAY_AFFECT_TARGET,
+    LABEL_HALF_DAY_ROSTER,
+    LABEL_HALF_DAY_ROSTER_AFFECT,
+    LABEL_HALF_DAY_UNROSTERED,
     LABEL_LEFT,
 ]
+
+def leave_combo_label(*, is_half: bool, is_rostered: bool, affect: bool) -> str:
+    """Affect target is only for planned (rostered) leave."""
+    if affect:
+        is_rostered = True
+    if not is_rostered:
+        affect = False
+    if is_half:
+        if is_rostered:
+            return LABEL_HALF_DAY_ROSTER_AFFECT if affect else LABEL_HALF_DAY_ROSTER
+        return LABEL_HALF_DAY_UNROSTERED
+    if is_rostered:
+        return LABEL_LEAVE_ROSTER_AFFECT if affect else LABEL_LEAVE_ROSTER
+    return LABEL_LEAVE_UNROSTERED
+
+
+def _leave_flags_from_day(day: dict) -> tuple[bool, bool, bool]:
+    working_type = (day.get("working_type") or "Full").strip()
+    is_half = working_type == "Half" or bool(int(day.get("leave_is_half_day") or 0))
+    affect = day.get("leave_affect_target")
+    if affect is None:
+        affect = day.get("affect_target")
+    affect = bool(int(affect or 0))
+    rostered = day.get("leave_is_rostered")
+    if rostered is None:
+        rostered = day.get("is_rostered", 1)
+    is_rostered = int(1 if rostered is None else rostered) != 0
+    if affect:
+        is_rostered = True
+    if not is_rostered:
+        affect = False
+    return is_half, is_rostered, affect
+
 
 NIGHT_SHIFT_START = time(19, 30)
 NIGHT_SHIFT_END = time(8, 30)
@@ -214,26 +256,12 @@ def day_to_excel_label(day: dict | None, role_name: str | None = None) -> str:
     if day_type == "Left":
         return LABEL_LEFT
     if day_type == "Leave":
-        working_type = (day.get("working_type") or "Full").strip()
-        is_half = working_type == "Half" or bool(int(day.get("leave_is_half_day") or 0))
-        affect = day.get("leave_affect_target")
-        if affect is None:
-            affect = day.get("affect_target")
-        affect = bool(int(affect or 0))
-        if is_half:
-            return LABEL_HALF_DAY_AFFECT_TARGET if affect else LABEL_HALF_DAY
-        if affect:
-            return LABEL_LEAVE_AFFECT_TARGET
-        rostered = day.get("leave_is_rostered")
-        if rostered is None:
-            rostered = day.get("is_rostered", 1)
-        if int(1 if rostered is None else rostered) == 0:
-            return LABEL_LEAVE_UNROSTERED
-        return LABEL_LEAVE_ROSTER
+        is_half, is_rostered, affect = _leave_flags_from_day(day)
+        return leave_combo_label(is_half=is_half, is_rostered=is_rostered, affect=affect)
     if day_type == "Working":
         working_type = (day.get("working_type") or "Full").strip()
         if working_type == "Half":
-            return LABEL_HALF_DAY_AFFECT_TARGET
+            return LABEL_HALF_DAY_ROSTER_AFFECT
         shift = (day.get("shift") or "DAY").strip().upper()
         if shift == "NIGHT":
             return LABEL_NIGHT
@@ -280,29 +308,41 @@ def excel_label_to_change(
         _normalize_key(LABEL_NIGHT): "night",
         _normalize_key(LABEL_WEEK_OFF): "week_off",
         _normalize_key(LABEL_HOLIDAY): "holiday",
-        _normalize_key(LABEL_LEAVE_AFFECT_TARGET): "leave_affect_target",
         _normalize_key(LABEL_LEAVE_ROSTER): "leave_roster",
+        _normalize_key(LABEL_LEAVE_ROSTER_AFFECT): "leave_roster_affect",
         _normalize_key(LABEL_LEAVE_UNROSTERED): "leave_unrostered",
+        _normalize_key(LABEL_LEAVE_UNROSTER_AFFECT): "leave_unrostered_affect",
+        _normalize_key(LABEL_LEAVE_AFFECT_TARGET): "leave_roster_affect",
         _normalize_key(LABEL_LEAVE): "leave_roster",
-        _normalize_key(LABEL_HALF_DAY_AFFECT_TARGET): "half_day_affect_target",
-        _normalize_key(LABEL_HALF_DAY): "half_day",
+        _normalize_key(LABEL_HALF_DAY_ROSTER): "half_day_roster",
+        _normalize_key(LABEL_HALF_DAY_ROSTER_AFFECT): "half_day_roster_affect",
+        _normalize_key(LABEL_HALF_DAY_UNROSTERED): "half_day_unrostered",
+        _normalize_key(LABEL_HALF_DAY_UNROSTER_AFFECT): "half_day_unrostered_affect",
+        _normalize_key(LABEL_HALF_DAY_AFFECT_TARGET): "half_day_roster_affect",
+        _normalize_key(LABEL_HALF_DAY): "half_day_roster",
         _normalize_key(LABEL_LEFT): "left",
         "weekoff": "week_off",
         "wo": "week_off",
         "off": "week_off",
         "holiday": "holiday",
-        "halfdayaffecttarget": "half_day_affect_target",
-        "halfday": "half_day",
-        "half": "half_day",
+        "halfdayunrosteredaffecttarget": "half_day_unrostered_affect",
+        "halfdayunrostered": "half_day_unrostered",
+        "halfdayrosteraffecttarget": "half_day_roster_affect",
+        "halfdayroster": "half_day_roster",
+        "halfdayaffecttarget": "half_day_roster_affect",
+        "halfday": "half_day_roster",
+        "half": "half_day_roster",
         "nighthift": "night",
         "night": "night",
         "dayshift": "agent_day",
         "day": "agent_day",
+        "leaveunrosteredaffecttarget": "leave_unrostered_affect",
+        "leaverosteraffecttarget": "leave_roster_affect",
         "leaveroster": "leave_roster",
         "leaveunrostered": "leave_unrostered",
-        "leaveaffecttarget": "leave_affect_target",
-        "leaveaffectsarget": "leave_affect_target",
-        "leavewithtarget": "leave_affect_target",
+        "leaveaffecttarget": "leave_roster_affect",
+        "leaveaffectsarget": "leave_roster_affect",
+        "leavewithtarget": "leave_roster_affect",
         "left": "left",
         "exited": "left",
         "resigned": "left",
@@ -312,20 +352,32 @@ def excel_label_to_change(
         # Fuzzy: contains. Check Left before Leave — they are different day types.
         lower = raw.lower()
         tokens = set(re.findall(r"[a-z]+", lower))
+        unrostered = "unroster" in lower
+        affect = "affect" in lower or "target" in lower
         if "week" in lower and "off" in lower:
             kind = "week_off"
         elif "left" in tokens or key.startswith("left"):
             kind = "left"
         elif "holiday" in lower:
             kind = "holiday"
-        elif "half" in lower and ("affect" in lower or "target" in lower):
-            kind = "half_day_affect_target"
         elif "half" in lower:
-            kind = "half_day"
-        elif "leave" in lower and ("affect" in lower or "target" in lower):
-            kind = "leave_affect_target"
+            if unrostered and affect:
+                kind = "half_day_unrostered_affect"
+            elif unrostered:
+                kind = "half_day_unrostered"
+            elif affect:
+                kind = "half_day_roster_affect"
+            else:
+                kind = "half_day_roster"
         elif "leave" in lower:
-            kind = "leave"
+            if unrostered and affect:
+                kind = "leave_unrostered_affect"
+            elif unrostered:
+                kind = "leave_unrostered"
+            elif affect:
+                kind = "leave_roster_affect"
+            else:
+                kind = "leave_roster"
         elif lower in ("exit", "exited") or "resigned" in lower:
             kind = "left"
         elif "7:30" in lower.replace(" ", "") and ("pm" in lower or "p.m" in lower):
@@ -376,25 +428,28 @@ def excel_label_to_change(
             },
         }
 
-    if kind in (
-        "leave",
-        "leave_roster",
-        "leave_unrostered",
-        "leave_affect_target",
-        "half_day",
-        "half_day_affect_target",
-    ):
-        is_half = 1 if kind in ("half_day", "half_day_affect_target") else 0
-        affect_target = 1 if kind in ("leave_affect_target", "half_day_affect_target") else 0
-        is_rostered = 0 if kind == "leave_unrostered" else 1
-        if is_half:
-            label = LABEL_HALF_DAY_AFFECT_TARGET if affect_target else LABEL_HALF_DAY
-        elif kind == "leave_unrostered":
-            label = LABEL_LEAVE_UNROSTERED
-        elif affect_target:
-            label = LABEL_LEAVE_AFFECT_TARGET
-        else:
-            label = LABEL_LEAVE_ROSTER
+    LEAVE_KIND_FLAGS = {
+        "leave": (0, 1, 0),
+        "leave_roster": (0, 1, 0),
+        "leave_roster_affect": (0, 1, 1),
+        "leave_unrostered": (0, 0, 0),
+        # Affect target means it was planned, so it is rostered.
+        "leave_unrostered_affect": (0, 1, 1),
+        "leave_affect_target": (0, 1, 1),
+        "half_day": (1, 1, 0),
+        "half_day_roster": (1, 1, 0),
+        "half_day_roster_affect": (1, 1, 1),
+        "half_day_unrostered": (1, 0, 0),
+        "half_day_unrostered_affect": (1, 1, 1),
+        "half_day_affect_target": (1, 1, 1),
+    }
+    if kind in LEAVE_KIND_FLAGS:
+        is_half, is_rostered, affect_target = LEAVE_KIND_FLAGS[kind]
+        label = leave_combo_label(
+            is_half=bool(is_half),
+            is_rostered=bool(is_rostered),
+            affect=bool(affect_target),
+        )
         return {
             "change_type": "LEAVE_ADD",
             "label": label,
@@ -462,12 +517,12 @@ def proposed_signature(change: dict) -> tuple:
     if ct == "LEAVE_ADD":
         half = int(p.get("is_half_day") or 0)
         affect = int(p.get("affect_target") or 0)
-        if half:
-            leave_label = LABEL_HALF_DAY_AFFECT_TARGET if affect else LABEL_HALF_DAY
-        elif int(p.get("is_rostered", 1)) == 0:
-            leave_label = LABEL_LEAVE_UNROSTERED
-        else:
-            leave_label = LABEL_LEAVE_AFFECT_TARGET if affect else LABEL_LEAVE_ROSTER
+        rostered = int(p.get("is_rostered", 1))
+        leave_label = leave_combo_label(
+            is_half=bool(half),
+            is_rostered=rostered != 0,
+            affect=bool(affect),
+        )
         return ("Leave", "DAY", "Half" if half else "Full", leave_label, affect)
     return (
         (p.get("day_type") or "").strip(),
@@ -672,11 +727,12 @@ def build_month_workbook(
         f"   - {LABEL_NIGHT}  (can be used on a Holiday if the person must work)",
         f"   - {LABEL_HOLIDAY}  (highest priority; not Week Off / Leave / Half day)",
         f"   - {LABEL_WEEK_OFF}",
-        f"   - {LABEL_LEAVE_ROSTER}  (leave already on the roster; does NOT affect monthly target)",
-        f"   - {LABEL_LEAVE_UNROSTERED}  (leave that was not on the roster)",
-        f"   - {LABEL_LEAVE_AFFECT_TARGET}  (DOES reduce monthly target)",
-        f"   - {LABEL_HALF_DAY}  (works half day; does NOT affect monthly target)",
-        f"   - {LABEL_HALF_DAY_AFFECT_TARGET}  (works half day; DOES reduce monthly target by 0.5)",
+        f"   - {LABEL_LEAVE_ROSTER}  (told in advance; does NOT reduce monthly target)",
+        f"   - {LABEL_LEAVE_ROSTER_AFFECT}  (told in advance; DOES reduce monthly target)",
+        f"   - {LABEL_LEAVE_UNROSTERED}  (not told in advance; never reduces monthly target)",
+        f"   - {LABEL_HALF_DAY_ROSTER}  (half day, told in advance; does NOT reduce monthly target)",
+        f"   - {LABEL_HALF_DAY_ROSTER_AFFECT}  (half day, told in advance; reduces monthly target by 0.5)",
+        f"   - {LABEL_HALF_DAY_UNROSTERED}  (half day, not told in advance; never reduces monthly target)",
         f"   - {LABEL_LEFT}  (agent left; ALWAYS reduces working days and monthly target on weekdays)",
         "5. Fill Week 1, Week 2, … as needed (later weeks can stay blank for a later upload).",
         "6. Upload from Roster Management → Excel Upload. All week sheets are read together.",
@@ -748,11 +804,12 @@ def build_template_workbook(
         f"   - {LABEL_NIGHT}  (can be used on a Holiday if the person must work)",
         f"   - {LABEL_HOLIDAY}  (highest priority; not Week Off / Leave / Half day)",
         f"   - {LABEL_WEEK_OFF}",
-        f"   - {LABEL_LEAVE_ROSTER}  (leave already on the roster; does NOT affect monthly target)",
-        f"   - {LABEL_LEAVE_UNROSTERED}  (leave that was not on the roster)",
-        f"   - {LABEL_LEAVE_AFFECT_TARGET}  (DOES reduce monthly target)",
-        f"   - {LABEL_HALF_DAY}  (works half day; does NOT affect monthly target)",
-        f"   - {LABEL_HALF_DAY_AFFECT_TARGET}  (works half day; DOES reduce monthly target by 0.5)",
+        f"   - {LABEL_LEAVE_ROSTER}  (told in advance; does NOT reduce monthly target)",
+        f"   - {LABEL_LEAVE_ROSTER_AFFECT}  (told in advance; DOES reduce monthly target)",
+        f"   - {LABEL_LEAVE_UNROSTERED}  (not told in advance; never reduces monthly target)",
+        f"   - {LABEL_HALF_DAY_ROSTER}  (half day, told in advance; does NOT reduce monthly target)",
+        f"   - {LABEL_HALF_DAY_ROSTER_AFFECT}  (half day, told in advance; reduces monthly target by 0.5)",
+        f"   - {LABEL_HALF_DAY_UNROSTERED}  (half day, not told in advance; never reduces monthly target)",
         f"   - {LABEL_LEFT}  (agent left; ALWAYS reduces working days and monthly target on weekdays)",
         "5. Save the file and upload it from Roster Management → Excel Upload.",
         "6. Review the preview, then confirm. Changes become pending requests (submit for approval as usual).",

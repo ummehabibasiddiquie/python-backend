@@ -146,7 +146,7 @@ def get_subordinate_user_ids(cursor, role: str, logged_in_user_id: int) -> list[
     role = (role or "").strip().lower()
     v = str(logged_in_user_id)
 
-    if role in ["admin", "super admin", "project manager"]:
+    if role in ["admin", "super admin", "project manager", "operations"]:
         return None
 
     if role == "agent":
@@ -199,7 +199,7 @@ def get_subordinate_user_ids(cursor, role: str, logged_in_user_id: int) -> list[
             ids.append(logged_in_user_id)
         return ids
 
-    # ✅ Team Leader: team_leader_id assignees OR same team (view-only)
+    # Team Leader: agents currently on the same team (view-only)
     if role in ("assistant team leader", "team leader"):
         from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
         cursor.execute(
@@ -218,7 +218,7 @@ def get_subordinate_user_ids(cursor, role: str, logged_in_user_id: int) -> list[
         return ids
 
     # ✅ Project Manager: also from tfs_user mapping (not project table)
-    if role in ["manager", "project manager", "product manager"]:
+    if role in ["manager", "project manager", "product manager", "operations"]:
         col = detect_existing_column(
             cursor,
             "tfs_user",
@@ -257,7 +257,7 @@ def get_projects_for_role(cursor, role: str, logged_in_user_id: int) -> list[dic
     role = (role or "").strip().lower()
     v = str(logged_in_user_id)
 
-    if role in ["admin", "super admin", "project manager"]:
+    if role in ["admin", "super admin", "project manager", "operations"]:
         cursor.execute(
             """
             SELECT project_id, project_name, project_code, project_description,

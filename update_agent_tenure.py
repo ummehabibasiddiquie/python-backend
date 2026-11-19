@@ -1,55 +1,54 @@
 """
-update_agent_tenure.py
+Monthly tenure update from Company Joining Date.
 
-Standalone script to update employee tenure in tfs_user.
-Designed to run via cron on 1st November at 09:00 AM (or manually).
+Who:
+  Active Agent role only, with tenure 1 or above.
+  Tenure below 1 is never changed here (manual).
+  QA and other roles are not updated.
 
-Scheduled updates:
-  1. Shivkumar Prajapati (User ID 195) : 0.50 -> 0.75
-  2. Udit Kamani         (User ID 135) : 1.25 -> 1.35
-  3. Virendra Singh      (User ID 188) : 0.75 -> 1
-  4. Swapnil Patel       (User ID 155) : 1.00 -> 1.15
+When a step applies:
+  First step 1 → 1.15 after 13 months from company joining date,
+  then 1.25 / 1.35 / 1.45 every 12 months after that.
+  The new tenure starts on the 1st of the month AFTER that anniversary.
 
-Features:
-  - Validates current DB tenure against old_tenure before updating.
-  - Updates tfs_user.user_tenure.
-  - Updates temp_qc.assigned_hours for 1st Nov so that daily hours
-    reflect the new tenure even if the 08:00 AM assign-hours cron ran earlier.
-  - Supports --dry-run to test in advance without modifying the database.
-  - Comprehensive logging to console and logs/update_agent_tenure.log.
+Never decreases tenure if the person is already above the calculated step.
+
+After a live update, every active Project Manager is emailed, plus only the
+Assistant Manager(s) assigned on that agent. Time completed from company DOJ,
+old tenure → new tenure, and the IST time of the change. The agent is not emailed.
 
 Usage:
-  # Test without making changes (safe to run anytime):
   python update_agent_tenure.py --dry-run
-
-  # Apply updates:
+  python update_agent_tenure.py --dry-run --date 2026-12-01
   python update_agent_tenure.py
 
-Cron Setup (runs Nov 1 at 09:00 AM IST):
-  # If server timezone is IST:
-  0 9 1 11 * cd /path/to/backend-api && /path/to/venv/bin/python update_agent_tenure.py >> logs/update_agent_tenure.log 2>&1
-
-  # If server timezone is UTC (09:00 IST = 03:30 UTC):
-  30 3 1 11 * cd /path/to/backend-api && /path/to/venv/bin/python update_agent_tenure.py >> logs/update_agent_tenure.log 2>&1
+Cron (1st of every month, 09:00 IST):
+  0 9 1 * * cd /root/tfshrms/hrms-backend && venv/bin/python update_agent_tenure.py >> logs/update_agent_tenure.log 2>&1
 """
 
+from __future__ import annotations
+
 import argparse
-from datetime import datetime
+import calendar
+import json
 import logging
 import os
-from pathlib import Path
 import sys
+from datetime import date, datetime
+from pathlib import Path
+
 import mysql.connector
 from dotenv import load_dotenv
 
-# -------------------------------
-# CONFIG & LOGGING
-# -------------------------------
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
 load_dotenv(dotenv_path=BASE_DIR / ".env")
+
+from utils.email_utils import send_email  # noqa: E402
+from utils.time_ist import now_str as ist_now_str  # noqa: E402
 
 LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -59,49 +58,207 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"   ),
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ],
 )
 
-# -------------------------------
-# AGENT TENURE UPDATE LIST
-# -------------------------------
-TENURE_UPDATES = [
-    {
-        "user_id": 195,
-        "user_name": "Shivkumar Prajapati",
-        "email": "shivkumar.prajapati@transformsolution.net",
-        "old_tenure": "0.50",
-        "new_tenure": "0.75",
-    },
-    {
-        "user_id": 135,
-        "user_name": "Udit Kamani",
-        "email": "udit.kamani@transformsolution.net",
-        "old_tenure": "1.25",
-        "new_tenure": "1.35",
-    },
-    {
-        "user_id": 188,
-        "user_name": "Virendra Singh",
-        "email": "virendra.singh@transformsolution.net",
-        "old_tenure": "0.75",
-        "new_tenure": "1",
-    },
-    {
-        "user_id": 155,
-        "user_name": "Swapnil Patel",
-        "email": "swapnil.patel@transformsolution.net",
-        "old_tenure": "1.00",
-        "new_tenure": "1.15",
-    },
-]
+# 1.00 → 1.15 after 13 months, then +12 months each step.
+TENURE_STEPS = (1.15, 1.25, 1.35, 1.45)
+FIRST_STEP_MONTHS = 13
+LATER_STEP_MONTHS = 12
+MIN_AUTO_TENURE = 1.0
+ELIGIBLE_ROLES = ("agent",)
 
 
-# -------------------------------
-# DB CONNECTION
-# -------------------------------
+def add_months(d: date, months: int) -> date:
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def first_of_next_month(d: date) -> date:
+    if d.month == 12:
+        return date(d.year + 1, 1, 1)
+    return date(d.year, d.month + 1, 1)
+
+
+def parse_joining(value) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()[:10]
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def format_tenure(value: float) -> str:
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    return f"{value:.2f}"
+
+
+def parse_tenure(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_id_list(val) -> list[int]:
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return [int(x) for x in val if str(x).strip().lstrip("-").isdigit()]
+    if isinstance(val, int):
+        return [val]
+    text = str(val).strip()
+    if not text:
+        return []
+    if text.isdigit():
+        return [int(text)]
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if isinstance(parsed, list):
+        return [int(x) for x in parsed if str(x).strip().lstrip("-").isdigit()]
+    if isinstance(parsed, int):
+        return [parsed]
+    return []
+
+
+def service_duration_label(joining: date, as_of: date) -> str:
+    months = (as_of.year - joining.year) * 12 + (as_of.month - joining.month)
+    if as_of.day < joining.day:
+        months -= 1
+    months = max(0, months)
+    years, rem = divmod(months, 12)
+    parts = []
+    if years:
+        parts.append(f"{years} year" if years == 1 else f"{years} years")
+    if rem:
+        parts.append(f"{rem} month" if rem == 1 else f"{rem} months")
+    if not parts:
+        return "less than 1 month"
+    return " ".join(parts)
+
+
+def all_project_manager_emails(cursor) -> list[dict]:
+    cursor.execute(
+        """
+        SELECT u.user_id, u.user_name, u.user_email
+        FROM tfs_user u
+        JOIN user_role r ON r.role_id = u.role_id
+        WHERE u.is_active = 1 AND u.is_delete = 1
+          AND LOWER(TRIM(r.role_name)) = 'project manager'
+          AND u.user_email IS NOT NULL AND TRIM(u.user_email) <> ''
+        """
+    )
+    return cursor.fetchall() or []
+
+
+def assigned_assistant_manager_emails(cursor, am_ids: list[int]) -> list[dict]:
+    ids = list(dict.fromkeys(int(i) for i in am_ids if i))
+    if not ids:
+        return []
+    placeholders = ",".join(["%s"] * len(ids))
+    cursor.execute(
+        f"""
+        SELECT user_id, user_name, user_email
+        FROM tfs_user
+        WHERE user_id IN ({placeholders})
+          AND is_active = 1 AND is_delete = 1
+          AND user_email IS NOT NULL AND TRIM(user_email) <> ''
+        """,
+        tuple(ids),
+    )
+    return cursor.fetchall() or []
+
+
+def tenure_update_email_html(payload: dict) -> str:
+    return f"""
+    <p>Hello,</p>
+    <p>
+      Tenure has been updated for <strong>{payload['agent_name']}</strong>
+      ({payload['agent_email'] or 'no email'}).
+    </p>
+    <table cellpadding="6" cellspacing="0" border="1" style="border-collapse:collapse;">
+      <tr><td>Company joining date</td><td>{payload['doj']}</td></tr>
+      <tr><td>Time completed</td><td>{payload['completed']}</td></tr>
+      <tr><td>Tenure</td><td>{payload['old_tenure']} → {payload['new_tenure']}</td></tr>
+      <tr><td>Daily assigned hours</td><td>{payload['hours']}</td></tr>
+      <tr><td>Updated at (IST)</td><td>{payload['updated_at']}</td></tr>
+    </table>
+    <p>This is an automatic mail from HRMS. Please do not reply.</p>
+    """
+
+
+def send_tenure_update_mail(payload: dict, recipients: list[dict]) -> bool:
+    to_list = []
+    seen = set()
+    for row in recipients:
+        email = (row.get("user_email") or "").strip()
+        key = email.lower()
+        if not email or key in seen:
+            continue
+        if key == (payload.get("agent_email") or "").strip().lower():
+            continue
+        seen.add(key)
+        to_list.append(email)
+    if not to_list:
+        logging.warning(
+            "[MAIL SKIP] %s: no Project Manager or assigned Assistant Manager email",
+            payload["agent_name"],
+        )
+        return False
+    subject = (
+        f"Tenure updated: {payload['agent_name']} "
+        f"({payload['old_tenure']} → {payload['new_tenure']})"
+    )
+    send_email(to_list, subject, tenure_update_email_html(payload))
+    logging.info(
+        "[MAIL] %s: sent to %s",
+        payload["agent_name"],
+        ", ".join(to_list),
+    )
+    return True
+
+
+def expected_tenure(joining: date, as_of: date) -> float:
+    """Highest step whose effective date (1st after anniversary) is on or before as_of."""
+    result = MIN_AUTO_TENURE
+    for i, step in enumerate(TENURE_STEPS):
+        months = FIRST_STEP_MONTHS + i * LATER_STEP_MONTHS
+        effective = first_of_next_month(add_months(joining, months))
+        if as_of >= effective:
+            result = step
+        else:
+            break
+    return result
+
+
+def tenure_cap(user_tenure) -> float:
+    try:
+        t = float(user_tenure)
+    except (TypeError, ValueError):
+        t = 1.0
+    return max(0.0, min(1.0, t))
+
+
+def calculate_assigned_hours(new_tenure: str) -> float:
+    return round(9.0 * tenure_cap(new_tenure), 2)
+
+
 def get_db_connection():
     return mysql.connector.connect(
         host=os.getenv("DB_HOST"),
@@ -112,162 +269,167 @@ def get_db_connection():
     )
 
 
-def tenure_cap(user_tenure) -> float:
-    """Cap tenure to [0, 1] for daily hour assignment (max 9 hours)."""
-    try:
-        t = float(user_tenure)
-    except (TypeError, ValueError):
-        t = 1.0
-    return max(0.0, min(1.0, t))
-
-
-def calculate_assigned_hours(new_tenure: str, day_type: str = "Working", working_type: str = "Full") -> float:
-    """
-    Standard formula from utils.roster_helpers:
-      Full working day = 9 * tenure (capped at 9)
-      Half working day = 4.5 * tenure
-    """
-    factor = tenure_cap(new_tenure)
-    wt = (working_type or "Full").strip()
-    dt = (day_type or "Working").strip()
-    if dt in ("WeekOff", "Holiday", "Leave", "Left", "PreJoin"):
-        return 0.0
-    if wt == "Half":
-        return round(4.5 * factor, 2)
-    return round(9.0 * factor, 2)
-
-
-def is_tenure_equal(val1, val2) -> bool:
-    """Compare two tenure values numerically to handle '1.00' == '1' or '0.50' == '0.5'."""
-    try:
-        return abs(float(val1) - float(val2)) < 1e-4
-    except (TypeError, ValueError):
-        return str(val1).strip() == str(val2).strip()
-
-
-def run_tenure_update(dry_run: bool = False, target_date_str: str | None = None):
+def run_tenure_update(dry_run: bool = False, as_of: date | None = None, target_date_str: str | None = None):
+    as_of = as_of or date.today()
     mode_str = "[DRY-RUN]" if dry_run else "[LIVE UPDATE]"
     logging.info("==================================================")
-    logging.info(f"Starting Agent Tenure Update {mode_str}")
-    logging.info(f"Total agents in queue: {len(TENURE_UPDATES)}")
+    logging.info("Starting Company-DOJ tenure update %s as of %s", mode_str, as_of.isoformat())
     logging.info("==================================================")
 
-    if not TENURE_UPDATES:
-        logging.warning("No agents defined in TENURE_UPDATES.")
-        return
-
     today_str = target_date_str or datetime.now().strftime("%Y-%m-%d")
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = ist_now_str()
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-
     stats = {
-        "success": 0,
-        "mismatched_old_tenure": 0,
-        "not_found": 0,
-        "already_updated": 0,
+        "would_update": 0,
+        "already_ok": 0,
+        "below_one": 0,
+        "no_joining_date": 0,
+        "kept_higher": 0,
         "errors": 0,
+        "mailed": 0,
+        "mail_failed": 0,
     }
+    pending_mails: list[tuple[dict, list[dict]]] = []
 
     try:
-        for item in TENURE_UPDATES:
-            user_id = item.get("user_id")
-            user_name_hint = item.get("user_name", "")
-            expected_email = str(item.get("email", "")).strip().lower()
-            expected_old = str(item.get("old_tenure", "")).strip()
-            new_tenure = str(item.get("new_tenure", "")).strip()
+        cursor.execute(
+            """
+            SELECT u.user_id, u.user_name, u.user_email, u.user_tenure,
+                   u.company_joining_date, u.project_manager_id, u.asst_manager_id,
+                   r.role_name
+            FROM tfs_user u
+            JOIN user_role r ON r.role_id = u.role_id
+            LEFT JOIN team t ON t.team_id = u.team_id
+            WHERE u.is_active = 1 AND u.is_delete = 1
+              AND LOWER(TRIM(r.role_name)) = %s
+              AND (
+                    t.team_name IS NULL
+                    OR LOWER(TRIM(u.user_name)) <> LOWER(TRIM(t.team_name))
+              )
+            ORDER BY u.user_name
+            """,
+            ELIGIBLE_ROLES,
+        )
+        rows = cursor.fetchall() or []
+        all_pms = all_project_manager_emails(cursor)
 
-            if not user_id or not new_tenure:
-                logging.error(f"Skipping invalid entry: {item}")
+        for user in rows:
+            name = user.get("user_name") or ""
+            uid = user["user_id"]
+            current = parse_tenure(user.get("user_tenure"))
+            if current is None:
+                logging.warning("[SKIP] %s (ID %s): invalid tenure %r", name, uid, user.get("user_tenure"))
                 stats["errors"] += 1
                 continue
-
-            cursor.execute(
-                """
-                SELECT user_id, user_name, user_email, user_tenure, is_active, is_delete 
-                FROM tfs_user 
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
-            user = cursor.fetchone()
-
-            if not user:
-                logging.warning(f"[NOT FOUND] User ID '{user_id}' ({user_name_hint})")
-                stats["not_found"] += 1
+            if current < MIN_AUTO_TENURE - 1e-9:
+                logging.info("[SKIP <1] %s (ID %s): tenure %s stays manual", name, uid, user.get("user_tenure"))
+                stats["below_one"] += 1
                 continue
 
-            actual_name = user["user_name"]
-            actual_email = (user["user_email"] or "").strip().lower()
-            current_db_tenure = str(user["user_tenure"] or "").strip()
-
-            # Safety check: Verify email matches
-            if expected_email and actual_email != expected_email:
+            joining = parse_joining(user.get("company_joining_date"))
+            if joining is None:
                 logging.warning(
-                    f"[EMAIL MISMATCH] ID {user_id}: expected email '{expected_email}' but found '{actual_email}'. Skipping."
+                    "[NO COMPANY DOJ] %s (ID %s): tenure %s — fill company_joining_date",
+                    name, uid, user.get("user_tenure"),
                 )
-                stats["errors"] += 1
+                stats["no_joining_date"] += 1
                 continue
 
-            # Check if already updated
-            if is_tenure_equal(current_db_tenure, new_tenure):
+            want = expected_tenure(joining, as_of)
+            want_str = format_tenure(want)
+            current_str = format_tenure(current)
+            first_bump = first_of_next_month(add_months(joining, FIRST_STEP_MONTHS))
+
+            if abs(want - current) < 1e-4:
                 logging.info(
-                    f"[ALREADY UPDATED] {actual_name} ({actual_email}, ID: {user_id}) - current tenure is already '{current_db_tenure}'"
+                    "[OK] %s (ID %s): %s (DOJ %s, first auto bump %s)",
+                    name, uid, current_str, joining.isoformat(), first_bump.isoformat(),
                 )
-                stats["already_updated"] += 1
+                stats["already_ok"] += 1
                 continue
 
-            # Verify old tenure matches before updating
-            if expected_old and not is_tenure_equal(current_db_tenure, expected_old):
-                logging.warning(
-                    f"[MISMATCH] {actual_name} ({actual_email}, ID: {user_id}): Expected old tenure '{expected_old}', but found '{current_db_tenure}' in DB. Skipping."
+            if current > want + 1e-4:
+                logging.info(
+                    "[KEEP HIGHER] %s (ID %s): DB %s > calculated %s (DOJ %s) — not decreasing",
+                    name, uid, current_str, want_str, joining.isoformat(),
                 )
-                stats["mismatched_old_tenure"] += 1
+                stats["kept_higher"] += 1
                 continue
 
             logging.info(
-                f"[MATCH] {actual_name} ({actual_email}, ID: {user_id}): '{current_db_tenure}' -> '{new_tenure}'"
+                "[UPDATE] %s (ID %s): %s -> %s (DOJ %s, first auto bump %s)",
+                name, uid, current_str, want_str, joining.isoformat(), first_bump.isoformat(),
             )
+            stats["would_update"] += 1
+            hours = calculate_assigned_hours(want_str)
+            payload = {
+                "agent_name": name,
+                "agent_email": (user.get("user_email") or "").strip(),
+                "doj": joining.isoformat(),
+                "completed": service_duration_label(joining, as_of),
+                "old_tenure": current_str,
+                "new_tenure": want_str,
+                "hours": hours,
+                "updated_at": now_str,
+            }
+            assigned_ams = assigned_assistant_manager_emails(
+                cursor, parse_id_list(user.get("asst_manager_id"))
+            )
+            recipients = all_pms + assigned_ams
+            if dry_run:
+                emails = ", ".join(
+                    (r.get("user_email") or "").strip()
+                    for r in recipients
+                    if (r.get("user_email") or "").strip()
+                ) or "(no PM/AM email)"
+                logging.info("[MAIL DRY-RUN] %s → %s", name, emails)
+                continue
 
-            if not dry_run:
-                # 1. Update tfs_user table
-                cursor.execute(
-                    "UPDATE tfs_user SET user_tenure = %s WHERE user_id = %s",
-                    (new_tenure, user_id),
-                )
-
-                # 2. Recalculate today's assigned hours in temp_qc
-                new_assigned_hours = calculate_assigned_hours(new_tenure)
-                cursor.execute(
-                    """
-                    INSERT INTO temp_qc (user_id, assigned_hours, date, updated_date)
-                    VALUES (%s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        assigned_hours = VALUES(assigned_hours),
-                        updated_date = VALUES(updated_date)
-                    """,
-                    (user_id, new_assigned_hours, today_str, now_str),
-                )
-
-            stats["success"] += 1
+            cursor.execute(
+                "UPDATE tfs_user SET user_tenure = %s WHERE user_id = %s",
+                (want_str, uid),
+            )
+            cursor.execute(
+                """
+                INSERT INTO temp_qc (user_id, assigned_hours, date, updated_date)
+                VALUES (%s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    assigned_hours = VALUES(assigned_hours),
+                    updated_date = VALUES(updated_date)
+                """,
+                (uid, hours, today_str, now_str),
+            )
+            pending_mails.append((payload, recipients))
 
         if dry_run:
-            logging.info("\n--- DRY-RUN SUMMARY (No database changes were committed) ---")
+            logging.info("\n--- DRY-RUN (no database changes, no mail sent) ---")
         else:
             conn.commit()
-            logging.info("\n--- LIVE UPDATE SUMMARY (Changes successfully committed to DB) ---")
+            logging.info("\n--- LIVE UPDATE committed ---")
+            for payload, recipients in pending_mails:
+                try:
+                    if send_tenure_update_mail(payload, recipients):
+                        stats["mailed"] += 1
+                except Exception:
+                    stats["mail_failed"] += 1
+                    logging.exception("[MAIL FAIL] %s", payload["agent_name"])
 
-        logging.info(f"Successfully processed/updated : {stats['success']}")
-        logging.info(f"Already had new tenure        : {stats['already_updated']}")
-        logging.info(f"Skipped (old tenure mismatch) : {stats['mismatched_old_tenure']}")
-        logging.info(f"Not found in database         : {stats['not_found']}")
-        logging.info(f"Invalid / Error entries       : {stats['errors']}")
+        logging.info("Would update / updated : %s", stats["would_update"])
+        logging.info("Already on correct step: %s", stats["already_ok"])
+        logging.info("Kept higher than calc  : %s", stats["kept_higher"])
+        logging.info("Skipped tenure < 1     : %s", stats["below_one"])
+        logging.info("Missing company DOJ    : %s", stats["no_joining_date"])
+        logging.info("Manager mails sent     : %s", stats["mailed"])
+        logging.info("Manager mails failed   : %s", stats["mail_failed"])
+        logging.info("Errors                 : %s", stats["errors"])
         logging.info("==================================================")
+        return stats
 
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        logging.exception(f"CRITICAL ERROR during tenure update: {e}")
+        logging.exception("CRITICAL ERROR during tenure update")
         raise
     finally:
         cursor.close()
@@ -275,18 +437,14 @@ def run_tenure_update(dry_run: bool = False, target_date_str: str | None = None)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Standalone Agent Tenure Updater")
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Simulate the update and print actions without modifying the database.",
-    )
+    parser = argparse.ArgumentParser(description="Monthly tenure update from company joining date")
+    parser.add_argument("--dry-run", action="store_true", help="Print actions without writing to the database")
     parser.add_argument(
         "--date",
         type=str,
         default=None,
-        help="Target date for temp_qc assigned hours sync (YYYY-MM-DD, defaults to today).",
+        help="As-of date YYYY-MM-DD (default today). Also used for temp_qc hours on live run.",
     )
     args = parser.parse_args()
-
-    run_tenure_update(dry_run=args.dry_run, target_date_str=args.date)
+    as_of = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today()
+    run_tenure_update(dry_run=args.dry_run, as_of=as_of, target_date_str=args.date)

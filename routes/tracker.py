@@ -938,7 +938,7 @@ def view_trackers():
         ):
             where_clauses.append(team_leader_scope_sql("u"))
             params.extend(team_leader_scope_params(logged_in_user_id))
-        elif role_name not in ("admin", "super admin", "project manager"):
+        elif role_name not in ("admin", "super admin", "project manager", "operations"):
             # Also used by team leaders on QC screens (scope=qc): agents where they are the QA.
             manager_id_str = str(logged_in_user_id)
             manager_id_int = int(logged_in_user_id)
@@ -1312,7 +1312,7 @@ def view_daily_trackers():
             if role_name in ("assistant team leader", "team leader"):
                 where += f" AND {team_leader_scope_sql('u')}"
                 params.extend(team_leader_scope_params(logged_in_user_id))
-            elif "admin" not in role_name and "project manager" not in role_name:
+            elif "admin" not in role_name and "project manager" not in role_name and role_name != "operations":
                 manager_id_str = str(logged_in_user_id)
                 manager_id_int = int(logged_in_user_id)
                 where += f"""

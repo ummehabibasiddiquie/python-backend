@@ -241,7 +241,7 @@ def _is_manager(role_name: str, role_id=None) -> bool:
     if _int(role_id) in (1, 2, 3, 4):
         return True
     r = (role_name or "").strip().lower()
-    return r in ("admin", "super admin", "project manager", "assistant manager")
+    return r in ("admin", "super admin", "project manager", "operations", "assistant manager")
 
 
 def _ctx_is_manager(ctx: dict) -> bool:

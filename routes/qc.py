@@ -281,6 +281,7 @@ def upsert_temp_qc():
                 "admin",
                 "super admin",
                 "project manager",
+                "operations",
                 "assistant manager",
             }
             if "qa" in role_norm or role_norm not in allowed_roles:

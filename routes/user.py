@@ -235,6 +235,7 @@ def list_users():
                 u.profile_picture,
                 u.is_active,
                 u.joining_date,
+                u.company_joining_date,
                 u.project_manager_id,
                 u.asst_manager_id,
                 u.team_leader_id,
@@ -356,6 +357,8 @@ def list_users():
                 user["user_password"] = safe_decrypt_password(user["user_password"])
             if user.get("joining_date"):
                 user["joining_date"] = user["joining_date"].isoformat()
+            if user.get("company_joining_date"):
+                user["company_joining_date"] = user["company_joining_date"].isoformat()
 
         return api_response(200, "Users fetched successfully", users)
 
@@ -394,7 +397,10 @@ def update_user():
             read_only_err = reject_read_only_actor(cursor, actor_id)
             if read_only_err:
                 return read_only_err
-        cursor.execute("SELECT user_id, user_name, profile_picture, is_active FROM tfs_user WHERE user_id=%s", (user_id,))
+        cursor.execute(
+            "SELECT user_id, user_name, profile_picture, is_active, team_id, team_leader_id FROM tfs_user WHERE user_id=%s",
+            (user_id,),
+        )
         existing = cursor.fetchone()
         if not existing:
             return api_response(404, "User not found")
@@ -443,6 +449,22 @@ def update_user():
         if form.get("team_leader_id") is not None:
             user_fields["team_leader_id"] = to_db_json(form.get("team_leader_id"), allow_single=True)
 
+        # Team move: drop Assistant Team Leaders who are not on the new team
+        # so the previous team's ATL no longer sees this agent.
+        if "team_id" in user_fields and user_fields["team_id"] != existing.get("team_id"):
+            tl_source = user_fields.get("team_leader_id", existing.get("team_leader_id"))
+            tl_ids = _safe_json_list(tl_source)
+            new_team = user_fields["team_id"]
+            keep = []
+            if new_team is not None and tl_ids:
+                placeholders = ", ".join(["%s"] * len(tl_ids))
+                cursor.execute(
+                    f"SELECT user_id FROM tfs_user WHERE user_id IN ({placeholders}) AND team_id = %s",
+                    tuple(tl_ids) + (new_team,),
+                )
+                keep = [int(r["user_id"]) for r in (cursor.fetchall() or [])]
+            user_fields["team_leader_id"] = to_db_json(keep, allow_single=True)
+
         if form.get("qa_id") is not None:
             user_fields["qa_id"] = to_db_json(form.get("qa_id"), allow_single=True)
 
@@ -456,6 +478,17 @@ def update_user():
                     return api_response(400, "Invalid joining_date format. Expected YYYY-MM-DD")
             else:
                 user_fields["joining_date"] = None
+
+        if form.get("company_joining_date") is not None:
+            company_joining_date_raw = (form.get("company_joining_date") or "").strip()
+            if company_joining_date_raw:
+                try:
+                    datetime.strptime(company_joining_date_raw[:10], "%Y-%m-%d")
+                    user_fields["company_joining_date"] = company_joining_date_raw[:10]
+                except ValueError:
+                    return api_response(400, "Invalid company_joining_date format. Expected YYYY-MM-DD")
+            else:
+                user_fields["company_joining_date"] = None
         
         now_str = ist_now_str()
         

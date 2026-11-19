@@ -65,7 +65,7 @@ def view_qc_history_user_based():
         where_clauses = []
 
         # 3. Role-based filtering (JSON ARRAY SUPPORT)
-        if any(r in role for r in ["admin", "super admin", "project manager"]):
+        if any(r in role for r in ["admin", "super admin", "project manager", "operations"]):
             # Admin, Super Admin, and Project Manager get all records
             pass
 
@@ -254,7 +254,7 @@ def consolidated_qc_report():
         where_clauses = []
 
         # 3. Role-based filtering (JSON ARRAY SUPPORT)
-        if any(r in role for r in ["admin", "super admin", "project manager"]):
+        if any(r in role for r in ["admin", "super admin", "project manager", "operations"]):
             # Admin, Super Admin, and Project Manager get all records
             pass
 

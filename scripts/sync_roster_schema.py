@@ -13,6 +13,7 @@ from hostinger_db import connect, parse_db_args  # noqa: E402
 
 TFS_USER_COLUMNS = [
     ("joining_date", "DATE NULL"),
+    ("company_joining_date", "DATE NULL"),
     ("deactivated_at", "DATETIME NULL"),
 ]
 
