@@ -476,6 +476,8 @@ def update_user():
                     user_fields["joining_date"] = joining_date_raw[:10]
                 except ValueError:
                     return api_response(400, "Invalid joining_date format. Expected YYYY-MM-DD")
+                if user_fields["joining_date"] > ist_now_str()[:10]:
+                    return api_response(400, "Tracker joining date cannot be a future date")
             else:
                 user_fields["joining_date"] = None
 

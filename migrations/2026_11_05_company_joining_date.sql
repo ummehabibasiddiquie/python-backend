@@ -6,3 +6,10 @@
 
 ALTER TABLE `tfs_user`
 ADD COLUMN `company_joining_date` DATE NULL AFTER `joining_date`;
+
+-- Old joining_date values are the company DOJ. Copy them into company_joining_date.
+-- Keep joining_date as Tracker Joining Date (same column name in code/roster).
+UPDATE `tfs_user`
+SET `company_joining_date` = `joining_date`
+WHERE `company_joining_date` IS NULL
+  AND `joining_date` IS NOT NULL;

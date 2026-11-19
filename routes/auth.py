@@ -3,6 +3,7 @@ from config import get_db_connection, BASE_UPLOAD_URL, UPLOAD_SUBDIRS
 from utils.response import api_response
 from utils.security import encrypt_password, decrypt_password, safe_decrypt_password
 from datetime import datetime
+from utils.time_ist import today_str as ist_today_str
 from utils.validators import (
     is_valid_username,
     is_valid_email,
@@ -270,6 +271,10 @@ def user_handler():
             joining_date = datetime.strptime(joining_date_raw[:10], "%Y-%m-%d").date().isoformat()
         except ValueError:
             return api_response(400, "Invalid joining_date format. Expected YYYY-MM-DD")
+    else:
+        joining_date = ist_today_str()
+    if joining_date > ist_today_str():
+        return api_response(400, "Tracker joining date cannot be a future date")
 
     company_joining_date_raw = (form.get("company_joining_date") or "").strip()
     company_joining_date = None
