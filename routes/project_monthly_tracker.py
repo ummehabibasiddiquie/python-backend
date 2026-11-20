@@ -2,7 +2,7 @@ from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
 from utils.time_ist import now_str
-from utils.roster_helpers import reject_read_only_actor
+from utils.roster_helpers import get_role_context, reject_if_operations, reject_read_only_actor
 from datetime import datetime
 
 project_monthly_tracker_bp = Blueprint("project_monthly_tracker",__name__)
@@ -134,6 +134,11 @@ def add_project_monthly_tracker():
         deny = reject_read_only_actor(cursor, actor_id)
         if deny:
             return deny
+        if actor_id:
+            ctx = get_role_context(cursor, int(actor_id))
+            deny = reject_if_operations(ctx.get("user_role_name"), ctx.get("user_role_id"))
+            if deny:
+                return deny
 
         inserted_ids = []
         skipped = []
@@ -244,6 +249,12 @@ def update_project_monthly_tracker():
         deny = reject_read_only_actor(cursor, data.get("logged_in_user_id"))
         if deny:
             return deny
+        actor_id = data.get("logged_in_user_id")
+        if actor_id:
+            ctx = get_role_context(cursor, int(actor_id))
+            deny = reject_if_operations(ctx.get("user_role_name"), ctx.get("user_role_id"))
+            if deny:
+                return deny
 
         cursor.execute(
             """
@@ -319,6 +330,12 @@ def delete_project_monthly_tracker():
         deny = reject_read_only_actor(cursor, data.get("logged_in_user_id"))
         if deny:
             return deny
+        actor_id = data.get("logged_in_user_id")
+        if actor_id:
+            ctx = get_role_context(cursor, int(actor_id))
+            deny = reject_if_operations(ctx.get("user_role_name"), ctx.get("user_role_id"))
+            if deny:
+                return deny
 
         cursor.execute(
             """

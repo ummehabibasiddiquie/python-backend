@@ -7,6 +7,7 @@ from utils.roster_helpers import (
     can_manage_roster_employees,
     ensure_umt_goal_locked_column,
     get_role_context,
+    reject_if_operations,
     reject_if_read_only,
     sync_tracker_extra_hours_to_roster,
     sync_tracker_monthly_target_to_roster,
@@ -442,6 +443,14 @@ def delete_user_monthly_target():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        actor_id = data.get("logged_in_user_id")
+        if actor_id:
+            ctx = get_role_context(cursor, int(actor_id))
+            deny = reject_if_operations(ctx.get("user_role_name"), ctx.get("user_role_id"))
+            if deny:
+                return deny
+            if not can_manage_roster_employees(ctx.get("user_role_name") or ""):
+                return api_response(403, "Not authorized to delete monthly targets")
         cursor.execute(
             """
             delete from user_monthly_tracker

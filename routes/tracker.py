@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, date
 from collections import defaultdict
 from utils.qc_auto_score import AUTO_QC_DAYS_SQL, MANUAL_QC_DAYS_SQL, sync_auto_qc_score_for_day
 from utils.time_ist import now_ist, today_str as ist_today_str
-from utils.roster_helpers import reject_if_read_only, team_leader_scope_sql, team_leader_scope_params
+from utils.roster_helpers import reject_if_operations, reject_if_read_only, team_leader_scope_sql, team_leader_scope_params
 import logging
 import re
 import os
@@ -412,6 +412,11 @@ def add_tracker():
             )
             if read_only_err:
                 return read_only_err
+            ops_err = reject_if_operations(
+                actor_ctx.get("user_role_name"), actor_ctx.get("user_role_id")
+            )
+            if ops_err:
+                return ops_err
         # --- validate task + get task_target
         cursor.execute("SELECT task_target, task_name FROM task WHERE task_id=%s", (task_id,))
         task_row = cursor.fetchone()
@@ -591,6 +596,11 @@ def update_tracker():
             )
             if read_only_err:
                 return read_only_err
+            ops_err = reject_if_operations(
+                actor_ctx.get("user_role_name"), actor_ctx.get("user_role_id")
+            )
+            if ops_err:
+                return ops_err
 
         old_file = tracker.get("tracker_file")  # may be filename OR url/path
 
@@ -820,6 +830,11 @@ def delete_tracker():
             )
             if read_only_err:
                 return read_only_err
+            ops_err = reject_if_operations(
+                actor_ctx.get("user_role_name"), actor_ctx.get("user_role_id")
+            )
+            if ops_err:
+                return ops_err
 
             if int(actor_id) == int(tracker["user_id"]) and not _agent_can_delete_own_tracker(
                 tracker.get("date_time"), tracker.get("shift")

@@ -236,12 +236,13 @@ def _resolve_sync_user_ids(cursor, manager: bool, logged_in_user_id: int, reques
 
 
 def _is_manager(role_name: str, role_id=None) -> bool:
-    if _int(role_id) == 7:
+    """Can add/edit/delete QA hours. Operations is view-only."""
+    if _int(role_id) in (7, 8):
         return False
     if _int(role_id) in (1, 2, 3, 4):
         return True
     r = (role_name or "").strip().lower()
-    return r in ("admin", "super admin", "project manager", "operations", "assistant manager")
+    return r in ("admin", "super admin", "project manager", "assistant manager")
 
 
 def _ctx_is_manager(ctx: dict) -> bool:
@@ -251,9 +252,13 @@ def _ctx_is_manager(ctx: dict) -> bool:
 def _ctx_can_view_as_manager(ctx: dict) -> bool:
     if _ctx_is_manager(ctx):
         return True
-    if _int(ctx.get("user_role_id")) == 7:
+    if _int(ctx.get("user_role_id")) in (7, 8):
         return True
-    return (ctx.get("user_role_name") or "").strip().lower() in ("assistant team leader", "team leader")
+    return (ctx.get("user_role_name") or "").strip().lower() in (
+        "assistant team leader",
+        "team leader",
+        "operations",
+    )
 
 
 def _is_qa_role(role_name: str, role_id=None) -> bool:

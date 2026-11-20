@@ -264,6 +264,22 @@ def is_super_admin(role_name: str) -> bool:
     return (role_name or "").strip().lower() == "super admin"
 
 
+def is_operations_role(role_name: str, role_id=None) -> bool:
+    try:
+        if int(role_id) == 8:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return _norm_role(role_name) == "operations"
+
+
+def reject_if_operations(role_name: str, role_id=None, message="Operations has view-only access"):
+    if not is_operations_role(role_name, role_id):
+        return None
+    from utils.response import api_response
+    return api_response(403, message)
+
+
 def is_project_manager_like(role_name: str, role_id=None) -> bool:
     """Project Manager screens and data scope. Operations is included; weekly auto-mail is not."""
     try:
@@ -319,7 +335,6 @@ def can_manage_roster_employees(role_name: str) -> bool:
         "super admin",
         "admin",
         "project manager",
-        "operations",
         "assistant manager",
         "assistant team leader",
         "team leader",  # legacy
@@ -328,7 +343,7 @@ def can_manage_roster_employees(role_name: str) -> bool:
 
 def can_view_roster_employees(role_name: str) -> bool:
     """Roles that can list/view employee rosters in their scope."""
-    return can_manage_roster_employees(role_name)
+    return can_manage_roster_employees(role_name) or _norm_role(role_name) == "operations"
 
 
 def reject_if_read_only(role_name: str, role_id=None):
