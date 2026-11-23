@@ -7,6 +7,7 @@ from utils.validators import validate_request
 from utils.roster_helpers import reject_read_only_actor
 from utils.json_utils import to_db_json
 from utils.time_ist import now_ist, now_str as ist_now_str
+from utils.qc_access import is_org_wide_qc_scope, is_qc_scope
 from datetime import datetime,timedelta
 import json
 import os
@@ -255,11 +256,11 @@ def list_users():
 
         # ✅ Role-based filtering (MariaDB-safe; supports BOTH JSON arrays and comma/bracket strings)
         # This avoids: invalid JSON errors + missing matches when stored value isn't valid JSON
-        qc_as_qa = (
-            role in ("assistant team leader", "team leader")
-            and str(data.get("scope") or "").strip().lower() == "qc"
-        )
-        if role == "qa" or qc_as_qa:
+        if is_org_wide_qc_scope(cursor, user_id, data):
+            pass
+        elif is_qc_scope(data) and role != "qa":
+            return api_response(403, "You do not have QC / Agent Files permission")
+        elif role == "qa":
             query += """
                 AND (
                     TRIM(COALESCE(u.qa_id, '')) = %s

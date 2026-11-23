@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify, send_file
 from config import get_db_connection
+from utils.qc_access import user_has_audit_permission, is_qa_role
 from datetime import datetime
 from utils.cloudinary_utils import upload_to_cloudinary, delete_from_cloudinary
 from io import BytesIO
@@ -29,6 +30,12 @@ def create_qc_audit():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        actor_id = form.get("logged_in_user_id") or form.get("user_id")
+        if not actor_id or not user_has_audit_permission(cursor, actor_id):
+            return jsonify({
+                "status": 403,
+                "message": "You do not have QA Agent Audit permission"
+            }), 403
 
         qc_file_url = None
         uploaded = request.files.get("qc_checked_file")
@@ -171,7 +178,6 @@ def qc_audit_report():
             where.append("DATE(qr.created_at) <= %s")
             params.append(qc_end_date)
 
-        # QA and Assistant Team Leader only see audits on their own QC
         viewer_id = data.get("logged_in_user_id")
         if viewer_id:
             cursor.execute(
@@ -184,9 +190,19 @@ def qc_audit_report():
             )
             viewer = cursor.fetchone() or {}
             viewer_role = viewer.get("role_name") or ""
-            if viewer.get("role_id") in (5, 7) or viewer_role in ("qa", "assistant team leader", "team leader"):
+            if user_has_audit_permission(cursor, viewer_id):
+                pass
+            elif viewer.get("role_id") in (5, 7) or is_qa_role(viewer_role) or viewer_role in (
+                "assistant team leader",
+                "team leader",
+            ):
                 where.append("qr.qa_user_id = %s")
                 params.append(viewer_id)
+            else:
+                return jsonify({
+                    "status": 403,
+                    "message": "You do not have QA Agent Audit permission"
+                }), 403
         if where:
             query += " WHERE " + " AND ".join(where)
 

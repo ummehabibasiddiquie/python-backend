@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from datetime import datetime
 from config import get_db_connection
 from utils.time_ist import now_ist
+from utils.qc_access import is_qa_role, user_has_qc_permission
 
 qc_bp = Blueprint("qc", __name__)
 
@@ -239,13 +240,11 @@ def upsert_temp_qc():
 
             user_role = get_user_role(cur, int(logged_in_user_id))
             role_norm = (user_role or "").replace("_", " ").strip().lower()
-            qc_roles = {
-                "qa",
-                "qa agent",
-                "assistant team leader",
-                "team leader",
-            }
-            if role_norm not in qc_roles and "qa" not in role_norm:
+            if not (
+                is_qa_role(role_norm)
+                or "qa" in role_norm
+                or user_has_qc_permission(cur, logged_in_user_id)
+            ):
                 return response(False, "Permission denied. You cannot update QC score.", None, 403)
             if not day_allows_manual_qc(cur, int(user_id), qc_date):
                 return response(

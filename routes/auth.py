@@ -145,6 +145,28 @@ def user_handler():
                 user["profile_picture"] = None
 
             user.pop("user_password", None)
+            user["qc_permission"] = 0
+            user["audit_permission"] = 0
+            user["qc_overview_permission"] = 0
+            try:
+                cursor.execute(
+                    """
+                    SELECT MAX(COALESCE(qc_permission, 0)) AS qc_permission,
+                           MAX(COALESCE(audit_permission, 0)) AS audit_permission,
+                           MAX(COALESCE(qc_overview_permission, 0)) AS qc_overview_permission
+                    FROM user_permission
+                    WHERE user_id = %s
+                    """,
+                    (user.get("user_id"),),
+                )
+                flags = cursor.fetchone() or {}
+                user["qc_permission"] = int(flags.get("qc_permission") or 0)
+                user["audit_permission"] = int(flags.get("audit_permission") or 0)
+                user["qc_overview_permission"] = int(flags.get("qc_overview_permission") or 0)
+            except Exception:
+                user["qc_permission"] = 0
+                user["audit_permission"] = 0
+                user["qc_overview_permission"] = 0
             return api_response(200, "Login successful", user)
 
         finally:

@@ -5,6 +5,12 @@ from config import get_db_connection
 permission_bp = Blueprint("permission", __name__, url_prefix="/permission")
 
 
+def _flag_value(value):
+    if value is None:
+        return None
+    return 1 if str(value).strip().lower() in ("1", "true", "yes") else 0
+
+
 @permission_bp.route("/user_list", methods=["POST"])
 def user_list_with_permissions():
     data = request.get_json() or {}
@@ -32,8 +38,7 @@ def user_list_with_permissions():
 
         role = (role_row["role_name"] or "").lower()
 
-        # 2) Block QA, Agent, and Team Leader (view-only)
-        if role in ["qa", "agent", "assistant team leader", "team leader"]:
+        if role not in ("admin", "super admin"):
             return api_response(403, "You are not allowed to view user permissions", [])
 
         # 3) Base query: user details + role + designation + permissions
@@ -50,7 +55,10 @@ def user_list_with_permissions():
                 d.designation,
 
                 COALESCE(up.project_creation_permission, 0) AS project_creation_permission,
-                COALESCE(up.user_creation_permission, 0) AS user_creation_permission
+                COALESCE(up.user_creation_permission, 0) AS user_creation_permission,
+                COALESCE(up.qc_permission, 0) AS qc_permission,
+                COALESCE(up.audit_permission, 0) AS audit_permission,
+                COALESCE(up.qc_overview_permission, 0) AS qc_overview_permission
 
             FROM tfs_user u
             LEFT JOIN user_role r ON r.role_id = u.role_id
@@ -110,10 +118,13 @@ def update_user_permission():
     if not target_user_id:
         return api_response(400, "target_user_id is required")
 
-    project_perm = data.get("project_creation_permission")
-    user_perm = data.get("user_creation_permission")
+    project_perm = _flag_value(data.get("project_creation_permission"))
+    user_perm = _flag_value(data.get("user_creation_permission"))
+    qc_perm = _flag_value(data.get("qc_permission"))
+    audit_perm = _flag_value(data.get("audit_permission"))
+    qc_overview_perm = _flag_value(data.get("qc_overview_permission"))
 
-    if project_perm is None and user_perm is None:
+    if project_perm is None and user_perm is None and qc_perm is None and audit_perm is None and qc_overview_perm is None:
         return api_response(400, "No permission fields provided")
 
     conn = get_db_connection()
@@ -136,10 +147,7 @@ def update_user_permission():
 
         role = role_row["role_name"].lower()
 
-        # --------------------------------------------------
-        # 2) Block QA & Agent
-        # --------------------------------------------------
-        if role in ["qa", "agent"]:
+        if role not in ("admin", "super admin"):
             return api_response(403, "You are not allowed to update permissions")
 
         # --------------------------------------------------
@@ -185,6 +193,18 @@ def update_user_permission():
             fields.append("user_creation_permission=%s")
             values.append(user_perm)
 
+        if qc_perm is not None:
+            fields.append("qc_permission=%s")
+            values.append(qc_perm)
+
+        if audit_perm is not None:
+            fields.append("audit_permission=%s")
+            values.append(audit_perm)
+
+        if qc_overview_perm is not None:
+            fields.append("qc_overview_permission=%s")
+            values.append(qc_overview_perm)
+
         values.append(target_user_id)
 
         if exists:
@@ -197,13 +217,16 @@ def update_user_permission():
         else:
             cursor.execute("""
                 INSERT INTO user_permission
-                (user_id, role_id, project_creation_permission, user_creation_permission)
-                VALUES (%s, %s, %s, %s)
+                (user_id, role_id, project_creation_permission, user_creation_permission, qc_permission, audit_permission, qc_overview_permission)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, (
                 target_user_id,
                 target_user["role_id"],
                 project_perm or 0,
-                user_perm or 0
+                user_perm or 0,
+                qc_perm or 0,
+                audit_perm or 0,
+                qc_overview_perm or 0
             ))
 
         conn.commit()

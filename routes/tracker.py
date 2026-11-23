@@ -8,6 +8,7 @@ from collections import defaultdict
 from utils.qc_auto_score import AUTO_QC_DAYS_SQL, MANUAL_QC_DAYS_SQL, sync_auto_qc_score_for_day
 from utils.time_ist import now_ist, today_str as ist_today_str
 from utils.roster_helpers import reject_if_operations, reject_if_read_only, team_leader_scope_sql, team_leader_scope_params
+from utils.qc_access import is_org_wide_qc_scope, is_qc_scope, is_qa_role, user_has_qc_permission
 import logging
 import re
 import os
@@ -947,10 +948,33 @@ def view_trackers():
             placeholders = ",".join(["%s"] * len(user_ids_filter))
             where_clauses.append(f"twt.user_id IN ({placeholders})")
             params.extend(user_ids_filter)
-        elif (
-            role_name in ("assistant team leader", "team leader")
-            and str(data.get("scope") or "").strip().lower() != "qc"
-        ):
+        elif is_qc_scope(data):
+            if is_qa_role(role_name):
+                manager_id_str = str(logged_in_user_id)
+                manager_id_int = int(logged_in_user_id)
+                where_clauses.append(
+                    """
+                    twt.user_id IN (
+                        SELECT tu.user_id
+                        FROM tfs_user tu
+                        WHERE tu.is_delete = 1
+                        AND (
+                            tu.qa_id = %s
+                            OR tu.qa_id = %s
+                            OR tu.user_id = %s
+                            OR (JSON_VALID(tu.qa_id) AND JSON_CONTAINS(tu.qa_id, JSON_ARRAY(%s)))
+                            OR (JSON_VALID(tu.qa_id) AND JSON_CONTAINS(tu.qa_id, JSON_ARRAY(CAST(%s AS UNSIGNED))))
+                        )
+                    )
+                    """
+                )
+                params.extend([
+                    manager_id_str, manager_id_int, manager_id_int,
+                    manager_id_int, manager_id_int,
+                ])
+            elif not user_has_qc_permission(cursor, logged_in_user_id):
+                return api_response(403, "You do not have QC / Agent Files permission")
+        elif role_name in ("assistant team leader", "team leader"):
             where_clauses.append(team_leader_scope_sql("u"))
             params.extend(team_leader_scope_params(logged_in_user_id))
         elif role_name not in ("admin", "super admin", "project manager", "operations"):
@@ -1327,6 +1351,8 @@ def view_daily_trackers():
             if role_name in ("assistant team leader", "team leader"):
                 where += f" AND {team_leader_scope_sql('u')}"
                 params.extend(team_leader_scope_params(logged_in_user_id))
+            elif is_org_wide_qc_scope(cursor, logged_in_user_id, data):
+                pass
             elif "admin" not in role_name and "project manager" not in role_name and role_name != "operations":
                 manager_id_str = str(logged_in_user_id)
                 manager_id_int = int(logged_in_user_id)

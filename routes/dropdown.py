@@ -7,6 +7,7 @@ from utils.user_status import (
     sql_listing_leaver_clause,
     sql_visible_user_clause,
 )
+from utils.qc_access import is_qc_scope, is_qa_role, user_has_qc_permission
 
 dropdown_bp = Blueprint("dropdown", __name__)
 
@@ -238,18 +239,22 @@ def get():
                     return api_response(400, "logged_in_user_id is required")
 
                 user_role = get_user_role(cursor, logged_in_user_id)
-                # QC screens send scope=qc: a team leader then sees agents where they are the QA, like a QA.
-                qc_as_qa = (
-                    str(data.get("scope") or "").strip().lower() == "qc"
-                    and user_role in ("assistant team leader", "team leader")
-                )
+                qc_scope = is_qc_scope(data)
+                if (
+                    qc_scope
+                    and not is_qa_role(user_role)
+                    and not user_has_qc_permission(cursor, logged_in_user_id)
+                ):
+                    return api_response(403, "You do not have QC / Agent Files permission")
 
                 clean_pm = "REPLACE(REPLACE(REPLACE(REPLACE(u.project_manager_id,'[',''),']',''), '\"',''),' ','')"
                 clean_am = "REPLACE(REPLACE(REPLACE(REPLACE(u.asst_manager_id,'[',''),']',''), '\"',''),' ','')"
                 clean_qa = "REPLACE(REPLACE(REPLACE(REPLACE(u.qa_id,'[',''),']',''), '\"',''),' ','')"
 
-                # ---------------- ADMIN / SUPER ADMIN ---------------- #
-                if user_role in ["admin", "super admin", "project manager", "operations"]:
+                # ---------------- QC permission (all agents) / ADMIN (non-QC lists) ---------------- #
+                if (qc_scope and not is_qa_role(user_role) and user_has_qc_permission(cursor, logged_in_user_id)) or (
+                    not qc_scope and user_role in ["admin", "super admin", "project manager", "operations"]
+                ):
                     query = f"""
                         SELECT u.user_id, u.user_name AS label, u.user_tenure
                         FROM tfs_user u
@@ -304,7 +309,7 @@ def get():
                     params = (*visible_users_params, logged_in_user_id)
 
                 # ---------------- TEAM LEADER (current team only, view-only) ---------------- #
-                elif user_role in ("assistant team leader", "team leader") and not qc_as_qa:
+                elif user_role in ("assistant team leader", "team leader"):
                     from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
                     query = f"""
                         SELECT u.user_id, u.user_name AS label, u.user_tenure
@@ -319,8 +324,8 @@ def get():
                     """
                     params = (*visible_users_params, *team_leader_scope_params(logged_in_user_id))
 
-                # ---------------- QA (and team leader on QC screens) ---------------- #
-                elif user_role == "qa" or qc_as_qa:
+                # ---------------- QA ---------------- #
+                elif user_role == "qa":
                     query = f"""
                         SELECT u.user_id, u.user_name AS label, u.user_tenure
                         FROM tfs_user u
@@ -429,13 +434,18 @@ def get():
                     return api_response(404, "User not found")
                 params: list = []
                 where_sql = "WHERE p.is_active = 1"
-                qc_as_qa = (
-                    str(data.get("scope") or "").strip().lower() == "qc"
-                    and user_role in ("assistant team leader", "team leader")
-                )
-                if user_role in ["admin", "super admin", "project manager", "operations"]:
+                qc_scope = is_qc_scope(data)
+                if (
+                    qc_scope
+                    and not is_qa_role(user_role)
+                    and not user_has_qc_permission(cursor, filter_id)
+                ):
+                    return api_response(403, "You do not have QC / Agent Files permission")
+                if (qc_scope and not is_qa_role(user_role) and user_has_qc_permission(cursor, filter_id)) or (
+                    not qc_scope and user_role in ["admin", "super admin", "project manager", "operations"]
+                ):
                     pass
-                elif user_role == "qa" or qc_as_qa:
+                elif user_role == "qa":
                     v = str(filter_id)
                     where_sql += " AND " + multi_id_match_sql("p.project_qa_id")
                     params.extend([v, v])
