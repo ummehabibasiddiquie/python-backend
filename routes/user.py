@@ -260,6 +260,8 @@ def list_users():
             pass
         elif is_qc_scope(data) and role != "qa":
             return api_response(403, "You do not have QC / Agent Files permission")
+        elif role in ("admin", "super admin", "project manager", "operations"):
+            pass
         elif role == "qa":
             query += """
                 AND (
@@ -274,17 +276,24 @@ def list_users():
             params.append(str(int(user_id)))   # FIND_IN_SET
 
         elif role == "assistant manager":
-            query += """
-                AND (
-                    TRIM(COALESCE(u.asst_manager_id, '')) = %s
-                    OR FIND_IN_SET(
-                        %s,
-                        REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(u.asst_manager_id,''), '[',''), ']',''), '"',''), ' ', '')
-                    ) > 0
-                )
-            """
-            params.append(str(int(user_id)))   # exact match
-            params.append(str(int(user_id)))   # FIND_IN_SET
+            if is_qc_scope(data):
+                query += """
+                    AND (
+                        TRIM(COALESCE(u.asst_manager_id, '')) = %s
+                        OR FIND_IN_SET(
+                            %s,
+                            REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(u.asst_manager_id,''), '[',''), ']',''), '"',''), ' ', '')
+                        ) > 0
+                    )
+                """
+                params.append(str(int(user_id)))
+                params.append(str(int(user_id)))
+            else:
+                query += """
+                    AND u.team_id IS NOT NULL
+                    AND u.team_id = (SELECT team_id FROM tfs_user WHERE user_id = %s)
+                """
+                params.append(int(user_id))
 
         elif role in ("assistant team leader", "team leader"):
             from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
