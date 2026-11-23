@@ -269,28 +269,7 @@ def get_projects_for_role(cursor, role: str, logged_in_user_id: int) -> list[dic
         )
         return cursor.fetchall() or []
 
-    if role == "assistant manager":
-        cursor.execute(
-            "SELECT team_id FROM tfs_user WHERE user_id=%s LIMIT 1",
-            (int(logged_in_user_id),),
-        )
-        am_team = (cursor.fetchone() or {}).get("team_id")
-        if am_team in (None, "", 0, "0"):
-            return []
-        v_team = str(int(am_team))
-        cursor.execute(
-            f"""
-            SELECT project_id, project_name, project_code, project_description,
-                   project_manager_id, asst_project_manager_id, project_qa_id, project_team_id
-            FROM project
-            WHERE is_active=1 AND {multi_id_match_sql("project_team_id")}
-            ORDER BY project_id DESC
-            """,
-            (v_team, v_team),
-        )
-        return cursor.fetchall() or []
-
-    if role in ("assistant team leader", "team leader"):
+    if role in ("assistant manager", "assistant team leader", "team leader"):
         from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
         clean_team = "REPLACE(REPLACE(REPLACE(REPLACE(p.project_team_id,'[',''),']',''),'\"',''),' ','')"
         cursor.execute(

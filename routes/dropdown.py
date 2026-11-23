@@ -454,19 +454,7 @@ def get():
                     v = str(filter_id)
                     where_sql += " AND " + multi_id_match_sql("p.project_manager_id")
                     params.extend([v, v])
-                elif user_role == "assistant manager":
-                    cursor.execute(
-                        "SELECT team_id FROM tfs_user WHERE user_id=%s LIMIT 1",
-                        (filter_id,),
-                    )
-                    am_team = (cursor.fetchone() or {}).get("team_id")
-                    if am_team in (None, "", 0, "0"):
-                        where_sql += " AND 1=0"
-                    else:
-                        v = str(int(am_team))
-                        where_sql += " AND " + multi_id_match_sql("p.project_team_id")
-                        params.extend([v, v])
-                elif user_role in ("assistant team leader", "team leader"):
+                elif user_role in ("assistant manager", "assistant team leader", "team leader"):
                     from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
                     v = str(filter_id)
                     clean_team = "REPLACE(REPLACE(REPLACE(REPLACE(p.project_team_id,'[',''),']',''),'\"',''),' ','')"
