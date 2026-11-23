@@ -1,6 +1,7 @@
 from flask import Blueprint, request
 from config import get_db_connection
 from utils.response import api_response
+from utils.qc_access import user_has_qc_overview_permission
 from datetime import datetime
 
 qc_history_user_bp = Blueprint("qc_history_user", __name__)
@@ -65,8 +66,10 @@ def view_qc_history_user_based():
         where_clauses = []
 
         # 3. Role-based filtering (JSON ARRAY SUPPORT)
-        if any(r in role for r in ["admin", "super admin", "project manager", "operations"]):
-            # Admin, Super Admin, and Project Manager get all records
+        # Overview permission: same rows as Admin/PM. SELECT / score logic is unchanged.
+        if user_has_qc_overview_permission(cursor, logged_in_user_id) or any(
+            r in role for r in ["admin", "super admin", "project manager", "operations"]
+        ):
             pass
 
         elif "qa" in role or ("team leader" in role and str((data or {}).get("scope") or "").strip().lower() == "qc"):
@@ -254,8 +257,9 @@ def consolidated_qc_report():
         where_clauses = []
 
         # 3. Role-based filtering (JSON ARRAY SUPPORT)
-        if any(r in role for r in ["admin", "super admin", "project manager", "operations"]):
-            # Admin, Super Admin, and Project Manager get all records
+        if user_has_qc_overview_permission(cursor, logged_in_user_id) or any(
+            r in role for r in ["admin", "super admin", "project manager", "operations"]
+        ):
             pass
 
         elif "qa" in role or ("team leader" in role and str((data or {}).get("scope") or "").strip().lower() == "qc"):

@@ -974,6 +974,9 @@ def view_trackers():
                 ])
             elif not user_has_qc_permission(cursor, logged_in_user_id):
                 return api_response(403, "You do not have QC / Agent Files permission")
+        elif role_name == "assistant manager":
+            where_clauses.append(team_leader_scope_sql("u"))
+            params.extend(team_leader_scope_params(logged_in_user_id))
         elif role_name in ("assistant team leader", "team leader"):
             where_clauses.append(team_leader_scope_sql("u"))
             params.extend(team_leader_scope_params(logged_in_user_id))
@@ -1349,6 +1352,9 @@ def view_daily_trackers():
             params.append(data["user_id"])
         else:
             if role_name in ("assistant team leader", "team leader"):
+                where += f" AND {team_leader_scope_sql('u')}"
+                params.extend(team_leader_scope_params(logged_in_user_id))
+            elif role_name == "assistant manager":
                 where += f" AND {team_leader_scope_sql('u')}"
                 params.extend(team_leader_scope_params(logged_in_user_id))
             elif is_org_wide_qc_scope(cursor, logged_in_user_id, data):

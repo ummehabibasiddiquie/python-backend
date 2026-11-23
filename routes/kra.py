@@ -65,8 +65,7 @@ def _scope_clause(role_name: str, logged_in_user_id: int):
     if role_name in ("assistant team leader", "team leader"):
         return f" AND {team_leader_scope_sql('u')}", team_leader_scope_params(logged_in_user_id)
     if role_name == "assistant manager":
-        s_id = str(int(logged_in_user_id))
-        return f" AND {_clean_id_match('u.asst_manager_id')}", [s_id, s_id]
+        return f" AND {team_leader_scope_sql('u')}", team_leader_scope_params(logged_in_user_id)
     if role_name == "qa":
         s_id = str(int(logged_in_user_id))
         return f" AND {_clean_id_match('u.qa_id')}", [s_id, s_id]

@@ -295,6 +295,7 @@ def get():
 
                 # ---------------- ASSISTANT MANAGER ---------------- #
                 elif user_role == "assistant manager":
+                    from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
                     query = f"""
                         SELECT u.user_id, u.user_name AS label, u.user_tenure
                         FROM tfs_user u
@@ -303,10 +304,10 @@ def get():
                         AND r.is_active = 1
                         AND LOWER(r.role_name) = 'agent'
                         AND {visible_users_sql}
-                        AND FIND_IN_SET(%s, {clean_am})
+                        AND {team_leader_scope_sql("u")}
                         ORDER BY u.user_name
                     """
-                    params = (*visible_users_params, logged_in_user_id)
+                    params = (*visible_users_params, *team_leader_scope_params(logged_in_user_id))
 
                 # ---------------- TEAM LEADER (current team only, view-only) ---------------- #
                 elif user_role in ("assistant team leader", "team leader"):

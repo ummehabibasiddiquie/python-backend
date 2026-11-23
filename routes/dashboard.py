@@ -169,29 +169,16 @@ def get_subordinate_user_ids(cursor, role: str, logged_in_user_id: int) -> list[
             ids.append(logged_in_user_id)
         return ids
 
-    # ✅ Assistant Manager: asst_manager_id mapping
     if role == "assistant manager":
-        col = detect_existing_column(
-            cursor,
-            "tfs_user",
-            [
-                "assistant_manager_id",
-                "asst_manager_id",
-                "asst_reporting_manager_id",
-                "reporting_manager_id",
-            ],
-        )
-        if not col:
-            return [logged_in_user_id]
-
+        from utils.roster_helpers import team_leader_scope_sql, team_leader_scope_params
         cursor.execute(
             f"""
             SELECT tu.user_id
             FROM tfs_user tu
             WHERE tu.is_active=1 AND tu.is_delete=1
-              AND {multi_id_match_sql(f"tu.{col}")}
+              AND {team_leader_scope_sql("tu")}
             """,
-            (v, v),
+            tuple(team_leader_scope_params(logged_in_user_id)),
         )
         rows = cursor.fetchall() or []
         ids = [int(r["user_id"]) for r in rows if r.get("user_id") is not None]
