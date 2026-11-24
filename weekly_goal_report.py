@@ -9,9 +9,10 @@ Agents with no roster for the week fall back to their daily assigned hours (temp
 Achieved = billable hours from tracker entries (production / tenure target), the same figures as the daily
 billable report. Agents of teams A and B only. Deactivated agents are not included.
 
-Recipients (active users, by role):
-  Super Admin, Admin, Project Manager -> all agents
-  Assistant Manager, Team Leader   -> only the agents assigned to them
+Recipients (active users, by role). Same content is one group mail (everyone in To):
+  Super Admin, Admin, Project Manager -> one mail, all Team A/B agents
+  Assistant Manager + Assistant Team Leader of the same team -> one mail, that team's agents
+  Anyone whose list is different still gets their own mail
 If everyone in a recipient's list reached the goal, they get an "all achieved" email instead.
 The table also shows consecutive missed weeks (including this week) and a suggested action:
 2 verbal warning, 3 email warning, 4 issue warning 1, 5 issue warning 2, 6+ issue warning 3.
@@ -154,7 +155,7 @@ def roster_week_goals(cursor, ids: list[int], tenure: dict[int, object], week_st
 def fetch_week(cursor, week_start: date, week_end: date) -> list[dict]:
     cursor.execute(
         """
-        SELECT u.user_id, u.user_name, u.user_email, t.team_name, u.asst_manager_id, u.team_leader_id, u.user_tenure
+        SELECT u.user_id, u.user_name, u.user_email, u.team_id, t.team_name, u.asst_manager_id, u.team_leader_id, u.user_tenure
         FROM tfs_user u
         JOIN user_role r ON r.role_id = u.role_id
         LEFT JOIN team t ON t.team_id = u.team_id
@@ -210,6 +211,7 @@ def fetch_week(cursor, week_start: date, week_end: date) -> list[dict]:
             "name": a["user_name"],
             "email": (a.get("user_email") or "").strip(),
             "team": a["team_name"],
+            "team_id": a.get("team_id"),
             "am_ids": id_list(a["asst_manager_id"]),
             "tl_ids": id_list(a["team_leader_id"]),
             "goal": week_goal,
@@ -275,25 +277,85 @@ def add_consecutive_misses(cursor, rows: list[dict], week_start: date) -> None:
         row["suggested_action"] = suggested_action(n)
 
 
+TEAM_SCOPE_ROLES = (ROLE_AM, ROLE_TL)
+TEAM_SCOPE_NAMES = frozenset({"assistant manager", "assistant team leader", "team leader"})
+
+
 def fetch_recipients(cursor) -> list[dict]:
     cursor.execute(
         """
-        SELECT user_id, user_name, user_email, role_id
-        FROM tfs_user
-        WHERE is_active = 1 AND is_delete = 1 AND role_id IN (%s, %s, %s, %s, %s)
-          AND user_email IS NOT NULL AND TRIM(user_email) <> ''
+        SELECT u.user_id, u.user_name, u.user_email, u.role_id, u.team_id, t.team_name,
+               LOWER(TRIM(r.role_name)) AS role_name
+        FROM tfs_user u
+        JOIN user_role r ON r.role_id = u.role_id
+        LEFT JOIN team t ON t.team_id = u.team_id
+        WHERE u.is_active = 1 AND u.is_delete = 1
+          AND u.user_email IS NOT NULL AND TRIM(u.user_email) <> ''
+          AND (
+            u.role_id IN (%s, %s, %s, %s, %s)
+            OR LOWER(TRIM(r.role_name)) IN (
+              'super admin', 'admin', 'project manager',
+              'assistant manager', 'assistant team leader', 'team leader'
+            )
+          )
         """,
         (ROLE_SUPER_ADMIN, ROLE_ADMIN, ROLE_PM, ROLE_AM, ROLE_TL),
     )
     return cursor.fetchall()
 
 
+def _is_team_scope(recipient: dict) -> bool:
+    try:
+        if int(recipient.get("role_id")) in TEAM_SCOPE_ROLES:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return (recipient.get("role_name") or "").strip().lower() in TEAM_SCOPE_NAMES
+
+
 def rows_for(recipient: dict, rows: list[dict]) -> list[dict]:
+    """AM / ATL: all agents on their team. They do not need to be tagged on each agent.
+
+    If their own user record has no team, fall back to agents who list them as AM/TL.
+    SA / Admin / PM: full list.
+    """
     role = int(recipient["role_id"])
-    if role in FULL_LIST_ROLES:
+    if role in FULL_LIST_ROLES and not _is_team_scope(recipient):
         return rows
-    key = "am_ids" if role == ROLE_AM else "tl_ids"
-    return [r for r in rows if recipient["user_id"] in r[key]]
+    if not _is_team_scope(recipient):
+        return rows
+    rec_team_id = recipient.get("team_id")
+    rec_team = (recipient.get("team_name") or "").strip().upper()
+    if rec_team_id or rec_team:
+        matched = []
+        for r in rows:
+            try:
+                if rec_team_id and r.get("team_id") and int(rec_team_id) == int(r["team_id"]):
+                    matched.append(r)
+                    continue
+            except (TypeError, ValueError):
+                pass
+            if rec_team and (r.get("team") or "").strip().upper() == rec_team:
+                matched.append(r)
+        return matched
+    uid = int(recipient["user_id"])
+    return [r for r in rows if uid in r["am_ids"] or uid in r["tl_ids"]]
+
+
+def content_key(own_rows: list[dict]) -> tuple:
+    return tuple(sorted(int(r["user_id"]) for r in own_rows))
+
+
+def unique_emails(recipients: list[dict]) -> list[str]:
+    emails = []
+    seen = set()
+    for rec in recipients:
+        email = (rec.get("user_email") or "").strip()
+        key = email.lower()
+        if email and key not in seen:
+            seen.add(key)
+            emails.append(email)
+    return emails
 
 
 def week_label(start: date, end: date) -> str:
@@ -746,24 +808,34 @@ def run(week_start: date | None = None, dry_run: bool = False, only_to: str | No
 
     subject = f"Weekly goal report: {week_label(start, end)}"
     summary = defaultdict(int)
+    groups: dict[tuple, dict] = {}
     for recipient in recipients:
         own_rows = rows_for(recipient, rows)
         if not own_rows:
             summary["skipped_no_agents"] += 1
             continue
+        key = content_key(own_rows)
+        bucket = groups.setdefault(key, {"recipients": [], "rows": own_rows})
+        bucket["recipients"].append(recipient)
+    for bucket in groups.values():
+        recs = bucket["recipients"]
+        own_rows = bucket["rows"]
+        emails = unique_emails(recs)
         missed = sum(1 for r in own_rows if missed_goal(r))
-        line = (f"{recipient['user_name']} (role {recipient['role_id']}): {len(own_rows)} agents, "
-                f"{missed} missed the goal")
+        names = ", ".join(r["user_name"] for r in recs)
+        line = f"{names}: {len(own_rows)} agents, {missed} missed the goal → {', '.join(emails)}"
         if dry_run:
-            print("[dry-run]", recipient["user_email"], "-", line)
+            print("[dry-run] group mail", line)
             summary["would_send"] += 1
+            summary["would_send_people"] += len(emails)
             continue
         try:
-            send(recipient["user_email"], subject, build_html(recipient, own_rows, start, end))
-            logging.info("sent to %s - %s", recipient["user_email"], line)
+            send(emails, subject, build_html(recs[0], own_rows, start, end))
+            logging.info("sent group mail - %s", line)
             summary["sent"] += 1
+            summary["sent_people"] += len(emails)
         except Exception:
-            logging.exception("failed to send to %s", recipient["user_email"])
+            logging.exception("failed to send group mail to %s", emails)
             summary["failed"] += 1
 
     if not only_to:
