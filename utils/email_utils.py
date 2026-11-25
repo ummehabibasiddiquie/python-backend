@@ -3,6 +3,51 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+TEST_MAIL_SUBJECT_PREFIX = "[VERCEL TEST]"
+_TEST_MAIL_BANNER_HTML = (
+    '<div style="background:#fff3cd;border:2px solid #f0ad4e;color:#7a4e00;'
+    'padding:12px 16px;margin:0 0 16px 0;font-family:Arial,sans-serif;font-size:14px;line-height:1.4;">'
+    "<strong>VERCEL / TEST ENVIRONMENT</strong><br>"
+    "This message was sent while testing HRMS on Vercel against the test database "
+    "(mytfs_test). It is for testing only. Please ignore it for live work."
+    "</div>"
+)
+_TEST_MAIL_BANNER_TEXT = (
+    "VERCEL / TEST ENVIRONMENT: This email is from HRMS testing on Vercel "
+    "(database mytfs_test). For testing only. Ignore for live work.\n\n"
+)
+
+
+def is_test_mail_env() -> bool:
+    flag = (os.getenv("MAIL_TEST_BANNER") or "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    if flag in ("0", "false", "no", "off"):
+        return False
+    return (os.getenv("DB_DATABASE") or "").strip().lower() == "mytfs_test"
+
+
+def apply_test_mail_notice(subject, html_body, text_body=None):
+    """Prefix subject + banner when APIs use mytfs_test / MAIL_TEST_BANNER. Live mytfs is unchanged."""
+    if not is_test_mail_env():
+        return subject, html_body, text_body
+    subj = subject or ""
+    if not subj.upper().startswith(TEST_MAIL_SUBJECT_PREFIX):
+        subj = f"{TEST_MAIL_SUBJECT_PREFIX} {subj}".strip()
+    html = html_body or ""
+    lower = html.lower()
+    body_at = lower.find("<body")
+    if body_at >= 0:
+        gt = html.find(">", body_at)
+        if gt >= 0:
+            html = html[: gt + 1] + _TEST_MAIL_BANNER_HTML + html[gt + 1 :]
+        else:
+            html = _TEST_MAIL_BANNER_HTML + html
+    else:
+        html = _TEST_MAIL_BANNER_HTML + html
+    text = None if text_body is None else (_TEST_MAIL_BANNER_TEXT + text_body)
+    return subj, html, text
+
 
 def send_email(to_email, subject: str, html_body: str, cc=None):
     host = os.getenv("SMTP_HOST")
@@ -33,6 +78,7 @@ def send_email(to_email, subject: str, html_body: str, cc=None):
     msg["To"] = ", ".join(to_list)
     if cc_list:
         msg["Cc"] = ", ".join(cc_list)
+    subject, html_body, _ = apply_test_mail_notice(subject, html_body)
     msg["Subject"] = subject
 
     msg.attach(MIMEText(html_body, "html"))

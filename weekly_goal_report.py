@@ -51,6 +51,7 @@ from dotenv import load_dotenv
 HERE = Path(__file__).resolve().parent
 load_dotenv(dotenv_path=HERE / ".env")
 
+from utils.email_utils import apply_test_mail_notice  # noqa: E402
 from utils.kra import warnings_streak_start_monday  # noqa: E402
 from utils.roster_helpers import FULL_DAY_HOURS, daily_hours_for_tenure, parse_date  # noqa: E402
 from utils.roster_metrics import (  # noqa: E402
@@ -604,6 +605,7 @@ def send_agent_warnings(rows: list[dict], start: date, end: date, dry_run: bool 
 def send(to_email: str | list[str], subject: str, html: str, text: str | None = None) -> None:
     to_list = [to_email] if isinstance(to_email, str) else list(to_email)
     user = os.getenv("SMTP_USER")
+    subject, html, text = apply_test_mail_notice(subject, html, text)
     msg = MIMEMultipart("alternative")
     msg["From"] = user
     msg["To"] = ", ".join(to_list)

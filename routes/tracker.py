@@ -935,6 +935,7 @@ def view_trackers():
 
         ctx = get_role_context(cursor, int(logged_in_user_id))
         role_name = ctx["user_role_name"]
+        ensure_tracker_clock_columns(cursor)
 
         pagination_requested = (
             bool(data.get("paginate"))
@@ -1096,6 +1097,7 @@ def view_trackers():
             "task": "LOWER(COALESCE(tk.task_name, ''))",
             "tenure_target": "COALESCE(twt.tenure_target, 0)",
             "production": "COALESCE(twt.production, 0)",
+            "worked_hours": "COALESCE(twt.worked_hours, 0)",
             "billable_hours": "COALESCE(twt.production / NULLIF(twt.tenure_target, 0), 0)",
             "notes": "LOWER(COALESCE(twt.tracker_note, ''))",
             "shift": "LOWER(COALESCE(twt.shift, ''))",
@@ -1108,7 +1110,7 @@ def view_trackers():
             sort_dir = "desc"
         sort_expr = tracker_sort_columns[sort_by]
         # Keep numeric 0 in the result: ASC shows 0 first, DESC shows 0 last.
-        if sort_by in ("production", "tenure_target", "billable_hours"):
+        if sort_by in ("production", "tenure_target", "billable_hours", "worked_hours"):
             if sort_dir == "asc":
                 order_sql = f"({sort_expr} = 0) DESC, {sort_expr} ASC, twt.tracker_id ASC"
             else:

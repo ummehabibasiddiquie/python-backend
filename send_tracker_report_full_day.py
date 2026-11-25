@@ -14,6 +14,7 @@ from collections import defaultdict
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 from report_email_recipients import get_report_email_lists
+from utils.email_utils import apply_test_mail_notice
 
 # -------------------------------
 # DB CONNECTION
@@ -230,6 +231,7 @@ def send_email(subject, html_body):
     msg["To"] = ", ".join(recipients)
     if cc_recipients:
         msg["Cc"] = ", ".join(cc_recipients)
+    subject, html_body, _ = apply_test_mail_notice(subject, html_body)
     msg["Subject"] = subject
     msg.attach(MIMEText(html_body, "html"))
     

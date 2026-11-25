@@ -18,6 +18,7 @@ from collections import defaultdict
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 from report_email_recipients import get_report_email_lists
+from utils.email_utils import apply_test_mail_notice
 
 
 LOG_FILE = Path(__file__).resolve().parent / "daily_tracker_report.log"
@@ -608,7 +609,11 @@ def send_email(report_date, html_body):
     msg["To"] = ", ".join(recipients)
     if cc_recipients:
         msg["Cc"] = ", ".join(cc_recipients)
-    msg["Subject"] = f"Delivered billable hours on {report_date.strftime('%d %B %Y')}"
+    subject, html_body, _ = apply_test_mail_notice(
+        f"Delivered billable hours on {report_date.strftime('%d %B %Y')}",
+        html_body,
+    )
+    msg["Subject"] = subject
 
     msg.attach(MIMEText(html_body, "html"))
 
