@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import re
+from io import BytesIO
 
 import bleach
 import mammoth
@@ -91,11 +92,30 @@ def convert_docx_to_html(file_obj, save_image=None) -> str:
     return a URL. Screenshots fall back to inline data URIs if it is missing
     or fails.
     """
-    file_obj.seek(0)
+    if isinstance(file_obj, (bytes, bytearray)):
+        payload = bytes(file_obj)
+    else:
+        if hasattr(file_obj, "seek"):
+            try:
+                file_obj.seek(0)
+            except Exception:
+                pass
+        payload = file_obj.read()
+        if isinstance(payload, str):
+            payload = payload.encode("utf-8")
+    if not payload:
+        raise ValueError("This Word document has no readable text")
+    docx_buf = BytesIO(payload)
 
     def convert_image(image):
-        with image.open() as image_bytes:
-            data = image_bytes.read()
+        opened = image.open()
+        if hasattr(opened, "__enter__"):
+            with opened as image_bytes:
+                data = image_bytes.read()
+        elif hasattr(opened, "read"):
+            data = opened.read()
+        else:
+            data = opened
         content_type = getattr(image, "content_type", None) or "image/png"
         src = None
         if save_image:
@@ -112,7 +132,11 @@ def convert_docx_to_html(file_obj, save_image=None) -> str:
     if callable(img_element):
         kwargs["convert_image"] = img_element(convert_image)
 
-    result = mammoth.convert_to_html(file_obj, **kwargs)
+    try:
+        result = mammoth.convert_to_html(docx_buf, **kwargs)
+    except TypeError:
+        docx_buf.seek(0)
+        result = mammoth.convert_to_html(docx_buf, style_map=STYLE_MAP)
     html = (result.value or "").strip()
     if not html:
         raise ValueError("This Word document has no readable text")

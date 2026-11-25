@@ -616,22 +616,19 @@ def save_task_sop():
             ext = os.path.splitext(upload.filename)[1].lower()
             if ext != ".docx":
                 return api_response(400, "Only a Word document (.docx) is allowed")
-            upload.stream.seek(0, os.SEEK_END)
-            size = upload.stream.tell()
-            upload.stream.seek(0)
-            if size <= 0:
+            raw = upload.read()
+            if not raw:
                 return api_response(400, "The file is empty")
-            if size > MAX_FILE_BYTES:
+            if len(raw) > MAX_FILE_BYTES:
                 return api_response(400, "File is larger than 25 MB")
             try:
-                draft_html = convert_docx_to_html(upload.stream, save_image=save_sop_image)
+                draft_html = convert_docx_to_html(raw, save_image=save_sop_image)
             except Exception as conv_err:
                 return api_response(400, f"Could not convert this Word document to HTML: {conv_err}")
-            upload.stream.seek(0)
             draft_file_name = os.path.basename(upload.filename)[:255]
             display_name = f"{_safe_stem(upload.filename)}.docx"
             draft_file_url, _public_id = upload_to_cloudinary(
-                upload,
+                BytesIO(raw),
                 FOLDER_TASK_SOP,
                 display_name=display_name,
                 resource_type="raw",
