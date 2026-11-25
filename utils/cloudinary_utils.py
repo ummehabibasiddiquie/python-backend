@@ -61,10 +61,11 @@ def upload_to_cloudinary(source, folder: str, display_name: str = None, resource
     # Note: Using the explicit `folder` argument ensures Cloudinary places
     # the file in the correct visual folder in their Media Library GUI.
     
-    # Accept both FileStorage and file paths
-    if hasattr(source, "read"):
-        # werkzeug FileStorage
+    # Accept FileStorage, file-like objects, or local paths
+    if hasattr(source, "stream"):
         data = source.stream
+    elif hasattr(source, "read"):
+        data = source
     else:
         data = source  # local path string
 

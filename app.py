@@ -24,6 +24,8 @@ from routes.report_email import report_email_bp
 from routes.qa_tracker import qa_tracker_bp
 from routes.kra import kra_bp
 from routes.sop import sop_bp
+from routes.task_sop import task_sop_bp
+from routes.tracker_clock import tracker_clock_bp
 import routes.roster_workflow  # Import workflow routes BEFORE registering blueprint
 
 from scheduler import start_scheduler
@@ -64,6 +66,8 @@ app.register_blueprint(report_email_bp, url_prefix="/report_email")
 app.register_blueprint(qa_tracker_bp, url_prefix="/qa_tracker")
 app.register_blueprint(kra_bp, url_prefix="/kra")
 app.register_blueprint(sop_bp, url_prefix="/sop")
+app.register_blueprint(task_sop_bp, url_prefix="/task_sop")
+app.register_blueprint(tracker_clock_bp, url_prefix="/tracker/clock")
 
 # print("\n==== REGISTERED ROUTES ====")
 # for r in app.url_map.iter_rules():

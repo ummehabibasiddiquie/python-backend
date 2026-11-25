@@ -9,6 +9,15 @@ from utils.qc_auto_score import AUTO_QC_DAYS_SQL, MANUAL_QC_DAYS_SQL, sync_auto_
 from utils.time_ist import now_ist, today_str as ist_today_str
 from utils.roster_helpers import reject_if_operations, reject_if_read_only, team_leader_scope_sql, team_leader_scope_params
 from utils.qc_access import is_org_wide_qc_scope, is_qc_scope, is_qa_role, user_has_qc_permission
+from utils.tracker_clock import (
+    ensure_clock_session_table,
+    ensure_tracker_clock_columns,
+    is_clock_exempt_project,
+    nearest_worked_hours,
+    reject_if_clock_locked,
+    session_row,
+)
+from utils.time_ist import now_ist
 import logging
 import re
 import os
@@ -514,19 +523,41 @@ def add_tracker():
         
         tracker_note = form.get("tracker_note")  # optional, can be null
 
+        ensure_clock_session_table(cursor)
+        ensure_tracker_clock_columns(cursor)
+        clock_in_at = None
+        clock_out_at = None
+        worked_hours = None
+        clock_exempt = is_clock_exempt_project(project_id=project_id, cursor=cursor)
+        clock_session = None if clock_exempt else session_row(cursor, user_id)
+        if clock_session:
+            if int(clock_session.get("project_id") or 0) != project_id or int(clock_session.get("task_id") or 0) != task_id:
+                return api_response(400, "This tracker must match the project and task you clocked in on")
+            clock_in_at = clock_session.get("clock_in_at")
+            clock_out_at = clock_session.get("clock_out_at")
+            worked_hours = clock_session.get("worked_hours")
+            if not clock_out_at:
+                out_s = now_ist().strftime("%Y-%m-%d %H:%M:%S")
+                worked_hours = nearest_worked_hours(clock_in_at, out_s)
+                clock_out_at = out_s
+
         cursor.execute(
             """
             INSERT INTO task_work_tracker
             (project_id, task_id, user_id, production, actual_target, tenure_target, billable_hours, actual_billable_hours,
-             tracker_file, tracker_note, shift, is_active, date_time, updated_date)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             tracker_file, tracker_note, shift, is_active, date_time, updated_date,
+             clock_in_at, clock_out_at, worked_hours)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 project_id, task_id, user_id, production, actual_target, tenure_target,
-                billable_hours, actual_billable_hours, tracker_file, tracker_note, shift, 1, now_str, now_str
+                billable_hours, actual_billable_hours, tracker_file, tracker_note, shift, 1, now_str, now_str,
+                clock_in_at, clock_out_at, worked_hours,
             ),
         )
         tracker_id = cursor.lastrowid
+        if clock_session:
+            cursor.execute("DELETE FROM tracker_clock_session WHERE user_id=%s", (user_id,))
         work_dt = _parse_tracker_date_source(now_str)
         sync_auto_qc_score_for_day(cursor, user_id, work_dt or now_str)
         conn.commit()
@@ -602,6 +633,9 @@ def update_tracker():
             )
             if ops_err:
                 return ops_err
+            lock_err = reject_if_clock_locked(cursor, int(actor_id))
+            if lock_err:
+                return lock_err
 
         old_file = tracker.get("tracker_file")  # may be filename OR url/path
 
@@ -836,6 +870,9 @@ def delete_tracker():
             )
             if ops_err:
                 return ops_err
+            lock_err = reject_if_clock_locked(cursor, int(actor_id))
+            if lock_err:
+                return lock_err
 
             if int(actor_id) == int(tracker["user_id"]) and not _agent_can_delete_own_tracker(
                 tracker.get("date_time"), tracker.get("shift")
