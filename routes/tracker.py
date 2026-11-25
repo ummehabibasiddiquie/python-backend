@@ -292,7 +292,7 @@ def build_tracker_filename(
         raise ValueError("Uploaded file has no extension")
 
     ext = original_filename.rsplit(".", 1)[1].lower().strip()
-    now = datetime.now()
+    now = now_ist().replace(tzinfo=None)
     # During updates, allow the tracker datetime to drive the date/time parts
     # while keeping the same formatting.
     source_dt = date_source_dt or now
@@ -506,7 +506,7 @@ def add_tracker():
         # now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if now_str is None:
             print("Received date:", now_str)
-            now = datetime.now()
+            now = now_ist().replace(tzinfo=None)
             # If NIGHT shift and time is between 00:00–09:00
             if shift == "NIGHT" and now.hour < 9:
                 adjusted_datetime = now - timedelta(days=1)
@@ -747,7 +747,7 @@ def update_tracker():
                 )
 
         # updated_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        now = datetime.now()
+        now = now_ist().replace(tzinfo=None)
         # if shift == "NIGHT" and now.hour < 6:
         #     adjusted_datetime = now - timedelta(days=1)
         # else:

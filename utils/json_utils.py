@@ -2,6 +2,8 @@ import json
 from datetime import date, datetime, time
 from decimal import Decimal
 
+from utils.time_ist import IST
+
 
 def json_safe(value):
     """Recursively convert DB types (Decimal, date, etc.) for JSON encoding."""
@@ -10,7 +12,10 @@ def json_safe(value):
     if isinstance(value, Decimal):
         return float(value)
     if isinstance(value, datetime):
-        return value.isoformat()
+        dt = value
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(IST).replace(tzinfo=None)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, time):
