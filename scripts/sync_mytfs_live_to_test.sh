@@ -1,87 +1,52 @@
 #!/bin/bash
-# Copy useful LIVE data mytfs -> mytfs_test every 2 minutes.
-# Never writes mytfs. Abort if TARGET is not mytfs_test.
+# Live mytfs -> test mytfs_test only. Never writes mytfs.
+# crontab: */5 * * * * /root/db-sync/sync.sh >> /root/db-sync/sync.log 2>&1
 #
-# Crontab (Hostinger, where mysql client can see both DBs):
-#   */5 * * * * /path/to/sync_mytfs_live_to_test.sh >> /var/log/mytfs_sync.log 2>&1
-#
-# --replace: test rows for these tables match live (same ids overwritten).
-# Clock / task SOP tables are NOT copied: they exist on test from Flask,
-# not on live yet. Test clock-in/SOP drafts stay; tracker/QC rows follow live.
+# --complete-insert: test has extra clock columns on task_work_tracker;
+# named INSERTs keep those columns. tfs_user is omitted so test
+# deactivations are not overwritten from live.
 
-set -euo pipefail
+MYSQL_USER="root"
+MYSQL_PASS='YOUR_PASSWORD'
 
-MYSQL_USER="${MYSQL_USER:-root}"
-MYSQL_PASS="${MYSQL_PASS:-}"
 SOURCE_DB="mytfs"
 TARGET_DB="mytfs_test"
 
 if [ "$TARGET_DB" != "mytfs_test" ]; then
-  echo "Refusing to run: TARGET_DB must be mytfs_test (got $TARGET_DB)"
-  exit 1
-fi
-if [ "$SOURCE_DB" = "$TARGET_DB" ]; then
-  echo "Refusing to run: source and target are the same"
+  echo "Refusing: TARGET_DB must be mytfs_test"
   exit 1
 fi
 
-export MYSQL_PWD="$MYSQL_PASS"
-MYSQL=(mysql -u"$MYSQL_USER" -N -s)
-DUMP=(mysqldump -u"$MYSQL_USER" --single-transaction --skip-triggers --no-create-info --replace)
+TABLES="
+task_work_tracker \
+user_monthly_tracker \
+project_monthly_tracker \
+qc_audit \
+qc_correction_history \
+qc_records \
+qc_rework_history \
+qa_work_tracker \
+temp_qc \
+roster_month \
+roster_day \
+roster_leave \
+roster_change_request \
+roster_week_lock \
+kra_day_note \
+kra_month_input \
+report_email_recipient \
+sop_topic \
+sop_item"
 
-table_exists() {
-  local db="$1" table="$2"
-  local n
-  n="$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${db}' AND table_name='${table}'")"
-  [ "${n:-0}" -ge 1 ]
-}
+mysqldump \
+  -u"$MYSQL_USER" \
+  -p"$MYSQL_PASS" \
+  --single-transaction \
+  --no-create-info \
+  --complete-insert \
+  --skip-triggers \
+  --replace \
+  "$SOURCE_DB" \
+  $TABLES | mysql -u"$MYSQL_USER" -p"$MYSQL_PASS" "$TARGET_DB"
 
-# People / work / QC / roster that the UI reads. Skip missing tables so
-# crontab does not die if live is one migration behind.
-TABLES=(
-  tfs_user
-  user_role
-  team
-  project
-  project_category
-  task
-  user_permission
-  task_work_tracker
-  qc_afd
-  qc_audit
-  qc_correction_history
-  qc_records
-  qc_rework_history
-  qa_work_tracker
-  temp_qc
-  org_holiday
-  roster_month
-  roster_day
-  roster_leave
-  roster_change_request
-  roster_week_lock
-  kra_day_note
-  kra_month_input
-  report_email_recipient
-)
-
-ok=0
-skip=0
-for table in "${TABLES[@]}"; do
-  if ! table_exists "$SOURCE_DB" "$table"; then
-    echo "skip (not on live): $table"
-    skip=$((skip + 1))
-    continue
-  fi
-  if ! table_exists "$TARGET_DB" "$table"; then
-    echo "skip (not on test — create schema first): $table"
-    skip=$((skip + 1))
-    continue
-  fi
-  "${DUMP[@]}" "$SOURCE_DB" "$table" | mysql -u"$MYSQL_USER" "$TARGET_DB"
-  echo "synced $table"
-  ok=$((ok + 1))
-done
-
-echo "$(date -Is) done synced=$ok skipped=$skip -> $TARGET_DB"
-unset MYSQL_PWD
+echo "$(date) synced live -> mytfs_test"

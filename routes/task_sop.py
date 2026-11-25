@@ -158,7 +158,12 @@ def _user_email(cursor, user_id) -> str:
     if not user_id:
         return ""
     cursor.execute(
-        "SELECT user_email FROM tfs_user WHERE user_id=%s AND user_email IS NOT NULL LIMIT 1",
+        """
+        SELECT user_email FROM tfs_user
+        WHERE user_id=%s AND is_active=1 AND is_delete=1
+          AND user_email IS NOT NULL AND TRIM(user_email) != ''
+        LIMIT 1
+        """,
         (int(user_id),),
     )
     row = cursor.fetchone() or {}
