@@ -55,8 +55,9 @@ SOP_MAIL_ROLES = (
     "super admin",
     "project manager",
     "assistant manager",
+    "qa",
 )
-SOP_MAIL_ROLE_IDS = (1, 2, 3, 4)
+SOP_MAIL_ROLE_IDS = (1, 2, 3, 4, 5)
 
 
 def save_sop_image(data: bytes, content_type: str | None) -> str:
@@ -162,7 +163,7 @@ def _notify_draft_ready(cursor, task_id: int, uploaded_by: int, kind: str) -> di
     """
     emails = _checker_emails(cursor, exclude_user_id=uploaded_by)
     if not emails:
-        print("[task_sop] no AM/PM/Admin/Super Admin emails to notify", flush=True)
+        print("[task_sop] no AM/PM/Admin/Super Admin/QA emails to notify", flush=True)
         return {"email_sent": False, "email_count": 0}
     try:
         send_email(emails, subject, html)

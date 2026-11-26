@@ -163,8 +163,8 @@ TASK_SOP_MODULE = {
             [
                 [
                     "Save as draft",
-                    "Admin, Super Admin, Project Manager, Assistant Manager "
-                    "(not the uploader; QA is not on this mail list)",
+                    "Admin, Super Admin, Project Manager, Assistant Manager, QA "
+                    "(not the uploader)",
                     "Task SOP added/updated — please approve: Project / Task",
                 ],
                 [
