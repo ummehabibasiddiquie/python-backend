@@ -636,15 +636,45 @@ def send_email(report_date, html_body):
 # -------------------------------
 # MAIN
 # -------------------------------
-def run_billable_report():
+def run_billable_report(dry_run=False):
 
     report_date, data = fetch_data()
 
     if not data:
         logging.info("No data found")
-        return {"message": "No data found", "sent": False}
+        print("[billable] No data found")
+        return {"message": "No data found", "sent": False, "dry_run": dry_run}
 
     html = generate_html(report_date, data)
+
+    if dry_run:
+        to_list, cc_list = get_report_email_lists("billable")
+        out = Path(__file__).resolve().parent / "billable_report_dry_run.html"
+        out.write_text(html, encoding="utf-8")
+        print(f"[billable] DRY RUN — report date: {report_date}")
+        print(f"[billable] DRY RUN — agents in report: {len(data)}")
+        print("[billable] DRY RUN — email would go To:")
+        if to_list:
+            for e in to_list:
+                print(f"  - {e}")
+        else:
+            print("  (none)")
+        print("[billable] DRY RUN — email would go Cc:")
+        if cc_list:
+            for e in cc_list:
+                print(f"  - {e}")
+        else:
+            print("  (none)")
+        print(f"[billable] DRY RUN — HTML preview: {out}")
+        print("[billable] DRY RUN — email NOT sent")
+        return {
+            "message": "Dry run OK — email not sent",
+            "sent": False,
+            "dry_run": True,
+            "to": to_list,
+            "cc": cc_list,
+            "html_path": str(out),
+        }
 
     sent = send_email(report_date, html)
 
@@ -657,12 +687,18 @@ def run_billable_report():
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Billable hours report")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show To/CC who would get the mail; do not send",
+    )
+    args = parser.parse_args()
 
     try:
-
-        run_billable_report()
-
+        run_billable_report(dry_run=args.dry_run)
     except Exception as e:
         print("Error:", str(e))
-
         logging.exception(f"Report failed: {str(e)}")
