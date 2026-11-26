@@ -19,8 +19,12 @@ ALLOWED_TAGS = [
 ]
 ALLOWED_ATTRS = {
     "a": ["href", "title"],
-    "td": ["colspan", "rowspan"],
-    "th": ["colspan", "rowspan"],
+    "td": ["colspan", "rowspan", "class"],
+    "th": ["colspan", "rowspan", "class"],
+    "table": ["class"],
+    "thead": ["class"],
+    "tbody": ["class"],
+    "tr": ["class"],
     "img": ["src", "alt", "title", "width", "height"],
     "p": ["class"],
     "div": ["class"],
@@ -62,6 +66,64 @@ _CALLOUT_RE = re.compile(
 )
 
 
+def _promote_table_header_row(table_html: str) -> str:
+    """If Word/mammoth emitted only <td>s, treat the first row as headers."""
+    if re.search(r"<th\b", table_html, flags=re.IGNORECASE):
+        return table_html
+    if re.search(r"<thead\b", table_html, flags=re.IGNORECASE):
+        return table_html
+
+    def _first_row_to_th(match):
+        row = match.group(0)
+        row = re.sub(r"<td\b", "<th", row, flags=re.IGNORECASE)
+        row = re.sub(r"</td>", "</th>", row, flags=re.IGNORECASE)
+        return f"<thead>{row}</thead><tbody>"
+
+    updated, n = re.subn(
+        r"<tr\b[^>]*>.*?</tr>",
+        _first_row_to_th,
+        table_html,
+        count=1,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if n:
+        if re.search(r"</tbody>", updated, flags=re.IGNORECASE):
+            return updated
+        return re.sub(r"</table>", "</tbody></table>", updated, count=1, flags=re.IGNORECASE)
+    return table_html
+
+
+def _wrap_tables(html: str) -> str:
+    def _one(match):
+        table = match.group(0)
+        table = _promote_table_header_row(table)
+        if not re.search(r'class=["\'][^"\']*sop-table', table, flags=re.IGNORECASE):
+            if re.search(r"<table\b[^>]*class=", table, flags=re.IGNORECASE):
+                table = re.sub(
+                    r"(<table\b[^>]*class=[\"'])",
+                    r'\1sop-table ',
+                    table,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+            else:
+                table = re.sub(
+                    r"<table\b",
+                    '<table class="sop-table"',
+                    table,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+        return f'<div class="sop-table-wrap">{table}</div>'
+
+    return re.sub(
+        r"<table\b[^>]*>.*?</table>",
+        _one,
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+
 def enhance_sop_html(html: str) -> str:
     """Turn converted Word HTML into a readable step-by-step guide."""
     html = re.sub(
@@ -82,6 +144,7 @@ def enhance_sop_html(html: str) -> str:
 
     html = _CALLOUT_RE.sub(_callout, html)
     html = re.sub(r"<ol\b(?![^>]*class=)", '<ol class="sop-steps"', html, flags=re.IGNORECASE)
+    html = _wrap_tables(html)
     return html
 
 

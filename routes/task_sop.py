@@ -23,7 +23,18 @@ from utils.time_ist import IST, now_ist, today_str
 task_sop_bp = Blueprint("task_sop", __name__)
 
 FOLDER_TASK_SOP = "hrms/task_sop"
-MAX_FILE_BYTES = 25 * 1024 * 1024
+# Keep in sync with TaskSopEditor.jsx MAX_SOP_FILE_MB
+MAX_SOP_FILE_MB = 10
+MAX_FILE_BYTES = MAX_SOP_FILE_MB * 1024 * 1024
+MAX_SOP_HTML_BYTES = 8 * 1024 * 1024
+SOP_FILE_TOO_LARGE_MSG = (
+    f"SOP Word file is too large. Maximum allowed size is {MAX_SOP_FILE_MB} MB. "
+    "Compress or remove large screenshots and try again."
+)
+SOP_HTML_TOO_LARGE_MSG = (
+    f"This SOP has too much content after conversion (over {MAX_SOP_HTML_BYTES // (1024 * 1024)} MB HTML). "
+    "Reduce image size or count in the Word file and try again."
+)
 SOP_CHECKER_ROLES = {
     "admin",
     "super admin",
@@ -625,11 +636,14 @@ def save_task_sop():
             if not raw:
                 return api_response(400, "The file is empty")
             if len(raw) > MAX_FILE_BYTES:
-                return api_response(400, "File is larger than 25 MB")
+                return api_response(413, SOP_FILE_TOO_LARGE_MSG)
             try:
                 draft_html = convert_docx_to_html(raw, save_image=save_sop_image)
             except Exception as conv_err:
                 return api_response(400, f"Could not convert this Word document to HTML: {conv_err}")
+            html_len = len((draft_html or "").encode("utf-8"))
+            if html_len > MAX_SOP_HTML_BYTES:
+                return api_response(413, SOP_HTML_TOO_LARGE_MSG)
             draft_file_name = os.path.basename(upload.filename)[:255]
             display_name = f"{_safe_stem(upload.filename)}.docx"
             draft_file_url, _public_id = upload_to_cloudinary(

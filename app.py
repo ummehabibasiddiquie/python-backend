@@ -37,6 +37,8 @@ import os
 
 
 app = Flask(__name__)
+# Multipart SOP uploads (Word + form). Slightly above task SOP 10 MB file cap.
+app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 
 BASE_URL =  ""
 # os.getenv("BASE_URL", "/")
@@ -86,6 +88,17 @@ def home():
 @app.route("/health")
 def health():
     return "OK", 200
+
+
+@app.errorhandler(413)
+def request_entity_too_large(_error):
+    from utils.response import api_response
+
+    return api_response(
+        413,
+        "Upload is too large. Task SOP Word files must be 10 MB or less. "
+        "Compress or remove large screenshots and try again.",
+    )
 
 if __name__ == "__main__":
     # Start the scheduler
