@@ -10,13 +10,11 @@ import uuid
 from flask import Blueprint, request
 
 from config import get_db_connection
-from utils.cloudinary_utils import upload_to_cloudinary
+from utils.cloudinary_utils import FOLDER_SOP, upload_to_cloudinary
 from utils.response import api_response
 from utils.roster_helpers import get_role_context, now_str
 
 sop_bp = Blueprint("sop", __name__)
-
-FOLDER_SOP = "hrms/sop_files"
 MAX_FILE_BYTES = 25 * 1024 * 1024
 BLOCKED_EXTENSIONS = {
     ".exe", ".bat", ".cmd", ".com", ".msi", ".js", ".html", ".htm",

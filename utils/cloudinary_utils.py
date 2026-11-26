@@ -11,6 +11,8 @@ FOLDER_PROJECT  = "hrms/project_pprt"
 FOLDER_TASK     = "hrms/task_files"
 FOLDER_PROFILE  = "hrms/profile_pictures"
 FOLDER_QC_REWORK = "hrms/qc_rework_files"
+FOLDER_SOP      = "hrms/sop_files"       # SOP library (Manage → SOP)
+FOLDER_TASK_SOP = "hrms/task_sop"        # Task SOP Word drafts/live files
 
 
 def _extract_public_id(url_or_public_id: str) -> str:

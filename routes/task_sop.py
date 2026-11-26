@@ -10,10 +10,19 @@ from datetime import datetime
 from html import escape
 from io import BytesIO
 
+import time
+
+import requests
+from cloudinary.utils import api_sign_request
 from flask import Blueprint, request
 
-from config import get_db_connection
-from utils.cloudinary_utils import upload_to_cloudinary
+from config import (
+    CLOUDINARY_API_KEY,
+    CLOUDINARY_API_SECRET,
+    CLOUDINARY_CLOUD_NAME,
+    get_db_connection,
+)
+from utils.cloudinary_utils import FOLDER_TASK_SOP, upload_to_cloudinary
 from utils.docx_to_html import convert_docx_to_html
 from utils.email_utils import send_email
 from utils.response import api_response
@@ -21,8 +30,6 @@ from utils.roster_helpers import get_role_context, now_str
 from utils.time_ist import IST, now_ist, today_str
 
 task_sop_bp = Blueprint("task_sop", __name__)
-
-FOLDER_TASK_SOP = "hrms/task_sop"
 # Keep in sync with TaskSopEditor.jsx MAX_SOP_FILE_MB.
 # Hostinger Nginx must be >= this (client_max_body_size 30M;) or uploads fail with 413.
 MAX_SOP_FILE_MB = 25
@@ -553,10 +560,59 @@ def _serialize_sop(row, viewer_id=None):
     return out
 
 
+def _clean_part(value: str) -> str:
+    value = re.sub(r"\s+", "_", str(value or ""))
+    value = re.sub(r"[^A-Za-z0-9_]", "", value)
+    return (value or "NA")[:40]
+
+
 def _safe_stem(filename: str) -> str:
     base = os.path.splitext(os.path.basename(filename or "sop"))[0]
     stem = re.sub(r"[^A-Za-z0-9_-]+", "_", base).strip("_")[:60]
     return f"{stem or 'task_sop'}_{uuid.uuid4().hex[:8]}"
+
+
+def build_task_sop_filename(project_code: str, task_name: str, user_name: str = "") -> str:
+    """Task SOP Cloudinary name: Task_ProjCode_SOP_26-Nov-2026.docx (no username)."""
+    now = now_ist().replace(tzinfo=None)
+    date_part = now.strftime("%d-%b-%Y")
+    return (
+        f"{_clean_part(task_name)}_"
+        f"{_clean_part(project_code)}_"
+        f"SOP_{date_part}.docx"
+    )
+
+
+def _task_upload_context(cursor, task_id: int, user_id: int) -> dict:
+    cursor.execute(
+        """
+        SELECT t.task_name, p.project_name, p.project_code, u.user_name
+        FROM task t
+        LEFT JOIN project p ON p.project_id = t.project_id
+        LEFT JOIN tfs_user u ON u.user_id = %s
+        WHERE t.task_id = %s
+        """,
+        (int(user_id), int(task_id)),
+    )
+    row = cursor.fetchone() or {}
+    return {
+        "task_name": row.get("task_name") or "Task",
+        "project_name": row.get("project_name") or "Project",
+        "project_code": row.get("project_code") or row.get("project_name") or "PRJ",
+        "user_name": row.get("user_name") or f"user{user_id}",
+    }
+
+
+def _download_docx(url: str) -> bytes:
+    resp = requests.get(url, timeout=60)
+    if resp.status_code >= 400:
+        raise ValueError(f"Could not download SOP file from Cloudinary (HTTP {resp.status_code})")
+    raw = resp.content or b""
+    if not raw:
+        raise ValueError("Downloaded SOP file is empty")
+    if len(raw) > MAX_FILE_BYTES:
+        raise ValueError(SOP_FILE_TOO_LARGE_MSG)
+    return raw
 
 
 @task_sop_bp.route("/get", methods=["POST"])
@@ -590,6 +646,64 @@ def get_task_sop():
         conn.close()
 
 
+@task_sop_bp.route("/cloudinary_sign", methods=["POST"])
+def cloudinary_sign_task_sop():
+    """
+    Signed params so the browser can upload the .docx straight to Cloudinary
+    (folder hrms/task_sop). Avoids Vercel 4.5 MB body limit.
+    """
+    data = request.get_json(silent=True) or {}
+    user_id, err = _require_user(data)
+    if err:
+        return err
+    task_id = data.get("task_id")
+    if not task_id:
+        return api_response(400, "task_id is required")
+    if not (CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET):
+        return api_response(500, "Cloudinary is not configured on the server")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, user_id)
+        if not _can_manage(ctx.get("user_role_name"), ctx.get("user_role_id")):
+            return api_response(403, "You do not have permission to edit task SOPs")
+        cursor.execute("SELECT task_id FROM task WHERE task_id=%s", (int(task_id),))
+        if not cursor.fetchone():
+            return api_response(404, "Task not found")
+
+        meta = _task_upload_context(cursor, int(task_id), int(user_id))
+        file_name = build_task_sop_filename(
+            meta["project_code"], meta["task_name"], meta["user_name"]
+        )
+        # public_id is stem without extension; folder is separate
+        public_id = os.path.splitext(file_name)[0]
+        timestamp = int(time.time())
+        params_to_sign = {
+            "timestamp": timestamp,
+            "folder": FOLDER_TASK_SOP,
+            "public_id": public_id,
+            "overwrite": 1,
+        }
+        signature = api_sign_request(params_to_sign, CLOUDINARY_API_SECRET)
+        return api_response(200, "Cloudinary upload signature ready", {
+            "cloud_name": CLOUDINARY_CLOUD_NAME,
+            "api_key": CLOUDINARY_API_KEY,
+            "timestamp": timestamp,
+            "signature": signature,
+            "folder": FOLDER_TASK_SOP,
+            "public_id": public_id,
+            "file_name": file_name,
+            "resource_type": "raw",
+            "upload_url": f"https://api.cloudinary.com/v1_1/{CLOUDINARY_CLOUD_NAME}/raw/upload",
+        })
+    except Exception as exc:
+        return api_response(500, f"Failed to create Cloudinary signature: {exc}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @task_sop_bp.route("/save", methods=["POST"])
 def save_task_sop():
     if request.content_type and "multipart/form-data" in request.content_type:
@@ -606,6 +720,8 @@ def save_task_sop():
     if not task_id:
         return api_response(400, "task_id is required")
     change_note = (data.get("change_note") or "").strip()[:500]
+    cloudinary_url = (data.get("cloudinary_url") or data.get("file_url") or "").strip()
+    cloudinary_name = (data.get("file_name") or data.get("cloudinary_file_name") or "").strip()
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -629,7 +745,26 @@ def save_task_sop():
         if not draft_note:
             draft_note = "Initial SOP"
 
-        if upload and upload.filename:
+        meta = _task_upload_context(cursor, int(task_id), int(user_id))
+        hrms_name = build_task_sop_filename(
+            meta["project_code"], meta["task_name"], meta["user_name"]
+        )
+
+        if cloudinary_url:
+            # Browser already uploaded to Cloudinary (hrms/task_sop).
+            if "res.cloudinary.com" not in cloudinary_url and "cloudinary.com" not in cloudinary_url:
+                return api_response(400, "Invalid Cloudinary URL for Task SOP")
+            try:
+                raw = _download_docx(cloudinary_url)
+                draft_html = convert_docx_to_html(raw, save_image=save_sop_image)
+            except Exception as conv_err:
+                return api_response(400, f"Could not process this Word document: {conv_err}")
+            html_len = len((draft_html or "").encode("utf-8"))
+            if html_len > MAX_SOP_HTML_BYTES:
+                return api_response(413, SOP_HTML_TOO_LARGE_MSG)
+            draft_file_url = cloudinary_url
+            draft_file_name = (cloudinary_name or hrms_name)[:255]
+        elif upload and upload.filename:
             ext = os.path.splitext(upload.filename)[1].lower()
             if ext != ".docx":
                 return api_response(400, "Only a Word document (.docx) is allowed")
@@ -645,12 +780,11 @@ def save_task_sop():
             html_len = len((draft_html or "").encode("utf-8"))
             if html_len > MAX_SOP_HTML_BYTES:
                 return api_response(413, SOP_HTML_TOO_LARGE_MSG)
-            draft_file_name = os.path.basename(upload.filename)[:255]
-            display_name = f"{_safe_stem(upload.filename)}.docx"
+            draft_file_name = hrms_name[:255]
             draft_file_url, _public_id = upload_to_cloudinary(
                 BytesIO(raw),
                 FOLDER_TASK_SOP,
-                display_name=display_name,
+                display_name=hrms_name,
                 resource_type="raw",
             )
         elif not (draft_html or draft_file_url):
