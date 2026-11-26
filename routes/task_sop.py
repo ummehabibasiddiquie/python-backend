@@ -23,10 +23,11 @@ from utils.time_ist import IST, now_ist, today_str
 task_sop_bp = Blueprint("task_sop", __name__)
 
 FOLDER_TASK_SOP = "hrms/task_sop"
-# Keep in sync with TaskSopEditor.jsx MAX_SOP_FILE_MB
-MAX_SOP_FILE_MB = 10
+# Keep in sync with TaskSopEditor.jsx MAX_SOP_FILE_MB.
+# Hostinger Nginx must be >= this (client_max_body_size 30M;) or uploads fail with 413.
+MAX_SOP_FILE_MB = 25
 MAX_FILE_BYTES = MAX_SOP_FILE_MB * 1024 * 1024
-MAX_SOP_HTML_BYTES = 8 * 1024 * 1024
+MAX_SOP_HTML_BYTES = 12 * 1024 * 1024
 SOP_FILE_TOO_LARGE_MSG = (
     f"SOP Word file is too large. Maximum allowed size is {MAX_SOP_FILE_MB} MB. "
     "Compress or remove large screenshots and try again."

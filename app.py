@@ -37,8 +37,9 @@ import os
 
 
 app = Flask(__name__)
-# Multipart SOP uploads (Word + form). Slightly above task SOP 10 MB file cap.
-app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
+# Multipart uploads (Task SOP Word, etc.). Nginx must allow at least this too
+# (client_max_body_size 30M;). Otherwise the proxy returns raw "413 Content Too Large".
+app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 
 BASE_URL =  ""
 # os.getenv("BASE_URL", "/")
@@ -96,7 +97,7 @@ def request_entity_too_large(_error):
 
     return api_response(
         413,
-        "Upload is too large. Task SOP Word files must be 10 MB or less. "
+        "Upload is too large. Task SOP Word files must be 25 MB or less. "
         "Compress or remove large screenshots and try again.",
     )
 
