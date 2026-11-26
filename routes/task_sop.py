@@ -1010,6 +1010,62 @@ def discard_draft_sop():
         conn.close()
 
 
+@task_sop_bp.route("/project_status", methods=["POST"])
+def project_task_sop_status():
+    """Per-task SOP flags for a project (added / draft pending)."""
+    data = request.get_json(silent=True) or {}
+    user_id, err = _require_user(data)
+    if err:
+        return err
+    project_id = data.get("project_id")
+    if not project_id:
+        return api_response(400, "project_id is required")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ctx = get_role_context(cursor, user_id)
+        if not ctx.get("user_role_name"):
+            return api_response(404, "User not found")
+        _ensure_table(cursor)
+        conn.commit()
+        cursor.execute(
+            """
+            SELECT s.task_id, s.approved_at, s.html_body, s.original_file_url,
+                   s.draft_html_body, s.draft_file_url
+            FROM task_sop s
+            JOIN task t ON t.task_id = s.task_id
+            WHERE s.is_delete=1
+              AND t.project_id=%s
+            """,
+            (int(project_id),),
+        )
+        statuses = []
+        for row in cursor.fetchall() or []:
+            has_approved = bool(
+                row.get("approved_at")
+                and ((row.get("html_body") or "").strip() or row.get("original_file_url"))
+            )
+            has_draft = bool(
+                (row.get("draft_html_body") or "").strip() or row.get("draft_file_url")
+            )
+            if not has_approved and not has_draft:
+                continue
+            statuses.append(
+                {
+                    "task_id": row["task_id"],
+                    "has_approved": has_approved,
+                    "has_draft": has_draft,
+                }
+            )
+        return api_response(200, "Project SOP status", {"statuses": statuses})
+    except Exception as exc:
+        return api_response(500, f"Failed to load project SOP status: {exc}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @task_sop_bp.route("/pending", methods=["POST"])
 def pending_task_sops():
     data = request.get_json(silent=True) or {}

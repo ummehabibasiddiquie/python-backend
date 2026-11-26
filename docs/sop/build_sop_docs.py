@@ -563,8 +563,9 @@ def all_sops() -> list[dict]:
     from sop_content_agent import AGENT_SOPS
     from sop_content_manager import MANAGER_SOPS
     from sop_content_qc_roster import DETAILED_SOPS as QC_ROSTER_SOPS
+    from sop_content_task_sop import TASK_SOP_SOPS
 
-    DETAILED_SOPS = AGENT_SOPS + QC_ROSTER_SOPS + MANAGER_SOPS + ADMIN_SOPS
+    DETAILED_SOPS = AGENT_SOPS + QC_ROSTER_SOPS + MANAGER_SOPS + ADMIN_SOPS + TASK_SOP_SOPS
     replaced_by_detailed = {
         "SOP - QA - QC Form",
         "SOP - Manager - Roster",
